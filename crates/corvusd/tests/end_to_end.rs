@@ -1,9 +1,12 @@
 //! End to end tests: a fake extension speaks the wire protocol to a running
 //! daemon, and the MCP surface is driven through JSON-RPC.
 
+use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -14,6 +17,7 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use corvus_proto::{Envelope, ErrorBody, ErrorCode, Hello, HelloAck, Kind};
 use corvus_record::SessionContext;
+use corvus_runtime::{CommandCancel, CommandRequest, DispatchFailure};
 use corvusd::{Daemon, DaemonConfig, RouterConfig};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -2468,6 +2472,663 @@ async fn the_http_metrics_endpoint_exposes_prometheus_series() {
 
     responder.abort();
     daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_waits_on_different_tabs_run_in_parallel() {
+    let daemon = start_daemon(5_000).await;
+    let socket = handshake(daemon.ws_addr(), "edge:default").await;
+    let (sink, mut stream) = socket.split();
+    let sink = Arc::new(tokio::sync::Mutex::new(sink));
+    let timeline = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let timeline_seen = Arc::clone(&timeline);
+    let responder = tokio::spawn(async move {
+        while let Some(frame) = stream.next().await {
+            let Ok(Message::Text(text)) = frame else {
+                continue;
+            };
+            let envelope: Envelope = serde_json::from_str(text.as_str()).expect("decode command");
+            if envelope.kind != Kind::Command {
+                continue;
+            }
+            let tab = envelope
+                .args
+                .get("tab_id")
+                .and_then(Value::as_str)
+                .unwrap_or("active")
+                .to_string();
+            let sink = Arc::clone(&sink);
+            let timeline = Arc::clone(&timeline_seen);
+            tokio::spawn(async move {
+                let start = Instant::now();
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                let end = Instant::now();
+                timeline
+                    .lock()
+                    .expect("timeline")
+                    .push((tab.clone(), start, end));
+                let response = Envelope::response_ok(
+                    envelope.id,
+                    json!({ "matched": true, "waited_ms": 400, "url": "http://example/", "tab_id": tab }),
+                );
+                let mut sink = sink.lock().await;
+                sink.send(Message::text(
+                    serde_json::to_string(&response).expect("encode response"),
+                ))
+                .await
+                .expect("the response reaches the daemon");
+            });
+        }
+    });
+    wait_for_browser(&daemon, "edge:default").await;
+
+    let started = Instant::now();
+    let (first, second) = tokio::join!(
+        tools_call(
+            &daemon,
+            "browser_wait",
+            json!({ "selector": "#a", "tab_id": "tab-a", "timeout_ms": 5000 }),
+        ),
+        tools_call(
+            &daemon,
+            "browser_wait",
+            json!({ "selector": "#b", "tab_id": "tab-b", "timeout_ms": 5000 }),
+        )
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        !is_error(&first) && !is_error(&second),
+        "both waits must succeed: {} / {}",
+        content_text(&first),
+        content_text(&second)
+    );
+    assert!(
+        elapsed < Duration::from_millis(750),
+        "different tabs must not serialize, took {elapsed:?}"
+    );
+    let entries = timeline.lock().expect("timeline").clone();
+    assert_eq!(entries.len(), 2, "both commands reached the extension");
+    let a = entries
+        .iter()
+        .find(|entry| entry.0 == "tab-a")
+        .expect("tab-a entry");
+    let b = entries
+        .iter()
+        .find(|entry| entry.0 == "tab-b")
+        .expect("tab-b entry");
+    assert!(
+        a.1 < b.2 && b.1 < a.2,
+        "the two tab windows must overlap: {entries:?}"
+    );
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_waits_on_the_same_tab_serialize() {
+    let daemon = start_daemon(5_000).await;
+    let socket = handshake(daemon.ws_addr(), "edge:default").await;
+    let (sink, mut stream) = socket.split();
+    let sink = Arc::new(tokio::sync::Mutex::new(sink));
+    let timeline = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let timeline_seen = Arc::clone(&timeline);
+    let responder = tokio::spawn(async move {
+        while let Some(frame) = stream.next().await {
+            let Ok(Message::Text(text)) = frame else {
+                continue;
+            };
+            let envelope: Envelope = serde_json::from_str(text.as_str()).expect("decode command");
+            if envelope.kind != Kind::Command {
+                continue;
+            }
+            let tab = envelope
+                .args
+                .get("tab_id")
+                .and_then(Value::as_str)
+                .unwrap_or("active")
+                .to_string();
+            let sink = Arc::clone(&sink);
+            let timeline = Arc::clone(&timeline_seen);
+            tokio::spawn(async move {
+                let start = Instant::now();
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                let end = Instant::now();
+                timeline
+                    .lock()
+                    .expect("timeline")
+                    .push((tab.clone(), start, end));
+                let response = Envelope::response_ok(
+                    envelope.id,
+                    json!({ "matched": true, "waited_ms": 400, "url": "http://example/", "tab_id": tab }),
+                );
+                let mut sink = sink.lock().await;
+                sink.send(Message::text(
+                    serde_json::to_string(&response).expect("encode response"),
+                ))
+                .await
+                .expect("the response reaches the daemon");
+            });
+        }
+    });
+    wait_for_browser(&daemon, "edge:default").await;
+
+    let started = Instant::now();
+    let (first, second) = tokio::join!(
+        tools_call(
+            &daemon,
+            "browser_wait",
+            json!({ "selector": "#same", "tab_id": "tab-a", "timeout_ms": 5000 }),
+        ),
+        tools_call(
+            &daemon,
+            "browser_wait",
+            json!({ "selector": "#same", "tab_id": "tab-a", "timeout_ms": 5000 }),
+        )
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        !is_error(&first) && !is_error(&second),
+        "both waits must succeed: {} / {}",
+        content_text(&first),
+        content_text(&second)
+    );
+    assert!(
+        elapsed >= Duration::from_millis(800),
+        "the same tab must serialize, took {elapsed:?}"
+    );
+    let entries = timeline.lock().expect("timeline").clone();
+    assert_eq!(entries.len(), 2, "both commands reached the extension");
+    assert!(
+        entries[1].1 >= entries[0].2,
+        "the second wait must start after the first ends: {entries:?}"
+    );
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn http_cancellation_returns_minus_32800_and_the_session_keeps_working() {
+    let daemon = start_daemon(5_000).await;
+    let socket = handshake(daemon.ws_addr(), "edge:default").await;
+    let (mut sink, mut stream) = socket.split();
+    let responder = tokio::spawn(async move {
+        while let Some(frame) = stream.next().await {
+            let Ok(Message::Text(text)) = frame else {
+                continue;
+            };
+            let envelope: Envelope = serde_json::from_str(text.as_str()).expect("decode command");
+            if envelope.kind != Kind::Command {
+                continue;
+            }
+            if envelope.tool.as_deref() == Some("page_text") {
+                let response = Envelope::response_ok(
+                    envelope.id,
+                    json!({ "url": "http://example/", "title": "after cancel", "text": "still serving", "truncated": false }),
+                );
+                sink.send(Message::text(
+                    serde_json::to_string(&response).expect("encode response"),
+                ))
+                .await
+                .expect("the response reaches the daemon");
+            }
+        }
+    });
+    wait_for_browser(&daemon, "edge:default").await;
+
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "cancel-agent" }
+        }
+    });
+    let (headers, _) =
+        http_request(daemon.http_addr(), "POST", "/mcp", &initialize.to_string()).await;
+    assert!(
+        headers.starts_with("HTTP/1.1 200"),
+        "unexpected status: {headers}"
+    );
+    let session_id = header_value(&headers, "mcp-session-id").expect("a session id");
+
+    let addr = daemon.http_addr();
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 41,
+        "method": "tools/call",
+        "params": {
+            "name": "browser_wait",
+            "arguments": { "selector": "#never", "timeout_ms": 30000 }
+        }
+    });
+    let call_text = call.to_string();
+    let call_session = session_id.clone();
+    let first = tokio::spawn(async move {
+        http_request_with(
+            addr,
+            "POST",
+            "/mcp",
+            &call_text,
+            &[("Mcp-Session-Id", call_session.as_str())],
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let cancel = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": { "requestId": 41 }
+    });
+    let (cancel_headers, _) = http_request_with(
+        addr,
+        "POST",
+        "/mcp",
+        &cancel.to_string(),
+        &[("Mcp-Session-Id", session_id.as_str())],
+    )
+    .await;
+    assert!(
+        cancel_headers.starts_with("HTTP/1.1 202"),
+        "a cancellation notification is accepted: {cancel_headers}"
+    );
+
+    let (call_headers, call_body) = tokio::time::timeout(Duration::from_secs(2), first)
+        .await
+        .expect("the cancelled call returns quickly")
+        .expect("the request task joins");
+    assert!(
+        call_headers.starts_with("HTTP/1.1 200"),
+        "unexpected status: {call_headers}"
+    );
+    let answer: Value = serde_json::from_str(&call_body).expect("decode the cancellation answer");
+    assert_eq!(
+        answer["error"]["code"], -32800,
+        "unexpected answer: {answer}"
+    );
+    assert_eq!(answer["error"]["message"], "request cancelled");
+    assert!(
+        answer.get("result").is_none(),
+        "a cancelled call is not a tool result: {answer}"
+    );
+
+    let after = json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "method": "tools/call",
+        "params": { "name": "page_text", "arguments": { "max_chars": 1000 } }
+    });
+    let (_, body) = http_request_with(
+        addr,
+        "POST",
+        "/mcp",
+        &after.to_string(),
+        &[("Mcp-Session-Id", session_id.as_str())],
+    )
+    .await;
+    let answer: Value = serde_json::from_str(&body).expect("decode the follow-up answer");
+    assert_eq!(
+        answer["result"]["isError"], false,
+        "the session must keep serving: {answer}"
+    );
+
+    let cancel_finished = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": { "requestId": 42 }
+    });
+    let (finished_headers, _) = http_request_with(
+        addr,
+        "POST",
+        "/mcp",
+        &cancel_finished.to_string(),
+        &[("Mcp-Session-Id", session_id.as_str())],
+    )
+    .await;
+    assert!(
+        finished_headers.starts_with("HTTP/1.1 202"),
+        "cancelling a finished request is still accepted: {finished_headers}"
+    );
+
+    let again = json!({
+        "jsonrpc": "2.0",
+        "id": 43,
+        "method": "tools/call",
+        "params": { "name": "page_text", "arguments": {} }
+    });
+    let (_, body) = http_request_with(
+        addr,
+        "POST",
+        "/mcp",
+        &again.to_string(),
+        &[("Mcp-Session-Id", session_id.as_str())],
+    )
+    .await;
+    let answer: Value = serde_json::from_str(&body).expect("decode the second follow-up answer");
+    assert_eq!(answer["result"]["isError"], false);
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn dispatch_with_cancel_returns_canceled_and_keeps_the_router_usable() {
+    let daemon = start_daemon(5_000).await;
+    let socket = handshake(daemon.ws_addr(), "edge:default").await;
+    let (mut sink, mut stream) = socket.split();
+    let (seen_sender, mut seen_receiver) = tokio::sync::mpsc::unbounded_channel::<Envelope>();
+    let responder = tokio::spawn(async move {
+        let mut pending: Option<Envelope> = None;
+        while let Some(frame) = stream.next().await {
+            let Ok(Message::Text(text)) = frame else {
+                continue;
+            };
+            let envelope: Envelope = serde_json::from_str(text.as_str()).expect("decode envelope");
+            match envelope.kind {
+                Kind::Command => match envelope.tool.as_deref() {
+                    Some("browser_click") => {
+                        pending = Some(envelope.clone());
+                        let _ = seen_sender.send(envelope);
+                    }
+                    Some("page_text") => {
+                        let response = Envelope::response_ok(
+                            envelope.id,
+                            json!({
+                                "url": "http://example/",
+                                "title": "after cancel",
+                                "text": "after cancel",
+                                "truncated": false
+                            }),
+                        );
+                        sink.send(Message::text(
+                            serde_json::to_string(&response).expect("encode page_text"),
+                        ))
+                        .await
+                        .expect("the response reaches the daemon");
+                    }
+                    other => panic!("unexpected tool {other:?}"),
+                },
+                Kind::Event => {
+                    if let Some(command) = pending.take() {
+                        let late = Envelope::response_ok(command.id, json!({ "late": true }));
+                        sink.send(Message::text(
+                            serde_json::to_string(&late).expect("encode the late response"),
+                        ))
+                        .await
+                        .expect("the late response reaches the daemon");
+                    }
+                    let _ = seen_sender.send(envelope);
+                }
+                _ => {}
+            }
+        }
+    });
+    wait_for_browser(&daemon, "edge:default").await;
+
+    let router = daemon.router().clone();
+    let request = CommandRequest::new("browser_click", json!({ "target": "@e1" }))
+        .with_browser("edge:default");
+    let cancel = CommandCancel::new();
+    let waiter_token = cancel.clone();
+    let waiter =
+        tokio::spawn(async move { router.dispatch_with_cancel(request, waiter_token).await });
+
+    let command = tokio::time::timeout(Duration::from_secs(2), seen_receiver.recv())
+        .await
+        .expect("the command reaches the extension")
+        .expect("the command signal exists");
+    cancel.cancel();
+    let outcome = tokio::time::timeout(Duration::from_secs(2), waiter)
+        .await
+        .expect("the cancelled dispatch returns")
+        .expect("the dispatch task joins");
+    assert!(
+        matches!(outcome, Err(DispatchFailure::Canceled)),
+        "unexpected outcome: {outcome:?}"
+    );
+
+    let event = tokio::time::timeout(Duration::from_secs(2), seen_receiver.recv())
+        .await
+        .expect("the cancel event reaches the extension")
+        .expect("the event signal exists");
+    assert_eq!(event.kind, Kind::Event);
+    assert_eq!(event.tool.as_deref(), Some("cancel"));
+    assert_eq!(
+        event.args.get("event").and_then(Value::as_str),
+        Some("cancel")
+    );
+    assert_eq!(
+        event.args.get("command_id").and_then(Value::as_str),
+        Some(command.id.as_str())
+    );
+
+    let follow_up = daemon
+        .router()
+        .dispatch(
+            CommandRequest::new("page_text", json!({ "max_chars": 1000 }))
+                .with_browser("edge:default"),
+        )
+        .await
+        .expect("a late response does not poison the router");
+    assert_eq!(
+        follow_up.get("text").and_then(Value::as_str),
+        Some("after cancel")
+    );
+
+    responder.abort();
+}
+
+#[tokio::test]
+async fn stdio_cancellation_returns_minus_32800_and_keeps_serving() {
+    let ws_port = free_port();
+    let mut http_port = free_port();
+    while http_port == ws_port {
+        http_port = free_port();
+    }
+    let database = temporary_database();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_corvusd"))
+        .arg("serve")
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .arg("--ws-port")
+        .arg(ws_port.to_string())
+        .arg("--http-port")
+        .arg(http_port.to_string())
+        .arg("--db")
+        .arg(&database)
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn corvusd");
+    let mut stdin = child.stdin.take().expect("the child stdin");
+    let stdout = child.stdout.take().expect("the child stdout");
+    let (line_sender, mut line_receiver) = tokio::sync::mpsc::unbounded_channel::<String>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    if line_sender.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    let (write_sender, mut write_receiver) = tokio::sync::mpsc::unbounded_channel::<String>();
+    std::thread::spawn(move || {
+        while let Some(line) = write_receiver.blocking_recv() {
+            let sent = stdin
+                .write_all(line.as_bytes())
+                .and_then(|_| stdin.write_all(b"\n"))
+                .and_then(|_| stdin.flush());
+            if sent.is_err() {
+                break;
+            }
+        }
+    });
+    let child = ChildGuard(child);
+
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ws_port);
+    for _ in 0..100 {
+        if std::net::TcpStream::connect(addr).is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let socket = handshake(addr, "edge:default").await;
+    let (seen_sender, mut seen_receiver) = tokio::sync::mpsc::channel::<()>(4);
+    let (mut sink, mut stream) = socket.split();
+    let responder = tokio::spawn(async move {
+        while let Some(frame) = stream.next().await {
+            let Ok(Message::Text(text)) = frame else {
+                continue;
+            };
+            let envelope: Envelope = serde_json::from_str(text.as_str()).expect("decode command");
+            if envelope.kind != Kind::Command {
+                continue;
+            }
+            match envelope.tool.as_deref() {
+                Some("browser_wait") => {
+                    let _ = seen_sender.send(()).await;
+                }
+                Some("page_text") => {
+                    let response = Envelope::response_ok(
+                        envelope.id,
+                        json!({ "url": "http://example/", "title": "stdio", "text": "ok", "truncated": false }),
+                    );
+                    sink.send(Message::text(
+                        serde_json::to_string(&response).expect("encode response"),
+                    ))
+                    .await
+                    .expect("the response reaches the daemon");
+                }
+                other => panic!("unexpected tool {other:?}"),
+            }
+        }
+    });
+
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "stdio-cancel-agent" }
+        }
+    });
+    write_sender
+        .send(initialize.to_string())
+        .expect("send initialize");
+    let answer = stdio_response(&mut line_receiver, 1).await;
+    assert_eq!(answer["result"]["serverInfo"]["name"], "corvus");
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "browser_wait",
+            "arguments": { "selector": "#never", "timeout_ms": 30000 }
+        }
+    });
+    write_sender.send(call.to_string()).expect("send the wait");
+    tokio::time::timeout(Duration::from_secs(2), seen_receiver.recv())
+        .await
+        .expect("the wait reaches the extension")
+        .expect("the wait signal exists");
+
+    let cancel = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": { "requestId": 2 }
+    });
+    write_sender
+        .send(cancel.to_string())
+        .expect("send the cancellation");
+    let answer = stdio_response(&mut line_receiver, 2).await;
+    assert_eq!(
+        answer["error"]["code"], -32800,
+        "unexpected answer: {answer}"
+    );
+    assert_eq!(answer["error"]["message"], "request cancelled");
+    assert!(
+        answer.get("result").is_none(),
+        "a cancelled call is not a tool result: {answer}"
+    );
+
+    let follow_up = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": { "name": "page_text", "arguments": { "max_chars": 1000 } }
+    });
+    write_sender
+        .send(follow_up.to_string())
+        .expect("send the follow-up call");
+    let answer = stdio_response(&mut line_receiver, 3).await;
+    assert_eq!(
+        answer["result"]["isError"], false,
+        "the stdio server must keep serving: {answer}"
+    );
+
+    drop(write_sender);
+    drop(child);
+    responder.abort();
+
+    let store = corvus_record::Store::open_read_only(&database).expect("open the recording store");
+    let sessions = store.list_sessions(10, None).expect("list sessions");
+    let session = sessions
+        .iter()
+        .find(|session| session.transport == "stdio")
+        .expect("the stdio session");
+    let steps = store
+        .get_session_steps(&session.id, 0, 100)
+        .expect("list session steps");
+    assert!(
+        steps.iter().any(|step| {
+            step.tool == "browser_wait" && step.error_code.as_deref() == Some("CANCELLED")
+        }),
+        "the cancelled call must be recorded: {steps:?}"
+    );
+}
+
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a free port");
+    listener.local_addr().expect("read the port").port()
+}
+
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+async fn stdio_response(
+    lines: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    id: u64,
+) -> Value {
+    loop {
+        let line = tokio::time::timeout(Duration::from_secs(5), lines.recv())
+            .await
+            .expect("a stdio response arrives")
+            .expect("the stdio stream stays open");
+        let value: Value = serde_json::from_str(&line).expect("decode a stdio answer");
+        if value.get("id").and_then(Value::as_u64) == Some(id) {
+            return value;
+        }
+    }
 }
 
 fn header_value(headers: &str, name: &str) -> Option<String> {

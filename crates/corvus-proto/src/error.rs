@@ -26,11 +26,13 @@ pub enum ErrorCode {
     TransportDown,
     /// A defect in the daemon or in the extension.
     Internal,
+    /// The command was cancelled before the browser answered.
+    Cancelled,
 }
 
 impl ErrorCode {
     /// Every code, in the order the documentation lists them.
-    pub const ALL: [ErrorCode; 9] = [
+    pub const ALL: [ErrorCode; 10] = [
         ErrorCode::BadArgs,
         ErrorCode::NotFound,
         ErrorCode::NotInteractable,
@@ -40,6 +42,7 @@ impl ErrorCode {
         ErrorCode::BrowserGone,
         ErrorCode::TransportDown,
         ErrorCode::Internal,
+        ErrorCode::Cancelled,
     ];
 
     /// The wire spelling of this code.
@@ -54,6 +57,7 @@ impl ErrorCode {
             ErrorCode::BrowserGone => "BROWSER_GONE",
             ErrorCode::TransportDown => "TRANSPORT_DOWN",
             ErrorCode::Internal => "INTERNAL",
+            ErrorCode::Cancelled => "CANCELLED",
         }
     }
 
@@ -61,7 +65,7 @@ impl ErrorCode {
     pub fn retryable(self) -> bool {
         match self {
             ErrorCode::BadArgs | ErrorCode::CapabilityUnavailable | ErrorCode::BrowserGone => false,
-            ErrorCode::Internal => false,
+            ErrorCode::Internal | ErrorCode::Cancelled => false,
             ErrorCode::NotFound
             | ErrorCode::NotInteractable
             | ErrorCode::Timeout

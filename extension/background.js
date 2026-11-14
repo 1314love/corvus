@@ -26,6 +26,7 @@ const OFFSCREEN_REASON = 'BLOBS';
 const ALARM_WATCHDOG = 'corvus.watchdog';
 const WATCHDOG_PERIOD_MINUTES = 0.5;
 const RESPONSE_CACHE_LIMIT = 200;
+const MAX_COMMAND_CONTROLLERS = 200;
 const MAX_REFS = 5000;
 const CDP_IDLE_TIMEOUT_MS = 30000;
 const CDP_ATTACH_TIMEOUT_MS = 5000;
@@ -55,6 +56,7 @@ const RETRYABLE = {
   CAPABILITY_UNAVAILABLE: false,
   BROWSER_GONE: false,
   TRANSPORT_DOWN: true,
+  CANCELLED: false,
   INTERNAL: false,
 };
 
@@ -107,6 +109,7 @@ const state = {
 };
 
 const responseCache = new Map();
+const commandControllers = new Map();
 const debuggerSessions = new Map();
 const debuggerAttachPromises = new Map();
 const networkCaptures = new Map();
@@ -479,6 +482,20 @@ function handleDaemonEvent(frame) {
   const name = firstString(args.event, args.name, args.type, frame && frame.tool);
   if (!name) return;
 
+  if (name === 'cancel') {
+    const commandId = firstString(args.command_id, args.commandId);
+    if (!commandId) {
+      log('ignoring cancel event without command_id');
+      return;
+    }
+    if (cancelCommandById(commandId)) {
+      log('cancel requested for command', commandId);
+    } else {
+      log('cancel event for unknown or finished command', commandId);
+    }
+    return;
+  }
+
   if (name === 'capabilities_request' || name === 'hello_request') {
     void sendCapabilitiesEvent('event_request');
     return;
@@ -495,7 +512,7 @@ function handleDaemonEvent(frame) {
 // ---------------------------------------------------------------------------
 
 const HANDLERS = {
-  browser_navigate: (args, frame) => navigateTool(args, frame),
+  browser_navigate: (args, frame, signal) => navigateTool(args, frame, signal),
   page_snapshot: (args, frame) => runInTab('page_snapshot', args, frame),
   browser_click: (args, frame) => runInTab('browser_click', args, frame),
   browser_type: (args, frame) => runInTab('browser_type', args, frame),
@@ -506,8 +523,8 @@ const HANDLERS = {
   browser_press: (args, frame) => runInTab('browser_press', args, frame),
   browser_scroll: (args, frame) => runInTab('browser_scroll', args, frame),
   browser_select: (args, frame) => runInTab('browser_select', args, frame),
-  browser_eval: (args, frame) => evalTool(args, frame),
-  browser_wait: (args, frame) => waitTool(args, frame),
+  browser_eval: (args, frame, signal) => evalTool(args, frame, signal),
+  browser_wait: (args, frame, signal) => waitTool(args, frame, signal),
   browser_history: (args, frame) => historyTool(args, frame),
   tab_list: () => tabListTool(),
   tab_new: (args, frame) => tabNewTool(args, frame),
@@ -518,7 +535,7 @@ const HANDLERS = {
   net_clear: (args) => netClearTool(args),
   net_intercept: (args) => netInterceptTool(args),
   download_list: (args) => downloadListTool(args),
-  download_wait: (args, frame) => downloadWaitTool(args, frame),
+  download_wait: (args, frame, signal) => downloadWaitTool(args, frame, signal),
   upload_file: (args) => uploadFileTool(args),
 };
 
@@ -549,6 +566,56 @@ function withTimeout(promise, timeoutMs) {
   });
 }
 
+function cancelledError() {
+  return new ToolError('CANCELLED', 'command was cancelled');
+}
+
+function throwIfCancelled(signal) {
+  if (signal && signal.aborted) throw cancelledError();
+}
+
+// Race a handler against cooperative abort so even a short non-cooperative
+// handler answers the daemon promptly. The handler may keep running after the
+// response was sent; the daemon has already dropped the cancelled command.
+function raceWithAbort(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(cancelledError());
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(cancelledError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      }
+    );
+  });
+}
+
+function cancelCommandById(commandId) {
+  const id = commandId === undefined || commandId === null ? '' : String(commandId);
+  if (id.trim() === '') return false;
+  const controller = commandControllers.get(id);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
+
 function commandTimeoutFor(tool, args, frame) {
   let timeoutMs = clampTimeout(frame && frame.meta ? frame.meta.timeout_ms : undefined);
   // download_wait may legitimately outlive the daemon default: its own argument
@@ -577,6 +644,18 @@ async function handleCommand(frame) {
     }
   }
 
+  const commandId = frame && frame.id !== undefined && frame.id !== null ? String(frame.id) : '';
+  const controller = new AbortController();
+  if (commandId) {
+    commandControllers.set(commandId, controller);
+    while (commandControllers.size > MAX_COMMAND_CONTROLLERS) {
+      const oldestId = commandControllers.keys().next().value;
+      const oldest = commandControllers.get(oldestId);
+      commandControllers.delete(oldestId);
+      if (oldest) oldest.abort();
+    }
+  }
+
   let response;
   try {
     const rawTool = firstString(frame && frame.tool);
@@ -590,10 +669,23 @@ async function handleCommand(frame) {
     const args = frame.args && typeof frame.args === 'object' ? frame.args : {};
     await assertBrowserSelection(args);
     const timeoutMs = commandTimeoutFor(tool, args, frame);
-    const result = await withTimeout(handler(args, frame), timeoutMs + COMMAND_TIMEOUT_PAD_MS);
+    const result = await withTimeout(
+      raceWithAbort(
+        Promise.resolve().then(() => {
+          throwIfCancelled(controller.signal);
+          return handler(args, frame, controller.signal);
+        }),
+        controller.signal
+      ),
+      timeoutMs + COMMAND_TIMEOUT_PAD_MS
+    );
     response = buildResponse(frame, true, result, null);
   } catch (error) {
     response = buildResponse(frame, false, null, toErrorPayload(error, traceId));
+  } finally {
+    if (commandId && commandControllers.get(commandId) === controller) {
+      commandControllers.delete(commandId);
+    }
   }
 
   rememberResponse(key, response);
@@ -1052,7 +1144,7 @@ async function probeWaitContent(tabId, selector, text) {
   return reply;
 }
 
-async function waitTool(args, frame) {
+async function waitTool(args, frame, signal) {
   const selector = readWaitCondition(args, 'selector');
   const text = readWaitCondition(args, 'text');
   const urlContains = readWaitCondition(args, 'url_contains');
@@ -1074,6 +1166,7 @@ async function waitTool(args, frame) {
   const startedAt = Date.now();
 
   while (true) {
+    throwIfCancelled(signal);
     let current = null;
     try {
       current = await chrome.tabs.get(tab.id);
@@ -1090,6 +1183,7 @@ async function waitTool(args, frame) {
         const probe = await probeWaitContent(tab.id, selector, text);
         if (probe.matched !== true) matched = false;
       } catch (error) {
+        if (signal && signal.aborted) throw cancelledError();
         const mapped = error instanceof ToolError ? error : classifyContentFailure(error, current);
         if (mapped.code === 'BAD_ARGS' || mapped.code === 'CAPABILITY_UNAVAILABLE' || mapped.code === 'BROWSER_GONE' || mapped.code === 'NOT_FOUND') {
           throw mapped;
@@ -1111,6 +1205,7 @@ async function waitTool(args, frame) {
       throw new ToolError('TIMEOUT', 'browser_wait timed out after ' + elapsed + ' ms', { waited_ms: elapsed });
     }
     await sleep(Math.min(100, Math.max(10, budget - elapsed)));
+    throwIfCancelled(signal);
   }
 }
 
@@ -1192,7 +1287,7 @@ async function createIsolatedEvalContext(tabId) {
   return contextId;
 }
 
-async function evalTool(args, frame) {
+async function evalTool(args, frame, signal) {
   const expression = args ? args.expression : undefined;
   if (typeof expression !== 'string' || expression.trim() === '') {
     throw new ToolError('BAD_ARGS', 'args.expression must be a non-empty string');
@@ -1218,6 +1313,22 @@ async function evalTool(args, frame) {
     throw new ToolError('CAPABILITY_UNAVAILABLE', 'this page cannot be scripted: ' + String(tab.url), { url: tab.url, reason: 'restricted_scheme' });
   }
 
+  let terminateRequested = false;
+  const terminateExecution = () => {
+    if (terminateRequested) return;
+    terminateRequested = true;
+    void sendCdpCommand(tab.id, 'Runtime.terminateExecution', {}).catch((error) => {
+      log('Runtime.terminateExecution failed', describeError(error));
+    });
+  };
+  if (signal) {
+    if (signal.aborted) {
+      terminateExecution();
+      throw cancelledError();
+    }
+    signal.addEventListener('abort', terminateExecution, { once: true });
+  }
+
   // Runtime.evaluate runs the string as page code, so MV3's extension CSP does
   // not apply. The automatic debugger channel is the only execution path here;
   // scripting is not required for browser_eval anymore.
@@ -1229,12 +1340,17 @@ async function evalTool(args, frame) {
   };
 
   try {
-    if (world === 'isolated') {
-      params.contextId = await createIsolatedEvalContext(tab.id);
-    }
-    const response = await sendCdpCommand(tab.id, 'Runtime.evaluate', params);
+    const evaluation = (async () => {
+      if (world === 'isolated') {
+        params.contextId = await createIsolatedEvalContext(tab.id);
+      }
+      return sendCdpCommand(tab.id, 'Runtime.evaluate', params);
+    })();
+    const response = await raceWithAbort(evaluation, signal);
+    throwIfCancelled(signal);
     return buildEvalResult(response);
   } catch (error) {
+    if (signal && signal.aborted) throw cancelledError();
     if (error instanceof ToolError && error.code === 'CAPABILITY_UNAVAILABLE') throw error;
     const message = describeError(error);
     if (isCdpSerializationError(message)) {
@@ -1242,6 +1358,8 @@ async function evalTool(args, frame) {
     }
     if (error instanceof ToolError) throw error;
     throw new ToolError('INTERNAL', 'browser_eval failed: ' + message);
+  } finally {
+    if (signal) signal.removeEventListener('abort', terminateExecution);
   }
 }
 
@@ -2212,10 +2330,11 @@ async function downloadListTool(args) {
   return { downloads: sorted.slice(0, limit).map((item) => downloadSummary(item, true)) };
 }
 
-async function downloadWaitTool(args, frame) {
+async function downloadWaitTool(args, frame, signal) {
   const id = parseDownloadId(args.id);
   const timeoutMs = readBoundedInteger(args.timeout_ms, 30000, 100, 120000, 'args.timeout_ms');
   const startedAt = Date.now();
+  throwIfCancelled(signal);
   let baselineIds = null;
   if (id === null) {
     let items;
@@ -2228,6 +2347,7 @@ async function downloadWaitTool(args, frame) {
   }
 
   while (true) {
+    throwIfCancelled(signal);
     let items;
     try {
       items = await chrome.downloads.search(id === null ? {} : { id: id });
@@ -2266,6 +2386,7 @@ async function downloadWaitTool(args, frame) {
       throw new ToolError('TIMEOUT', 'no download finished within ' + timeoutMs + ' ms', details);
     }
     await sleep(DOWNLOAD_POLL_MS);
+    throwIfCancelled(signal);
   }
 }
 
@@ -2625,7 +2746,7 @@ function waitForNewTabLoad(tabId, targetUrl, epoch, timeoutMs) {
   });
 }
 
-async function navigateTool(args, frame) {
+async function navigateTool(args, frame, signal) {
   const tab = await resolveTab(args);
   if (!tab || typeof tab.id !== 'number') {
     throw new ToolError('NOT_FOUND', 'no active tab is available');
@@ -2646,6 +2767,22 @@ async function navigateTool(args, frame) {
     throw new ToolError('BAD_ARGS', 'only http, https and file URLs can be navigated to', { url: resolved.href.slice(0, 200) });
   }
   const target = resolved.href;
+
+  let stopRequested = false;
+  const stopLoading = () => {
+    if (stopRequested) return;
+    stopRequested = true;
+    void sendCdpCommand(tab.id, 'Page.stopLoading', {}).catch((error) => {
+      log('Page.stopLoading failed', describeError(error));
+    });
+  };
+  if (signal) {
+    if (signal.aborted) {
+      stopLoading();
+      throw cancelledError();
+    }
+    signal.addEventListener('abort', stopLoading, { once: true });
+  }
 
   const timeoutMs = clampTimeout(frame && frame.meta ? frame.meta.timeout_ms : undefined);
   // Keep at least 2 s of the tool budget for the reply and stay below 15 s.
@@ -2670,16 +2807,19 @@ async function navigateTool(args, frame) {
   if (!started || typeof started !== 'object') {
     throw new ToolError('INTERNAL', 'navigation did not return a result');
   }
+  throwIfCancelled(signal);
 
   const hashOnly = beforeUrl !== null && target !== beforeUrl && sameDocumentExceptHash(beforeUrl, target);
   let loaded = hashOnly === true;
   let finalUrl = target;
 
   if (!hashOnly && waitBudget > 0) {
-    const outcome = await waitForDocumentLoad(tab.id, beforeUrl, target, epoch, waitBudget);
+    const outcome = await raceWithAbort(waitForDocumentLoad(tab.id, beforeUrl, target, epoch, waitBudget), signal);
     loaded = outcome.loaded;
     finalUrl = outcome.url || target;
   }
+
+  throwIfCancelled(signal);
 
   let current = null;
   try {
@@ -2704,6 +2844,8 @@ async function navigateTool(args, frame) {
     }
   }
 
+  throwIfCancelled(signal);
+  if (signal) signal.removeEventListener('abort', stopLoading);
   return {
     navigated: true,
     loaded: loaded === true,

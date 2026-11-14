@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：M1 已实现，M2 进行中。读者：工程实现者。
+状态：M1 至 M4 第一波已实现；M4 第二波与 M5 进行中。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
@@ -200,6 +200,16 @@ M3 第一波新增 6 个工具，工具面达到 32 个。录制始终开启；�
 
 `GET /metrics` 位于 MCP HTTP 端口、与 `/health` 并列，输出 Prometheus 文本：`corvus_uptime_seconds`、`corvus_browsers_connected`、`corvus_tool_calls_total{tool="..."}`、`corvus_tool_errors_total{code="..."}`、`corvus_sessions_total` 与 `corvus_steps_total`。`/health` 保持现有形状。
 
+### 5.5 并发与取消
+
+M4 第一波不新增工具。它改变路由器调度调用的方式，以及进行中的 `tools/call` 如何被取消；32 个工具的参数与结果形状保持不变。
+
+**作用域门控。** 每条浏览器命令在派发前都会被分配到一条通道，键为 `(browser_id, tab_id)`。同一通道内的调用逐条执行并保持有序；不同通道的调用并行执行，彼此没有顺序关系。因此显式 `tab_id` 与其他标签并行，并在同一标签内与其他调用有序。省略 `tab_id` 时，在派发时解析为活动标签并加入该标签的通道，所以它与同一标签的显式调用有序，而不会另开一条通道。`tab_new`、`tab_close`、`tab_switch`、`download_wait` 以及未给 `tab_id` 的 `net_intercept` 使用按浏览器划分的通道，该通道只以 `browser_id` 为键；这些调用彼此有序，且不串行化独立的标签工作。不执行浏览器命令的调用（`browser_list`、`metrics`、`logs_tail` 与只读会话工具）不进入通道。`page_text`、`page_html`、`page_find`、`net_log` 与 `download_list` 是不受门控的只读调用：它们读取既有状态，不排在同一标签的写操作之后，也不阻塞写操作。
+
+**MCP 取消。** 客户端用 `notifications/cancelled` 取消进行中的请求，`params.requestId` 为对应 `tools/call` 的 JSON-RPC id。守护进程用 JSON-RPC 错误 `-32800` 应答该请求，并在 `session_steps` 中把这次尝试记录为 `ok: false`、`error_code` 为 `"CANCELLED"`。为停止浏览器工作，守护进程向扩展发送 `event` 为 `"cancel"` 的事件帧；扩展协作式中止。取消只作用于所指的请求。错误消息为 `"request cancelled"`，`retryable` 为 false。
+
+**取消不做什么。** 守护进程立即停止等待并返回 `-32800`，不等待浏览器完成。浏览器工作对 `browser_wait`、`download_wait`、`browser_eval` 与 `browser_navigate` 采用协作式中止，其他工具可能延迟完成。已经作用于页面、下载或标签的效果不会回滚。
+
 ## 6. 扩展设计
 
 三个上下文，零页面：
@@ -218,7 +228,7 @@ M3 第一波新增 6 个工具，工具面达到 32 个。录制始终开启；�
 
 - DEGRADED 表示已连上但某项能力不可用（例如浏览器拒绝 debugger 挂载）。依赖该能力的工具直接返回 CAPABILITY_UNAVAILABLE，而不是挂住。
 - 每条命令都有截止时间；超时后守护进程向扩展发起取消，并返回带可重放 id 的 TIMEOUT。
-- 路由器为「不可交错」的动作（click/type）保留按浏览器的串行队列，为只读感知保留并行池。
+- 路由器按 `(browser_id, tab_id)` 通道串行执行命令，只读感知不受门控，详见 5.5 节。
 - 守护进程重启不丢会话：会话状态在 SQLite 里，扩展通过重放未确认命令续上。
 
 ## 8. 错误分类
@@ -234,6 +244,7 @@ M3 第一波新增 6 个工具，工具面达到 32 个。录制始终开启；�
 | BROWSER_GONE | 标签或浏览器已关闭 | 否 |
 | TRANSPORT_DOWN | 扩展断连 | 是，重连后 |
 | INTERNAL | 缺陷；携带 trace id | 否 |
+| CANCELLED | 浏览器应答前命令已被取消 | 否 |
 
 ## 9. 存储
 

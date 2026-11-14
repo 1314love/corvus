@@ -12,6 +12,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
@@ -19,6 +20,7 @@ use clap::Parser;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -29,6 +31,7 @@ const DEFAULT_CAPABILITIES: &str = "dom,scripting";
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 type WsSink = SplitSink<WsStream, Message>;
+type SharedSink = Arc<AsyncMutex<WsSink>>;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -95,6 +98,19 @@ struct Args {
     /// Delay before each response, in milliseconds.
     #[arg(long, default_value_t = 0)]
     delay_ms: u64,
+
+    /// Delay browser_wait responses whose selector equals --wait-delay-selector,
+    /// capped by the command's timeout_ms. Zero disables the delay.
+    #[arg(long, default_value_t = 0)]
+    wait_delay_ms: u64,
+
+    /// Selector that opts a browser_wait into --wait-delay-ms.
+    #[arg(long = "wait-delay-selector", default_value = "#delay")]
+    wait_delay_selector: String,
+
+    /// Append browser_wait start/finish timing records to this JSONL file.
+    #[arg(long, value_name = "PATH")]
+    timing_out: Option<PathBuf>,
 
     /// Append every received envelope to this JSONL file.
     #[arg(long, value_name = "PATH")]
@@ -299,6 +315,52 @@ impl Recorder {
     }
 }
 
+/// Append-only timing log for delayed browser_wait commands. Records are JSONL
+/// lines with event, command_id, tab_id, delay_ms and an epoch-millisecond ms.
+#[derive(Clone)]
+struct TimingLog {
+    file: Option<Arc<Mutex<BufWriter<std::fs::File>>>>,
+}
+
+impl TimingLog {
+    fn open(path: &Option<PathBuf>) -> Result<Self> {
+        let Some(path) = path else {
+            return Ok(Self { file: None });
+        };
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create timing directory {}", parent.display()))?;
+            }
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("open --timing-out {}", path.display()))?;
+        Ok(Self {
+            file: Some(Arc::new(Mutex::new(BufWriter::new(file)))),
+        })
+    }
+
+    fn record(&self, event: &str, command_id: &Value, tab_id: &str, delay_ms: u64) {
+        let Some(file) = self.file.as_ref() else {
+            return;
+        };
+        let line = json!({
+            "event": event,
+            "command_id": command_id,
+            "tab_id": tab_id,
+            "delay_ms": delay_ms,
+            "ms": now_ms(),
+        });
+        if let Ok(mut file) = file.lock() {
+            let _ = writeln!(file, "{line}");
+            let _ = file.flush();
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = Args::parse();
@@ -321,6 +383,7 @@ async fn run(args: Args) -> Result<ExitCode> {
     let mut state = MockState::default();
     let capabilities = build_capabilities(&args)?;
     let mut recorder = Recorder::open(&args.out)?;
+    let timing = TimingLog::open(&args.timing_out)?;
 
     let (ws, _) = connect_async(args.url.as_str())
         .await
@@ -338,12 +401,13 @@ async fn run(args: Args) -> Result<ExitCode> {
             "capabilities": capabilities,
         }
     });
-    send_json(&mut sink, &hello, &args).await?;
+    send_raw_json(&mut sink, &hello, &args).await?;
 
     let ack = match wait_for_hello_ack(&mut sink, &mut stream, &args, &mut recorder).await? {
         Some(ack) => ack,
         None => return Ok(ExitCode::from(2)),
     };
+    let sink: SharedSink = Arc::new(AsyncMutex::new(sink));
     let daemon_version = ack
         .pointer("/args/version")
         .or_else(|| ack.pointer("/args/daemon_version"))
@@ -388,6 +452,7 @@ async fn run(args: Args) -> Result<ExitCode> {
 
         match &message {
             Message::Ping(payload) => {
+                let mut sink = sink.lock().await;
                 sink.send(Message::Pong(payload.clone()))
                     .await
                     .context("send websocket pong")?;
@@ -430,7 +495,8 @@ async fn run(args: Args) -> Result<ExitCode> {
                     &answer,
                     &answer_map,
                     &mut state,
-                    &mut sink,
+                    &sink,
+                    &timing,
                 )
                 .await?
                 {
@@ -470,14 +536,17 @@ async fn run(args: Args) -> Result<ExitCode> {
                     "kind": "pong",
                     "browser": args.browser_id,
                 });
-                send_json(&mut sink, &pong, &args).await?;
+                send_json(&sink, &pong, &args).await?;
             }
             "hello_ack" | "event" | "response" => {}
             other => eprintln!("mock-extension: ignoring envelope kind {other:?}"),
         }
     }
 
-    sink.send(Message::Close(None)).await.ok();
+    {
+        let mut sink = sink.lock().await;
+        sink.send(Message::Close(None)).await.ok();
+    }
     println!("DONE received={received} commands={commands} answered={answered} failed={failed}");
     Ok(ExitCode::SUCCESS)
 }
@@ -541,7 +610,7 @@ async fn wait_for_hello_ack(
                             "kind": "pong",
                             "browser": args.browser_id,
                         });
-                        send_json(sink, &pong, args).await?;
+                        send_raw_json(sink, &pong, args).await?;
                     }
                     _ => {}
                 }
@@ -557,7 +626,8 @@ async fn handle_command(
     answer: &Value,
     answer_map: &HashMap<String, Value>,
     state: &mut MockState,
-    sink: &mut WsSink,
+    sink: &SharedSink,
+    timing: &TimingLog,
 ) -> Result<Outcome> {
     if tool.is_empty() {
         return send_error(
@@ -638,6 +708,58 @@ async fn handle_command(
     }
 
     if tool_matches(&args.answer_tool, tool) {
+        if tool == "browser_wait"
+            && args.wait_delay_ms > 0
+            && arguments.get("selector").and_then(Value::as_str)
+                == Some(args.wait_delay_selector.as_str())
+        {
+            let payload = match wait_answer(&arguments, state) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    let body = response_envelope(
+                        envelope,
+                        args,
+                        Value::Null,
+                        Some(error_object_full(error.code, &error.message, error.details)),
+                    );
+                    send_json(sink, &body, args).await?;
+                    return Ok(Outcome::Failed);
+                }
+            };
+            let tab_id = match resolve_tab(&arguments, state) {
+                Ok(index) => state.tabs[index].id.clone(),
+                Err(error) => {
+                    let body = response_envelope(
+                        envelope,
+                        args,
+                        Value::Null,
+                        Some(error_object_full(error.code, &error.message, error.details)),
+                    );
+                    send_json(sink, &body, args).await?;
+                    return Ok(Outcome::Failed);
+                }
+            };
+            let timeout_ms = arguments
+                .get("timeout_ms")
+                .and_then(Value::as_i64)
+                .unwrap_or(10_000)
+                .max(0) as u64;
+            let delay_ms = args.wait_delay_ms.min(timeout_ms);
+            let command_id = envelope.get("id").cloned().unwrap_or(Value::Null);
+            let body = response_envelope(envelope, args, payload, None);
+            timing.record("wait_start", &command_id, &tab_id, delay_ms);
+            let sink = sink.clone();
+            let timing = timing.clone();
+            let quiet = args.quiet;
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                timing.record("wait_end", &command_id, &tab_id, delay_ms);
+                if let Err(error) = send_json_quiet(&sink, &body, quiet).await {
+                    eprintln!("mock-extension: delayed browser_wait send failed: {error:#}");
+                }
+            });
+            return Ok(Outcome::Answered);
+        }
         if args.delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(args.delay_ms)).await;
         }
@@ -1613,7 +1735,7 @@ async fn send_error(
     args: &Args,
     code: &str,
     message: &str,
-    sink: &mut WsSink,
+    sink: &SharedSink,
 ) -> Result<Outcome> {
     if args.delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(args.delay_ms)).await;
@@ -1687,11 +1809,26 @@ fn retryable(code: &str) -> bool {
     )
 }
 
-async fn send_json(sink: &mut WsSink, value: &Value, args: &Args) -> Result<()> {
+async fn send_raw_json(sink: &mut WsSink, value: &Value, args: &Args) -> Result<()> {
     let text = serde_json::to_string(value).context("serialize envelope")?;
     if !args.quiet {
         println!("OUT {text}");
     }
+    sink.send(Message::Text(text.into()))
+        .await
+        .context("websocket send failed")
+}
+
+async fn send_json(sink: &SharedSink, value: &Value, args: &Args) -> Result<()> {
+    send_json_quiet(sink, value, args.quiet).await
+}
+
+async fn send_json_quiet(sink: &SharedSink, value: &Value, quiet: bool) -> Result<()> {
+    let text = serde_json::to_string(value).context("serialize envelope")?;
+    if !quiet {
+        println!("OUT {text}");
+    }
+    let mut sink = sink.lock().await;
     sink.send(Message::Text(text.into()))
         .await
         .context("websocket send failed")
@@ -1785,4 +1922,11 @@ fn next_id(prefix: &str) -> String {
         .unwrap_or_default()
         .as_millis();
     format!("{prefix}-{millis:x}-{sequence:x}")
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }

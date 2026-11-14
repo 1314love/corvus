@@ -1,11 +1,12 @@
 //! The command router.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify, OwnedMutexGuard};
 
 use corvus_proto::{ids, Envelope, ErrorBody, ErrorCode, Kind, Meta};
 use corvus_record::{now_millis, SessionContext, StepRecord, StepSink};
@@ -15,6 +16,83 @@ use crate::spec::{self, ToolSpec};
 
 /// Result of routing one command.
 pub type CommandResult = Result<Value, ErrorBody>;
+
+/// Token that asks an in-flight dispatch to stop waiting.
+///
+/// The token is cheap to clone and can be cancelled from any task. A dispatch
+/// that observes it removes its pending entry, tells the browser to cancel the
+/// command and returns [DispatchFailure::Canceled] without waiting for a reply.
+#[derive(Clone, Default)]
+pub struct CommandCancel {
+    state: Arc<CancelState>,
+}
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+impl CommandCancel {
+    /// Create a token that has not been cancelled.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Request cancellation and wake every waiter.
+    pub fn cancel(&self) {
+        if !self.state.cancelled.swap(true, Ordering::SeqCst) {
+            self.state.notify.notify_waiters();
+        }
+    }
+
+    /// Whether cancellation has already been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Resolve once cancellation is requested, including a request that landed
+    /// between the check and the wait.
+    pub async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        let notified = self.state.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
+    }
+}
+
+/// Why a cancellable dispatch stopped before returning a tool result.
+#[derive(Debug, Clone)]
+pub enum DispatchFailure {
+    /// The command failed with a typed error.
+    Failed(ErrorBody),
+    /// The caller cancelled the command before it produced a result.
+    Canceled,
+}
+
+impl std::fmt::Display for DispatchFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(error) => write!(formatter, "{error}"),
+            Self::Canceled => formatter.write_str("request canceled"),
+        }
+    }
+}
+
+impl std::error::Error for DispatchFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Failed(error) => Some(error),
+            Self::Canceled => None,
+        }
+    }
+}
 
 /// What an agent asks the router to do.
 #[derive(Debug, Clone)]
@@ -117,7 +195,7 @@ struct PendingCommand {
 }
 
 enum IdempotencyEntry {
-    Running(Vec<oneshot::Sender<CommandResult>>),
+    Running(Vec<oneshot::Sender<Result<Value, DispatchFailure>>>),
     Done(CommandResult),
 }
 
@@ -159,6 +237,68 @@ struct Inner {
     pending: Mutex<HashMap<String, PendingCommand>>,
     gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     idempotency: Mutex<IdempotencyState>,
+}
+
+/// Removes one pending command when the caller, the deadline or a dropped
+/// future ends the wait. Disarming it leaves the entry to the normal response
+/// path.
+struct PendingGuard<'a> {
+    inner: &'a Inner,
+    connection: Arc<BrowserConnection>,
+    command_id: String,
+    armed: bool,
+}
+
+impl<'a> PendingGuard<'a> {
+    fn new(inner: &'a Inner, connection: Arc<BrowserConnection>, command_id: String) -> Self {
+        Self {
+            inner,
+            connection,
+            command_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn cleanup(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        lock(&self.inner.pending).remove(&self.command_id);
+        send_cancel_event(&self.connection, &self.command_id);
+    }
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+/// Holds one gate for as long as the call runs and drops the map entry once the
+/// last caller releases it. The guard is released before the entry is removed
+/// so a queued caller that already cloned the mutex keeps a valid handle.
+struct ScopedGate<'a> {
+    inner: &'a Inner,
+    key: String,
+    guard: Option<OwnedMutexGuard<()>>,
+}
+
+impl Drop for ScopedGate<'_> {
+    fn drop(&mut self) {
+        self.guard.take();
+        let mut gates = lock(&self.inner.gates);
+        let removable = gates
+            .get(&self.key)
+            .is_some_and(|entry| Arc::strong_count(entry) == 1);
+        if removable {
+            gates.remove(&self.key);
+        }
+    }
 }
 
 /// Routes commands to browsers and answers the caller with a typed result.
@@ -224,16 +364,45 @@ impl Router {
     }
 
     /// Route one command and wait for the browser answer.
-    pub async fn dispatch(&self, mut request: CommandRequest) -> CommandResult {
+    ///
+    /// This wrapper never cancels; it keeps the original callers working while
+    /// [Router::dispatch_with_cancel] exposes the cancellation facility.
+    pub async fn dispatch(&self, request: CommandRequest) -> CommandResult {
+        match self
+            .dispatch_with_cancel(request, CommandCancel::default())
+            .await
+        {
+            Ok(value) => Ok(value),
+            Err(DispatchFailure::Failed(error)) => Err(error),
+            Err(DispatchFailure::Canceled) => Err(ErrorBody::new(
+                ErrorCode::Internal,
+                "the command was canceled without a cancellation request",
+            )),
+        }
+    }
+
+    /// Route one command and stop waiting when the token is cancelled.
+    ///
+    /// Cancellation removes the pending entry immediately, sends the browser a
+    /// cancel event and returns [DispatchFailure::Canceled]. A response that
+    /// arrives later is dropped. Cancelling after completion is a no-op.
+    pub async fn dispatch_with_cancel(
+        &self,
+        mut request: CommandRequest,
+        cancel: CommandCancel,
+    ) -> Result<Value, DispatchFailure> {
         let started = Instant::now();
         let session = request.session.clone();
         let tool = request.tool.clone();
         let recorded_args = request.args.clone();
-        let (result, browser_id) = self.dispatch_inner(&mut request).await;
+        let (result, browser_id) = self.dispatch_inner(&mut request, &cancel).await;
         if let (Some(session), Some(sink)) = (session.as_ref(), self.step_sink.get()) {
-            let (stored_result, error_code) = match &result {
-                Ok(value) => (Some(value.clone()), None),
-                Err(error) => (None, Some(error.code.as_str().to_string())),
+            let (stored_result, error_code, ok) = match &result {
+                Ok(value) => (Some(value.clone()), None, true),
+                Err(DispatchFailure::Failed(error)) => {
+                    (None, Some(error.code.as_str().to_string()), false)
+                }
+                Err(DispatchFailure::Canceled) => (None, Some("CANCELLED".to_string()), false),
             };
             sink.record(StepRecord {
                 session_id: session.session_id.clone(),
@@ -245,7 +414,7 @@ impl Router {
                 duration_ms: started.elapsed().as_millis() as i64,
                 browser_id,
                 tab_id: tab_id_of(&request.args),
-                ok: result.is_ok(),
+                ok,
             });
         }
         result
@@ -254,21 +423,22 @@ impl Router {
     async fn dispatch_inner(
         &self,
         request: &mut CommandRequest,
-    ) -> (CommandResult, Option<String>) {
+        cancel: &CommandCancel,
+    ) -> (Result<Value, DispatchFailure>, Option<String>) {
         let spec = match spec::lookup(&request.tool) {
             Some(spec) => spec,
             None => {
                 let error =
                     ErrorBody::new(ErrorCode::BadArgs, format!("unknown tool {}", request.tool))
                         .with_details(json!({ "tool": request.tool, "known": spec::names() }));
-                return (Err(error), None);
+                return (Err(DispatchFailure::Failed(error)), None);
             }
         };
         let argument_browser = take_browser_id(&mut request.args);
         let browser = request.browser.take().or(argument_browser);
         let connection = match self.resolve_browser(browser.as_deref()) {
             Ok(connection) => connection,
-            Err(error) => return (Err(error), None),
+            Err(error) => return (Err(DispatchFailure::Failed(error)), None),
         };
         let browser_id = connection.id().to_string();
         if let Some(required) = spec.capability {
@@ -286,14 +456,14 @@ impl Router {
                     "required": required,
                     "available": connection.capabilities(),
                 }));
-                return (Err(error), Some(browser_id));
+                return (Err(DispatchFailure::Failed(error)), Some(browser_id));
             }
         }
         let result = match request.idempotency_key.clone() {
-            None => self.execute(connection, spec, request).await,
+            None => self.execute(connection, spec, request, cancel).await,
             Some(key) => {
                 let cache_key = format!("{}:{}:{}", connection.id(), request.tool, key);
-                self.execute_once(cache_key, connection, spec, request.clone())
+                self.execute_once(cache_key, connection, spec, request.clone(), cancel)
                     .await
             }
         };
@@ -349,16 +519,22 @@ impl Router {
         connection: Arc<BrowserConnection>,
         spec: &'static ToolSpec,
         request: CommandRequest,
-    ) -> CommandResult {
+        cancel: &CommandCancel,
+    ) -> Result<Value, DispatchFailure> {
         enum Role {
             Owner,
-            Waiter(oneshot::Receiver<CommandResult>),
+            Waiter(oneshot::Receiver<Result<Value, DispatchFailure>>),
         }
 
         let role = {
             let mut state = lock(&self.inner.idempotency);
             match state.entries.get_mut(&key) {
-                Some(IdempotencyEntry::Done(result)) => return result.clone(),
+                Some(IdempotencyEntry::Done(result)) => {
+                    return match result.clone() {
+                        Ok(value) => Ok(value),
+                        Err(error) => Err(DispatchFailure::Failed(error)),
+                    }
+                }
                 Some(IdempotencyEntry::Running(waiters)) => {
                     let (sender, receiver) = oneshot::channel();
                     waiters.push(sender);
@@ -372,30 +548,38 @@ impl Router {
         };
 
         match role {
-            Role::Waiter(receiver) => match receiver.await {
-                Ok(result) => result,
-                Err(_) => Err(ErrorBody::new(
-                    ErrorCode::Internal,
-                    "the command that owned this idempotency key disappeared",
-                )),
-            },
+            Role::Waiter(receiver) => {
+                tokio::select! {
+                    biased;
+                    received = receiver => match received {
+                        Ok(outcome) => outcome,
+                        Err(_) => Err(DispatchFailure::Failed(ErrorBody::new(
+                            ErrorCode::Internal,
+                            "the command that owned this idempotency key disappeared",
+                        ))),
+                    },
+                    _ = cancel.cancelled() => Err(DispatchFailure::Canceled),
+                }
+            }
             Role::Owner => {
-                let result = self.execute(Arc::clone(&connection), spec, &request).await;
+                let outcome = self
+                    .execute(Arc::clone(&connection), spec, &request, cancel)
+                    .await;
                 let waiters = {
                     let mut state = lock(&self.inner.idempotency);
                     let waiters = match state.entries.remove(&key) {
                         Some(IdempotencyEntry::Running(waiters)) => waiters,
                         _ => Vec::new(),
                     };
-                    if cacheable(&result) {
-                        state.insert_done(key, result.clone(), self.config.idempotency_capacity);
+                    if let Some(cached) = cacheable_outcome(&outcome) {
+                        state.insert_done(key, cached, self.config.idempotency_capacity);
                     }
                     waiters
                 };
                 for waiter in waiters {
-                    let _ = waiter.send(result.clone());
+                    let _ = waiter.send(outcome.clone());
                 }
-                result
+                outcome
             }
         }
     }
@@ -405,17 +589,22 @@ impl Router {
         connection: Arc<BrowserConnection>,
         spec: &'static ToolSpec,
         request: &CommandRequest,
-    ) -> CommandResult {
+        cancel: &CommandCancel,
+    ) -> Result<Value, DispatchFailure> {
         let _gate = if spec.serial {
-            Some(self.gate(connection.id()).lock_owned().await)
+            Some(tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(DispatchFailure::Canceled),
+                gate = self.lock_gate(connection.id(), &request.tool, &request.args) => gate,
+            })
         } else {
             None
         };
         if !connection.is_alive() {
-            return Err(ErrorBody::new(
+            return Err(DispatchFailure::Failed(ErrorBody::new(
                 ErrorCode::TransportDown,
                 format!("browser {} disconnected", connection.id()),
-            ));
+            )));
         }
 
         let timeout_ms = self.timeout_for(request.timeout_ms, spec, &request.args);
@@ -444,36 +633,50 @@ impl Router {
                 sender,
             },
         );
+        let mut pending =
+            PendingGuard::new(&self.inner, Arc::clone(&connection), command_id.clone());
         if let Err(error) = connection.send(envelope) {
-            lock(&self.inner.pending).remove(&command_id);
-            return Err(error.error_body());
+            pending.cleanup();
+            return Err(DispatchFailure::Failed(error.error_body()));
         }
         tracing::debug!(command = %command_id, tool = %request.tool, browser = %connection.id(), "command dispatched");
 
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), receiver).await {
-            Ok(Ok(response)) => match response.error {
-                Some(error) => Err(error),
-                None => Ok(response.args),
-            },
+        let response = tokio::select! {
+            biased;
+            response = tokio::time::timeout(Duration::from_millis(timeout_ms), receiver) => response,
+            _ = cancel.cancelled() => {
+                pending.cleanup();
+                return Err(DispatchFailure::Canceled);
+            }
+        };
+        match response {
+            Ok(Ok(response)) => {
+                pending.disarm();
+                match response.error {
+                    Some(error) => Err(DispatchFailure::Failed(error)),
+                    None => Ok(response.args),
+                }
+            }
             Ok(Err(_)) => {
-                lock(&self.inner.pending).remove(&command_id);
-                Err(ErrorBody::new(
+                pending.cleanup();
+                Err(DispatchFailure::Failed(ErrorBody::new(
                     ErrorCode::Internal,
                     "the pending response channel closed unexpectedly",
-                ))
+                )))
             }
             Err(_) => {
-                lock(&self.inner.pending).remove(&command_id);
-                self.send_cancel(&connection, &command_id);
-                Err(ErrorBody::new(
-                    ErrorCode::Timeout,
-                    format!(
-                        "no response from browser {} within {} ms",
-                        connection.id(),
-                        timeout_ms
-                    ),
-                )
-                .with_details(json!({ "command_id": command_id, "tool": request.tool })))
+                pending.cleanup();
+                Err(DispatchFailure::Failed(
+                    ErrorBody::new(
+                        ErrorCode::Timeout,
+                        format!(
+                            "no response from browser {} within {} ms",
+                            connection.id(),
+                            timeout_ms
+                        ),
+                    )
+                    .with_details(json!({ "command_id": command_id, "tool": request.tool })),
+                ))
             }
         }
     }
@@ -484,13 +687,28 @@ impl Router {
             .clamp(1, self.config.max_timeout_ms)
     }
 
-    fn gate(&self, browser: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let mut gates = lock(&self.inner.gates);
-        Arc::clone(
-            gates
-                .entry(browser.to_string())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-        )
+    async fn lock_gate(&self, browser: &str, tool: &str, args: &Value) -> ScopedGate<'_> {
+        let key = gate_key(browser, tool, args);
+        let handle = {
+            let mut gates = lock(&self.inner.gates);
+            Arc::clone(
+                gates
+                    .entry(key.clone())
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+            )
+        };
+        {
+            let mut gates = lock(&self.inner.gates);
+            if gates.len() > GATE_CAPACITY {
+                gates.retain(|_, entry| Arc::strong_count(entry) > 1);
+            }
+        }
+        let guard = handle.lock_owned().await;
+        ScopedGate {
+            inner: &self.inner,
+            key,
+            guard: Some(guard),
+        }
     }
 
     fn handle_inbound(&self, browser: &str, envelope: Envelope) {
@@ -516,7 +734,8 @@ impl Router {
     }
 
     fn fail_browser(&self, browser: &str) {
-        lock(&self.inner.gates).remove(browser);
+        let prefix = format!("{browser}{}", SCOPE_SEPARATOR);
+        lock(&self.inner.gates).retain(|key, _| !key.starts_with(&prefix) && key != browser);
         let failed: Vec<(String, PendingCommand)> = {
             let mut pending = lock(&self.inner.pending);
             let ids: Vec<String> = pending
@@ -536,24 +755,82 @@ impl Router {
             let _ = command.sender.send(Envelope::response_err(id, error));
         }
     }
+}
 
-    fn send_cancel(&self, connection: &BrowserConnection, command_id: &str) {
-        let cancel = Envelope::event(
-            ids::command_id(),
-            "cancel",
-            json!({ "command_id": command_id }),
-        )
-        .with_browser(connection.id().to_string());
-        if let Err(error) = connection.send(cancel) {
-            tracing::debug!(error = %error, "could not deliver the cancel event");
-        }
+/// Separates the browser from the tab scope inside a gate key.
+const SCOPE_SEPARATOR: char = '\u{1f}';
+
+/// Upper bound on the gate map. An idle entry created by a waiter that is
+/// cancelled before it acquires the gate is removed by this sweep.
+const GATE_CAPACITY: usize = 4096;
+
+fn gate_key(browser: &str, tool: &str, args: &Value) -> String {
+    format!("{browser}{SCOPE_SEPARATOR}{}", gate_scope(tool, args))
+}
+
+/// Gate scope inside one browser.
+///
+/// Tools that act on a tab serialize per tab and fall back to the active tab
+/// when the caller does not name one. Browser-wide controls serialize on the
+/// browser itself. Non-serial tools never reach this function.
+fn gate_scope(tool: &str, args: &Value) -> String {
+    if matches!(tool, "net_clear" | "net_intercept") {
+        return tab_token(args).unwrap_or_else(|| "__browser__".to_string());
+    }
+    if tab_scoped(tool) {
+        return tab_token(args).unwrap_or_else(|| "__active__".to_string());
+    }
+    "__browser__".to_string()
+}
+
+/// Tools whose tab_id argument selects the tab they act on.
+fn tab_scoped(tool: &str) -> bool {
+    matches!(
+        tool,
+        "browser_navigate"
+            | "page_snapshot"
+            | "browser_click"
+            | "browser_type"
+            | "page_text"
+            | "page_html"
+            | "page_find"
+            | "browser_hover"
+            | "browser_press"
+            | "browser_scroll"
+            | "browser_select"
+            | "browser_eval"
+            | "browser_wait"
+            | "browser_history"
+            | "net_capture"
+            | "net_log"
+            | "upload_file"
+    )
+}
+
+/// Exact string form of a non-empty tab_id, whether it arrived as a string or
+/// a number.
+fn tab_token(args: &Value) -> Option<String> {
+    match args.get("tab_id")? {
+        Value::String(tab) if !tab.is_empty() => Some(tab.clone()),
+        Value::Number(tab) => Some(tab.to_string()),
+        _ => None,
+    }
+}
+
+fn send_cancel_event(connection: &BrowserConnection, command_id: &str) {
+    let cancel = Envelope::event(
+        ids::command_id(),
+        "cancel",
+        json!({ "event": "cancel", "command_id": command_id }),
+    )
+    .with_browser(connection.id().to_string());
+    if let Err(error) = connection.send(cancel) {
+        tracing::debug!(error = %error, "could not deliver the cancel event");
     }
 }
 
 fn tab_id_of(args: &Value) -> Option<String> {
-    args.get("tab_id")
-        .and_then(Value::as_str)
-        .map(str::to_string)
+    tab_token(args)
 }
 
 fn take_browser_id(args: &mut Value) -> Option<String> {
@@ -565,6 +842,17 @@ fn cacheable(result: &CommandResult) -> bool {
     match result {
         Ok(_) => true,
         Err(error) => !matches!(error.code, ErrorCode::Timeout | ErrorCode::TransportDown),
+    }
+}
+
+fn cacheable_outcome(outcome: &Result<Value, DispatchFailure>) -> Option<CommandResult> {
+    match outcome {
+        Ok(value) => Some(Ok(value.clone())),
+        Err(DispatchFailure::Failed(error)) => {
+            let result = Err(error.clone());
+            cacheable(&result).then_some(result)
+        }
+        Err(DispatchFailure::Canceled) => None,
     }
 }
 

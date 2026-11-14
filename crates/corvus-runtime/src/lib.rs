@@ -9,5 +9,7 @@ pub mod router;
 pub mod spec;
 
 pub use corvus_record::SessionContext;
-pub use router::{CommandRequest, CommandResult, Router, RouterConfig};
+pub use router::{
+    CommandCancel, CommandRequest, CommandResult, DispatchFailure, Router, RouterConfig,
+};
 pub use spec::{lookup as lookup_tool, ToolSpec, TOOLS};

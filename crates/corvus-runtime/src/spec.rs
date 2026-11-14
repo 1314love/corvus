@@ -117,7 +117,7 @@ pub const TOOLS: [ToolSpec; 32] = [
     },
     ToolSpec {
         name: "browser_wait",
-        serial: false,
+        serial: true,
         capability: Some(capability::DOM),
         default_timeout_ms: None,
     },
@@ -324,7 +324,7 @@ mod tests {
             ("browser_scroll", true),
             ("browser_select", true),
             ("browser_eval", true),
-            ("browser_wait", false),
+            ("browser_wait", true),
             ("browser_history", true),
             ("tab_list", false),
             ("tab_new", true),

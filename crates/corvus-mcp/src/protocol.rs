@@ -1,11 +1,15 @@
 //! JSON-RPC 2.0 handling for the Model Context Protocol.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde_json::{json, Value};
+use tokio::sync::Notify;
 
 use corvus_proto::{ErrorBody, ErrorCode};
-use corvus_record::{SessionContext, Store};
+use corvus_record::{now_millis, SessionContext, StepRecord, Store};
 
 use crate::backend::{ToolBackend, ToolCall};
 use crate::metrics::Metrics;
@@ -20,6 +24,60 @@ pub const SUPPORTED_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
+/// JSON-RPC code returned when a client cancels its own request.
+const REQUEST_CANCELLED: i64 = -32800;
+/// Separates the MCP session from the request id inside a cancellation key.
+const CANCEL_SEPARATOR: char = '\u{1f}';
+
+#[derive(Default)]
+struct RequestCancelState {
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+/// Cheap handle a caller can wait on and another task can trip.
+#[derive(Clone, Default)]
+struct RequestCancel {
+    state: Arc<RequestCancelState>,
+}
+
+impl RequestCancel {
+    fn cancel(&self) {
+        if !self.state.cancelled.swap(true, Ordering::SeqCst) {
+            self.state.notify.notify_waiters();
+        }
+    }
+
+    async fn cancelled(&self) {
+        if self.state.cancelled.load(Ordering::SeqCst) {
+            return;
+        }
+        let notified = self.state.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.state.cancelled.load(Ordering::SeqCst) {
+            return;
+        }
+        notified.await;
+    }
+}
+
+/// Removes the registry entry when the call finishes for any reason.
+struct CancelRegistration<'a> {
+    server: &'a McpServer,
+    key: String,
+}
+
+impl Drop for CancelRegistration<'_> {
+    fn drop(&mut self) {
+        lock_cancels(&self.server.cancels).remove(&self.key);
+    }
+}
+
+enum CallOutcome {
+    Answer(Value),
+    Cancelled,
+}
 
 /// Builder for the banner a caller sees at the HTTP root.
 pub struct McpServer {
@@ -30,6 +88,7 @@ pub struct McpServer {
     health: Arc<dyn Fn() -> Value + Send + Sync>,
     store: Option<Arc<Store>>,
     metrics: Arc<Metrics>,
+    cancels: Mutex<HashMap<String, RequestCancel>>,
 }
 
 impl McpServer {
@@ -43,6 +102,7 @@ impl McpServer {
             health: Arc::new(|| json!({ "status": "ok" })),
             store: None,
             metrics: Arc::new(Metrics::new()),
+            cancels: Mutex::new(HashMap::new()),
         }
     }
 
@@ -148,6 +208,41 @@ impl McpServer {
                 }
             }
             Err(error) => tracing::warn!(error = %error, "could not list sessions to close"),
+        }
+    }
+
+    /// Cancel every in-flight request of one MCP session and forget its ids.
+    pub fn cancel_session(&self, session_id: &str) {
+        let prefix = format!("{session_id}{CANCEL_SEPARATOR}");
+        let tokens: Vec<RequestCancel> = {
+            let mut cancels = lock_cancels(&self.cancels);
+            let keys: Vec<String> = cancels
+                .keys()
+                .filter(|key| key.starts_with(&prefix))
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| cancels.remove(&key))
+                .collect()
+        };
+        for token in tokens {
+            token.cancel();
+        }
+    }
+
+    fn register_cancel(&self, key: String) -> RequestCancel {
+        let token = RequestCancel::default();
+        lock_cancels(&self.cancels).insert(key, token.clone());
+        token
+    }
+
+    fn cancel_request(&self, session: Option<&SessionContext>, request_id: &Value) {
+        if request_id.is_null() {
+            return;
+        }
+        let key = cancel_key(session, request_id);
+        if let Some(token) = lock_cancels(&self.cancels).remove(&key) {
+            token.cancel();
         }
     }
 
@@ -269,12 +364,21 @@ impl McpServer {
         }
         match method.as_str() {
             "initialize" => Some(success(id, self.initialize(&params))),
-            "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => {
+            "notifications/initialized" | "notifications/progress" => None,
+            "notifications/cancelled" => {
+                if let Some(request_id) = params.get("requestId") {
+                    self.cancel_request(session, request_id);
+                }
                 None
             }
             "ping" => Some(success(id, json!({}))),
             "tools/list" => Some(success(id, json!({ "tools": tools::definitions() }))),
-            "tools/call" => Some(success(id, self.call_tool(&params, session).await)),
+            "tools/call" => match self.call_tool(&params, session, &id).await {
+                CallOutcome::Answer(answer) => Some(success(id, answer)),
+                CallOutcome::Cancelled => {
+                    Some(error_response(id, REQUEST_CANCELLED, "request cancelled"))
+                }
+            },
             other => {
                 if notification {
                     None
@@ -329,14 +433,19 @@ impl McpServer {
         }
     }
 
-    async fn call_tool(&self, params: &Value, session: Option<&SessionContext>) -> Value {
+    async fn call_tool(
+        &self,
+        params: &Value,
+        session: Option<&SessionContext>,
+        id: &Value,
+    ) -> CallOutcome {
         let name = match params.get("name").and_then(Value::as_str) {
             Some(name) if !name.trim().is_empty() => name.to_string(),
             _ => {
-                return tool_error(&ErrorBody::new(
+                return CallOutcome::Answer(tool_error(&ErrorBody::new(
                     ErrorCode::BadArgs,
                     "tools/call requires a non-empty tool name",
-                ))
+                )))
             }
         };
         let mut measurement = self.metrics.begin(&name);
@@ -348,24 +457,103 @@ impl McpServer {
             Ok(arguments) => arguments,
             Err(error) => {
                 measurement.finish(Some(&error));
-                return tool_error(&error);
+                return CallOutcome::Answer(tool_error(&error));
             }
         };
         let call = ToolCall {
-            name,
-            arguments,
+            name: name.clone(),
+            arguments: arguments.clone(),
             session: session.cloned(),
         };
-        match self.backend.call(call).await {
-            Ok(result) => {
-                measurement.finish(None);
-                tool_success(&result)
+
+        let key = cancel_key(session, id);
+        let cancel = if id.is_null() {
+            None
+        } else {
+            Some(self.register_cancel(key.clone()))
+        };
+        let registration = cancel
+            .as_ref()
+            .map(|_| CancelRegistration { server: self, key });
+        let started = Instant::now();
+        let backend = self.backend.call(call);
+        let outcome = if let Some(cancel) = &cancel {
+            tokio::select! {
+                biased;
+                result = backend => Some(result),
+                _ = cancel.cancelled() => None,
             }
-            Err(error) => {
+        } else {
+            Some(backend.await)
+        };
+        drop(registration);
+        match outcome {
+            Some(Ok(result)) => {
+                measurement.finish(None);
+                CallOutcome::Answer(tool_success(&result))
+            }
+            Some(Err(error)) => {
                 measurement.finish(Some(&error));
-                tool_error(&error)
+                CallOutcome::Answer(tool_error(&error))
+            }
+            None => {
+                let elapsed = started.elapsed().as_millis() as i64;
+                self.record_cancelled(session, &name, &arguments, elapsed);
+                measurement.finish(None);
+                CallOutcome::Cancelled
             }
         }
+    }
+
+    fn record_cancelled(
+        &self,
+        session: Option<&SessionContext>,
+        tool: &str,
+        arguments: &Value,
+        duration_ms: i64,
+    ) {
+        let (Some(session), Some(store)) = (session, self.store.as_ref()) else {
+            return;
+        };
+        let step = StepRecord {
+            session_id: session.session_id.clone(),
+            ts: now_millis(),
+            tool: tool.to_string(),
+            args: arguments.clone(),
+            result: None,
+            error_code: Some("CANCELLED".to_string()),
+            duration_ms,
+            browser_id: argument_string(arguments, "browser_id"),
+            tab_id: argument_string(arguments, "tab_id"),
+            ok: false,
+        };
+        if let Err(error) = store.record_step(step) {
+            tracing::warn!(error = %error, "could not record a cancelled tool call");
+        }
+    }
+}
+
+fn lock_cancels(
+    cancels: &Mutex<HashMap<String, RequestCancel>>,
+) -> std::sync::MutexGuard<'_, HashMap<String, RequestCancel>> {
+    cancels
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn cancel_key(session: Option<&SessionContext>, id: &Value) -> String {
+    format!(
+        "{}{CANCEL_SEPARATOR}{}",
+        session.map_or("", |session| session.session_id.as_str()),
+        serde_json::to_string(id).unwrap_or_default()
+    )
+}
+
+fn argument_string(arguments: &Value, field: &str) -> Option<String> {
+    match arguments.get(field)? {
+        Value::String(value) if !value.is_empty() => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
     }
 }
 

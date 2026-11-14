@@ -178,6 +178,16 @@ M3 wave 1 adds six tools for a total of 32. The following requirements now have 
 
 Still open: site memory (FR-O4), the remaining FR-O1, FR-O2, FR-O3 and FR-O5 scope above, and the storage and identity family (FR-S1–FR-S4). Request and network-idle waits (FR-N4, FR-P5) also remain open.
 
+### 4.4 M4 wave 1 traceability
+
+M4 wave 1 adds no tools. It adds the scope gate and MCP cancellation to the existing 32-tool surface.
+
+- **FR-T3** — Calls with different explicit `tab_id` values run in parallel lanes, while calls on the same browser tab are ordered, so ten tab-scoped actions can run concurrently without cross-talk. Concurrency is expressed as independent calls; no separate batch primitive is added in this wave.
+- **FR-A1–FR-A8** — Any in-flight action `tools/call` can be cancelled with `notifications/cancelled`: the request ends with JSON-RPC error `-32800`, and `session_steps` records `ok: false` with `error_code` `"CANCELLED"`. Abort is cooperative for waits, downloads, evaluation and navigation; other actions may finish late, and effects already applied are not rolled back.
+- **FR-O1** — The recording timeline now records cancelled attempts with `error_code` `"CANCELLED"`. Snapshot, screenshot and network-event rows remain open.
+
+Still open: no batch scheduling API for FR-T3; cancellation is cooperative and does not roll back applied effects; FR-O1 still lacks snapshot, screenshot and network timeline rows. The remaining M2 and M3 gaps in sections 4.1-4.3 are unchanged.
+
 ## 5. Non-functional requirements
 
 | ID | Category | Requirement |

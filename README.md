@@ -63,6 +63,8 @@ Network capture is opt-in per tab and keeps a 2000-entry ring. Interception supp
 
 Every MCP session records each tools/call to SQLite, with arguments, result, error code and timing. session_list and session_steps read the timeline, session_replay plans or re-executes a range, and session_export writes JSONL. metrics and logs_tail expose counters and recent logs, and GET /metrics serves Prometheus text next to /health.
 
+Independent tabs run concurrently: calls are ordered per browser tab and run in parallel across tabs, and any in-flight MCP request can be cancelled with notifications/cancelled.
+
 ### Development
 
 `scripts/dev-setup.sh` checks the Rust toolchain and offline dependencies; `scripts/build.sh` builds release
@@ -139,6 +141,8 @@ M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的
 网络捕获按标签显式开启，每个标签保留 2000 条环形缓冲。拦截支持 block、mock 与 continue 规则；下载可列出并等待完成，上传通过 CDP 设置文件 input，隐藏 input 也可用。
 
 每个 MCP 会话都会把每次 tools/call 连同参数、结果、错误码与耗时记录到 SQLite。session_list 与 session_steps 读取该时间线，session_replay 生成计划或重新执行一段步骤，session_export 导出 JSONL。metrics 与 logs_tail 提供计数器与近期日志，GET /metrics 在 /health 旁输出 Prometheus 文本。
+
+独立标签并发执行：调用在同一浏览器标签内有序、在不同标签间并行，任何进行中的 MCP 请求都可以通过 notifications/cancelled 取消。
 
 ### 开发
 

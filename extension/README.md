@@ -74,6 +74,22 @@ Resilience rules:
   on every reconnect. A network capture therefore ends when its debugger session
   ends; the entries stay available to net_log until net_clear or the tab closes.
 
+Cancellation:
+
+- The daemon can cancel an in-flight command by sending an event envelope with
+  args.event "cancel" and args.command_id. The service worker keeps a bounded
+  map (at most 200 entries) from command id to AbortController, races every
+  handler against that signal, and always removes the entry in a finally block.
+- A cancelled command answers promptly with the typed CANCELLED error. The
+  daemon has already dropped the command, so the response is advisory.
+- browser_wait and download_wait check the signal before each poll and after
+  each sleep, so they stop within about 100 ms. browser_eval calls
+  Runtime.terminateExecution for the tab. browser_navigate calls Page.stopLoading
+  and rejects with CANCELLED rather than returning a partial success result.
+- Unknown command ids and other unknown daemon events are ignored. Cancellation
+  does not change any success shape, schema, timeout default or error code for a
+  command that is not cancelled.
+
 ## Envelope
 
 All frames use protocol version 1 and the envelope fields from the architecture
@@ -180,7 +196,7 @@ Common rules:
   A ref comes from the latest page_snapshot or page_find in that tab and is
   stable while the document lives.
 - Every command resolves. A tool-level failure is a response envelope whose
-  args is null and whose top-level error carries one of the nine codes below.
+  args is null and whose top-level error carries one of the codes below.
 - Page commands run in the top frame only.
 - meta.timeout_ms defaults to 60000 and is capped at 125000. download_wait uses
   the larger of that value and its own timeout_ms plus 5 s, so a long download
@@ -557,6 +573,7 @@ registry to resolve browser_id for the other tools.
 | CAPABILITY_UNAVAILABLE | The managed debugger could not attach (for example another debugger or DevTools is attached), the page is a restricted scheme, or the browser lacks a permission for this operation. details carries tab_id, cause and reason when known. | no, until the blocking condition is removed |
 | BROWSER_GONE | The tab or browser was closed during the command. | no |
 | TRANSPORT_DOWN | The daemon socket is not connected, or the requested browser_id is not this browser. | yes, after the connection is re-established |
+| CANCELLED | The daemon sent a cancel event for this command id and the extension stopped the command. The daemon has already dropped it, so no retry is needed. | no |
 | INTERNAL | An unexpected browser or extension API failure; includes a trace id when the command carried one. | no |
 
 ## Loading unpacked

@@ -147,10 +147,39 @@ fn every_error_code_round_trips() {
         assert_eq!(decoded, code);
         assert_eq!(ErrorCode::parse(code.as_str()), Some(code));
     }
-    assert_eq!(ErrorCode::ALL.len(), 9);
+    assert_eq!(ErrorCode::ALL.len(), 10);
     assert!(!ErrorCode::BadArgs.retryable());
     assert!(ErrorCode::Timeout.retryable());
     assert!(ErrorCode::TransportDown.retryable());
+    assert!(!ErrorCode::Cancelled.retryable());
+}
+
+#[test]
+fn cancelled_error_code_parses_and_round_trips() {
+    let raw = json!({
+        "v": 1,
+        "id": "cmd-cancelled",
+        "kind": "response",
+        "error": {
+            "code": "CANCELLED",
+            "message": "command cancelled before the browser answered",
+            "retryable": false
+        }
+    });
+    let envelope: Envelope = serde_json::from_value(raw).expect("CANCELLED must parse");
+    let error = envelope.error.expect("the error body");
+    assert_eq!(error.code, ErrorCode::Cancelled);
+    assert_eq!(error.code.as_str(), "CANCELLED");
+    assert!(!error.code.retryable());
+    assert!(!error.retryable);
+
+    let encoded = serde_json::to_value(&error).expect("serialize the error body");
+    assert_eq!(
+        encoded.get("code"),
+        Some(&Value::String("CANCELLED".to_string()))
+    );
+    let decoded: ErrorBody = serde_json::from_value(encoded).expect("deserialize the error body");
+    assert_eq!(decoded, error);
 }
 
 #[test]

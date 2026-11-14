@@ -139,6 +139,7 @@ async fn mcp_delete(State(state): State<Arc<HttpState>>, headers: HeaderMap) -> 
         )
             .into_response();
     };
+    state.server.cancel_session(&session_id);
     state.server.finish_session(&session_id, "closed");
     (
         StatusCode::OK,

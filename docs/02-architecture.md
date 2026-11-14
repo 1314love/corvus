@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-Status: M1 implemented; M2 in progress. Audience: engineers.
+Status: M1-M4 wave 1 implemented; M4 wave 2 and M5 in progress. Audience: engineers.
 
 ## 1. Constraints that shape the design
 
@@ -200,6 +200,16 @@ M3 wave 1 adds six tools for a total of 32. Recording is always on; the four ses
 
 `GET /metrics` on the MCP HTTP port, next to `/health`, serves Prometheus text: `corvus_uptime_seconds`, `corvus_browsers_connected`, `corvus_tool_calls_total{tool="..."}`, `corvus_tool_errors_total{code="..."}`, `corvus_sessions_total` and `corvus_steps_total`. `/health` keeps its current shape.
 
+### 5.5 Concurrency and cancellation
+
+M4 wave 1 adds no tools. It changes how the router schedules calls and how an in-flight `tools/call` can be cancelled; all 32 tools keep their arguments and result shapes.
+
+**Scope gate.** Every browser command is assigned to one lane before dispatch. The lane key is `(browser_id, tab_id)`. Calls in one lane run one at a time and are ordered; calls in different lanes run concurrently and have no ordering relationship. An explicit `tab_id` therefore runs in parallel with other tabs and is ordered with other calls on the same tab. An omitted `tab_id` resolves to the active tab at dispatch time and joins the lane for that tab, so it is ordered with explicit calls for the same tab instead of starting a second lane. `tab_new`, `tab_close`, `tab_switch`, `download_wait`, and `net_intercept` without a `tab_id` use the per-browser lane, which is keyed by `browser_id` alone; they are ordered with each other and do not serialize independent tab work. Calls that do not execute browser commands (`browser_list`, `metrics`, `logs_tail`, and the read-only session tools) do not enter a lane. `page_text`, `page_html`, `page_find`, `net_log` and `download_list` are ungated read-only calls: they read existing state, are never queued behind a write on the same tab, and do not block writers.
+
+**MCP cancellation.** A client cancels an in-flight request with `notifications/cancelled` and `params.requestId` set to the JSON-RPC id of the `tools/call`. The daemon answers that request with JSON-RPC error `-32800` and records the attempt in `session_steps` with `ok: false` and `error_code` `"CANCELLED"`. To stop browser work it sends the extension an event frame with `event: "cancel"`; the extension aborts cooperatively. Cancellation applies only to the named request. The error message is `"request cancelled"`, and retryable is false.
+
+**What is not cancelled.** The daemon stops waiting immediately and returns `-32800` without waiting for the browser. Browser work is aborted cooperatively for `browser_wait`, `download_wait`, `browser_eval` and `browser_navigate`, and may finish late for other tools. Effects already applied to a page, a download or a tab are not rolled back.
+
 ## 6. Extension design
 
 Three contexts, no pages:
@@ -218,7 +228,7 @@ Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate r
 
 - DEGRADED means: attached but a capability is unavailable (e.g. the browser refused the debugger attach). Tools that need the missing capability return CAPABILITY_UNAVAILABLE instead of hanging.
 - Every command has a deadline; on expiry the daemon cancels at the extension and returns TIMEOUT with a replayable id.
-- The router keeps a per-browser serial queue for actions that must not interleave (click/type) and a parallel pool for read-only perception.
+- The router serializes commands per `(browser_id, tab_id)` lane and leaves read-only perception ungated, as described in section 5.5.
 - Daemon restart does not lose sessions: session state is in SQLite, and the extension resumes by replaying unacknowledged commands.
 
 ## 8. Error taxonomy
@@ -234,6 +244,7 @@ Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate r
 | BROWSER_GONE | tab/browser closed | no |
 | TRANSPORT_DOWN | extension disconnected | yes, after reconnect |
 | INTERNAL | bug; carries trace id | no |
+| CANCELLED | the command was cancelled before the browser answered | no |
 
 ## 9. Storage
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Corvus M3 MCP conformance checks.
+# Corvus M4 MCP conformance checks.
 #
 # Starts corvusd with an isolated temporary SQLite database, waits for the MCP
 # HTTP endpoint on 127.0.0.1:7331, drives initialize / notifications/initialized
@@ -77,6 +77,8 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/corvus-conformance.XXXXXX") || {
 }
 CORVUS_DB=${CORVUS_DB:-$TMP/corvus-m3.db}
 export CORVUS_DB_PATH="$CORVUS_DB"
+M4_TIMING="$TMP/mock-timing.jsonl"
+M4_TIMING_WIN=$(cygpath -m "$M4_TIMING" 2>/dev/null || printf '%s' "$M4_TIMING")
 DAEMON_PID=""
 MOCK_PID=""
 MOCK_B_PID=""
@@ -354,7 +356,10 @@ PAGE_B='http://127.0.0.1:8808/b'
 MOCK_READY=0
 if [ "$USE_MOCK" = "1" ] && [ -n "$MOCK_BIN" ]; then
   if start_mock "$TMP/mock.log" "$TMP/mock-envelopes.jsonl" "mock:conformance" \
-    --exit-after 100; then
+    --wait-delay-ms 450 \
+    --wait-delay-selector "#delay" \
+    --timing-out "$M4_TIMING_WIN" \
+    --exit-after 200; then
     MOCK_READY=1
     record PASS "mock extension handshake" "$(grep -m1 '^READY ' "$TMP/mock.log")"
   else
@@ -958,6 +963,52 @@ else
   record SKIP "M3 metrics and logs" "no mock extension"
 fi
 
+# --- M4 per-tab scheduling and MCP cancellation -----------------------------
+
+if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ] && [ -n "$SESSION" ]; then
+  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" schema-check "$TMP/tools.json" "$ROOT/tests/conformance/schema-snapshot.m3.json" 2>&1); then
+    record PASS "tools/list schemas match the M3 snapshot" "$OUT"
+  else
+    record FAIL "tools/list schemas match the M3 snapshot" "$OUT"
+  fi
+
+  expect_result "M4 opens a second tab for parallel waits" tab_new '{"url":"http://127.0.0.1:8808/c","active":true}' \
+    '{"tab_id":"tab-3","loaded":true}' "m4-tab-new"
+  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" parallel "$MCP_URL" "$SESSION" "mock:conformance" "tab-1" "tab-3" 450 2>&1); then
+    record PASS "two browser_wait calls on different tabs run in parallel" "$(printf "%s" "$OUT" | head -c 360)"
+  else
+    record FAIL "two browser_wait calls on different tabs run in parallel" "$OUT"
+  fi
+  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" timing "$M4_TIMING_WIN" overlap first 2>&1); then
+    record PASS "mock timing proves different-tab waits overlap" "$(printf "%s" "$OUT" | head -c 360)"
+  else
+    record FAIL "mock timing proves different-tab waits overlap" "$OUT"
+  fi
+
+  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" parallel "$MCP_URL" "$SESSION" "mock:conformance" "tab-1" "tab-1" 300 2>&1); then
+    record PASS "two browser_wait calls on the same tab are serialized" "$(printf "%s" "$OUT" | head -c 360)"
+  else
+    record FAIL "two browser_wait calls on the same tab are serialized" "$OUT"
+  fi
+  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" timing "$M4_TIMING_WIN" serial last 2>&1); then
+    record PASS "mock timing proves same-tab waits are serial" "$(printf "%s" "$OUT" | head -c 360)"
+  else
+    record FAIL "mock timing proves same-tab waits are serial" "$OUT"
+  fi
+
+  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" cancel "$MCP_URL" "$SESSION" "mock:conformance" "tab-1" "$M4_TIMING_WIN" 2500 2>&1); then
+    record PASS "notifications/cancelled returns JSON-RPC -32800 under 2s" "$(printf "%s" "$OUT" | head -c 420)"
+  else
+    record FAIL "notifications/cancelled returns JSON-RPC -32800 under 2s" "$OUT"
+  fi
+  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" cancel-noop "$MCP_URL" "$SESSION" "mock:conformance" 2>&1); then
+    record PASS "cancel of finished and unknown ids is a no-op" "$(printf "%s" "$OUT" | head -c 360)"
+  else
+    record FAIL "cancel of finished and unknown ids is a no-op" "$OUT"
+  fi
+else
+  record SKIP "M4 scheduling and cancellation" "no mock extension or MCP session"
+fi
 if [ "$USE_MOCK" = "1" ]; then
   stop_pid "$MOCK_PID"
   MOCK_PID=""
