@@ -1,5 +1,7 @@
 # Corvus Architecture
 
+[English](02-architecture.md) | [中文](02-architecture.zh.md)
+
 Status: design draft, M0. Audience: engineers.
 
 ## 1. Constraints that shape the design
