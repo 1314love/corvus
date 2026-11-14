@@ -6,6 +6,22 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
+## 1.0.0 - 2026-11-14
+
+First stable release. Scope: 32 MCP tools over stdio and streamable HTTP, per-tab scheduling, MCP request cancellation, session recording, replay and export, metrics and logs, the Windows installer, and the client configuration generator. Release validation covered Edge, Chrome for Testing 157.0.8103.78 and Brave Browser 157.1.99.57.
+
+### Changed
+
+- `scripts/package.sh` now also writes `dist/corvus-<version>-windows-x64.zip` alongside the `dist/` tree.
+- `scripts/uninstall-windows.ps1 -PurgeData` now removes the install and data directories when they are empty.
+
+### Known limitations
+
+- The clean NFR-3 72-hour soak started 2026-11-14T14:41:37Z and completes 2026-11-17T14:41:37Z; the 72-hour claim is pending until it completes.
+- Firefox 121+ is unsupported. The NFR-6 deviation remains open; option A (keep Firefox out of the supported matrix) is recommended. See [docs/06-firefox-assessment.md](docs/06-firefox-assessment.md).
+- The installer is Windows-only.
+- In headless Chrome and Brave, a synthetic click on an `<a download>` link does not start a download; navigate to the attachment URL instead, after which `download_wait` and `download_list` report `complete`.
+
 ## 0.1.0 - 2026-11-14
 
 First public release.
@@ -42,6 +58,22 @@ First public release.
 
 ## 中文
 
+## 1.0.0 - 2026-11-14
+
+首个稳定版本。范围包括：通过 stdio 与 streamable HTTP 暴露的 32 个 MCP 工具、按标签调度、MCP 请求取消、会话录制、回放与导出、指标与日志、Windows 安装器，以及客户端配置生成器。发布验证覆盖 Edge、Chrome for Testing 157.0.8103.78 与 Brave Browser 157.1.99.57。
+
+### 变更
+
+- `scripts/package.sh` 现在还会生成 `dist/corvus-<version>-windows-x64.zip` 压缩包。
+- `scripts/uninstall-windows.ps1 -PurgeData` 现在会删除已清空的安装目录与数据目录。
+
+### 已知限制
+
+- 干净的 NFR-3 72 小时浸泡测试于 2026-11-14T14:41:37Z 启动，将于 2026-11-17T14:41:37Z 完成；在完成前，72 小时结论仍为待定。
+- 暂不支持 Firefox 121+。NFR-6 偏差仍未关闭；建议采用方案 A（将 Firefox 保持在支持矩阵之外）。参见 [docs/06-firefox-assessment.zh.md](docs/06-firefox-assessment.zh.md)。
+- 安装器仅支持 Windows。
+- 在 headless Chrome 与 Brave 中，对 `<a download>` 链接的合成点击不会启动下载；改为导航到附件 URL，之后 `download_wait` 与 `download_list` 会报告 `complete`。
+
 ## 0.1.0 - 2026-11-14
 
 首个公开发布。
@@ -49,7 +81,7 @@ First public release.
 ### 新增
 
 - MCP 服务端通过 stdio 与 streamable HTTP 暴露 32 个工具，覆盖导航、快照、文本与 HTML 提取、查找、点击、输入、按键、悬停、下拉选择、滚动、前进后退、JavaScript 求值、标签管理、网络捕获与拦截、下载、上传、会话、指标与日志。
-- Manifest V3 浏览器扩展，连接用户已有的浏览器；发布验证使用 Edge。
+- Manifest V3 浏览器扩展，连接用户已有的浏览器；发布验证使用 Edge、Chrome for Testing 157 与 Brave 157。
 - 按标签调度：同一 `browser_id` 与 `tab_id` 上的调用按顺序执行，不同标签的调用并行执行，未提供 `tab_id` 的调用共享活动标签通道。
 - 通过 `notifications/cancelled` 与 `params.requestId` 取消 MCP 请求；被取消的调用返回 JSON-RPC 错误 `-32800`，会话以 `ok=false` 和错误码 `CANCELLED` 记录。
 - 会话录制、查看、回放与 JSONL 导出：`session_list`、`session_steps`、`session_replay` 与 `session_export`。

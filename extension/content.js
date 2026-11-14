@@ -14,7 +14,7 @@
   if (window.__corvusContentLoaded === true) return;
   window.__corvusContentLoaded = true;
 
-  const CONTENT_VERSION = '0.1.0';
+  const CONTENT_VERSION = '1.0.0';
   const MAX_NODES_DEFAULT = 700;
   const MAX_NODES_LIMIT = 3000;
   const MIN_NODES_LIMIT = 40;

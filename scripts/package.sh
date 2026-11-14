@@ -101,6 +101,56 @@ for rel in "${files[@]}"; do
     printf '%s  %s\n' "$digest" "$rel" >> "$sums_file"
 done
 
+zip_name="corvus-$version-windows-x64.zip"
+zip_path="$dist_dir/$zip_name"
+rm -f "$zip_path"
+
+to_win_path() {
+    local input="$1"
+
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -w "$input"
+    else
+        local parent
+        parent="$(cd "$(dirname "$input")" && pwd -W)"
+        printf '%s/%s\n' "$parent" "$(basename "$input")"
+    fi
+}
+
+if command -v pwsh >/dev/null 2>&1; then
+    ps_command="pwsh"
+elif command -v powershell.exe >/dev/null 2>&1; then
+    ps_command="powershell.exe"
+else
+    echo "error: PowerShell is required to create $zip_name" >&2
+    exit 1
+fi
+
+dist_win="$(to_win_path "$dist_dir")"
+zip_win="$(to_win_path "$zip_path")"
+
+CORVUS_DIST_DIR="$dist_win" CORVUS_ZIP_PATH="$zip_win" "$ps_command" -NoProfile -NonInteractive -Command "
+  \$ErrorActionPreference = 'Stop';
+  \$dist = \$env:CORVUS_DIST_DIR;
+  \$zipPath = \$env:CORVUS_ZIP_PATH;
+  Remove-Item -LiteralPath \$zipPath -Force -ErrorAction SilentlyContinue;
+  \$items = @(
+    (Join-Path \$dist 'corvusd.exe'),
+    (Join-Path \$dist 'corvus.exe'),
+    (Join-Path \$dist 'VERSION'),
+    (Join-Path \$dist 'SHA256SUMS'),
+    (Join-Path \$dist 'extension')
+  );
+  Compress-Archive -LiteralPath \$items -DestinationPath \$zipPath -CompressionLevel Optimal -Force
+"
+
+if [ ! -f "$zip_path" ] || [ ! -s "$zip_path" ]; then
+    echo "error: $zip_name was not created or is empty" >&2
+    exit 1
+fi
+
+zip_bytes="$(wc -c < "$zip_path" | tr -d ' ')"
+
 echo
 echo "artifacts:"
 for rel in "${files[@]}"; do
@@ -109,5 +159,6 @@ for rel in "${files[@]}"; do
 done
 echo "checksums: dist/SHA256SUMS"
 echo "version:   dist/VERSION"
+echo "archive:   dist/$zip_name ($zip_bytes bytes)"
 echo
 echo "verify: (cd dist && sha256sum -c SHA256SUMS)"

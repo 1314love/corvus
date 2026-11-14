@@ -1,0 +1,93 @@
+Corvus v1.0.0 gate evidence
+Task: task-57 "Gate v1.0.0: fmt, clippy, tests, conformance"
+Run date: 2026-11-14 (UTC+8; gate commands 14:50:32Z to 14:52:39Z)
+Repository: D:/DSH/browser_bridege/corvus
+HEAD: 1f8611811d52470819f9f6f5568348d0fc5c52b6
+Workspace version: 1.0.0
+Extension manifest version: 1.0.0
+Built daemon: target/debug/corvusd.exe -> corvusd 1.0.0
+
+Working tree at gate start (pre-existing release/version changes; QA made no product edits):
+ M CHANGELOG.md
+ M Cargo.lock
+ M Cargo.toml
+ M docs/README.md
+ M extension/content.js
+ M extension/manifest.json
+?? docs/release-notes/v1.0.0.md
+?? docs/release-notes/v1.0.0.zh.md
+?? tests/report/NFR-3-soak-audit.md
+?? tests/report/NFR-3-soak-summary.txt
+
+Gate results
+------------
+1. cargo fmt --all -- --check
+   Exit: 0. Log: /tmp/corvus-v100-gates/fmt.log
+
+2. cargo clippy --workspace --all-targets --offline -- -D warnings
+   Exit: 0. Log: /tmp/corvus-v100-gates/clippy.log
+
+3. cargo test --workspace --offline
+   Exit: 0. Log: /tmp/corvus-v100-gates/test.log
+   Test result lines: 18 targets.
+   TOTAL: 101 passed; 0 failed; 0 ignored.
+   Per-target passed/failed:
+     corvus unit                         5 / 0
+     config integration                  3 / 0
+     corvus_mcp unit                    11 / 0
+     corvus_mcp protocol integration    11 / 0
+     corvus_proto unit                   2 / 0
+     corvus_proto wire integration      13 / 0
+     corvus_record unit                  5 / 0
+     corvus_runtime unit                 8 / 0
+     corvus_transport unit               4 / 0
+     corvusd lib unit                    4 / 0
+     corvusd main unit                   0 / 0
+     corvusd end_to_end integration     35 / 0
+     doc-tests corvus_mcp                0 / 0
+     doc-tests corvus_proto              0 / 0
+     doc-tests corvus_record             0 / 0
+     doc-tests corvus_runtime            0 / 0
+     doc-tests corvus_transport          0 / 0
+     doc-tests corvusd                   0 / 0
+   Check: 18 result lines; sum 101 passed, 0 failed.
+
+4. cargo build --offline -p corvusd --bin corvusd
+   Exit: 0. Log: /tmp/corvus-v100-gates/build.log
+   ./target/debug/corvusd.exe --version -> corvusd 1.0.0
+
+5. Conformance: bash tests/conformance/run.sh
+   Exit: 0
+   RESULT: 135 passed, 0 failed, 0 skipped
+   Logs kept in: C:/Users/Administrator/AppData/Local/Temp/corvus-conformance.nw2ciy
+   Isolated daemon log line:
+     2026-11-14T14:51:52.049041Z  INFO corvusd: corvusd serving version="1.0.0" protocol=1 ws=127.0.0.1:29330 mcp=http://127.0.0.1:29331/mcp db=/tmp/corvus-v100-conformance-1794667909574.db
+   Invocation:
+     cd /d/DSH/browser_bridege/corvus
+     export CARGO=/c/Users/Administrator/.cargo/bin/cargo.exe
+     export CORVUSD_BIN=./target/debug/corvusd.exe
+     export CORVUS_DB=/tmp/corvus-v100-conformance-1794667909574.db
+     export CORVUSD_ARGS="serve --ws-port 29330 --http-port 29331"
+     export CORVUS_MCP_URL=http://127.0.0.1:29331/mcp
+     export CORVUS_WS_URL=ws://127.0.0.1:29330
+     export CORVUS_HEALTH_URL=http://127.0.0.1:29331/health
+     export KEEP_TMP=1
+     bash tests/conformance/run.sh
+
+6. /health and tools/list probe on the same v1.0.0 binary
+   Isolated command: ./target/debug/corvusd.exe serve --db /tmp/corvus-v100-probe-1794667959659.db --ws-port 29330 --http-port 29331
+   GET http://127.0.0.1:29331/health:
+     {"status":"ok","version":"1.0.0","protocol":"2025-06-18","recording":{"db_path":"/tmp/corvus-v100-probe-1794667959659.db","enabled":true,"schema_version":1,"sessions":0,"steps":0},"browsers":0}
+   MCP initialize + tools/list:
+     TOOLS_COUNT=32
+     Names: browser_click,browser_eval,browser_history,browser_hover,browser_list,browser_navigate,browser_press,browser_scroll,browser_select,browser_type,browser_wait,download_list,download_wait,logs_tail,metrics,net_capture,net_clear,net_intercept,net_log,page_find,page_html,page_snapshot,page_text,session_export,session_list,session_replay,session_steps,tab_close,tab_list,tab_new,tab_switch,upload_file
+
+Supplementary check
+-------------------
+git diff --check: exit 0.
+
+Verdict
+-------
+PASS. fmt, clippy, workspace tests, binary build, and conformance all returned exit 0. Tests are 101 passed / 0 failed. Conformance is 135 passed / 0 failed / 0 skipped. The v1.0.0 daemon reports version 1.0.0 on /health and exposes exactly 32 tools.
+
+The live service on 7330/7331 and the running NFR-3 soak on 29430/29431 were not restarted, stopped, or modified. No product code was edited and nothing was committed.

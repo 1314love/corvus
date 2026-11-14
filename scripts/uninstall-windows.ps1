@@ -69,6 +69,47 @@ function Wait-ServiceGone {
     return $false
 }
 
+function Remove-EmptyDirectory {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return
+    }
+    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]'\')
+    $driveRoot = [System.IO.Path]::GetPathRoot($full).TrimEnd([char]'\')
+    if ($full -eq $driveRoot) {
+        Write-Host "Skipped unsafe empty directory $Path"
+        return
+    }
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $protected = @($env:USERPROFILE, $env:TEMP, $repoRoot, (Join-Path $repoRoot "extension"))
+    foreach ($candidate in $protected) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        $resolved = [System.IO.Path]::GetFullPath($candidate).TrimEnd([char]'\')
+        if ($full -eq $resolved) {
+            Write-Host "Skipped unsafe empty directory $Path"
+            return
+        }
+    }
+    try {
+        $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
+    } catch {
+        Write-Host "Could not inspect directory $Path; leaving it in place."
+        return
+    }
+    if ($entries.Count -ne 0) {
+        Write-Host "Kept non-empty directory $Path"
+        return
+    }
+    try {
+        Remove-Item -LiteralPath $Path -Force
+        Write-Host "Removed empty directory $Path"
+    } catch {
+        Write-Host "Could not remove empty directory $Path; leaving it in place."
+    }
+}
+
 if ($ServiceName -notmatch '^[A-Za-z0-9_.-]+$' -or $ServiceName.Length -gt 64) {
     Stop-WithError "ServiceName must contain only letters, digits, dot, underscore and hyphen"
 }
@@ -153,6 +194,8 @@ if ($PurgeData) {
         }
     }
     Write-Host "Database and log files were purged."
+    Remove-EmptyDirectory -Path $InstallDir
+    Remove-EmptyDirectory -Path $DataDir
 } else {
     Write-Host "Database kept at $(Join-Path $DataDir "corvus.db") (use -PurgeData to delete it)."
 }
