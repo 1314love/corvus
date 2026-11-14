@@ -110,3 +110,7 @@ Run 2 is the clean restart that supersedes run 1.
 ## Overall status
 
 Run 1 is **SUPERSEDED** for NFR-3 72 h evidence because the daemon was replaced at 2026-11-14T13:27:44.986Z; its checkpoint table remains valid continuity evidence but cannot prove continuous daemon uptime. Run 2 clean baseline is **PASS** and is the active run. QA did not restart, stop, or edit Run 2 and did not commit.
+
+## Version note
+
+Run 2 started at 2026-11-14T14:41:37.572Z, before the 1.0.0 version bump at about 14:50Z. Its daemon therefore reports version 0.1.0. The 1.0.0 bump changed only version strings (Cargo.toml, Cargo.lock package versions and extension constants); the runtime code is identical, so the soak still measures the released runtime behaviour. The final NFR-3 report must repeat this note and must not claim the run executed a binary that reports 1.0.0.
