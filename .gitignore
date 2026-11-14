@@ -1,0 +1,10 @@
+/target
+node_modules/
+*.db
+*.db-wal
+*.db-shm
+blobs/
+dist/
+.env
+.DS_Store
+*.zip

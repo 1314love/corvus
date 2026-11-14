@@ -1,0 +1,11 @@
+[package]
+name = "corvus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+corvus-proto.workspace = true
+anyhow.workspace = true
+clap.workspace = true
