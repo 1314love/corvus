@@ -25,7 +25,7 @@
 
 ## 质量门禁
 
-- 每个 PR：cargo fmt、clippy -D warnings、nextest 全绿、三平台 CI。
+- 每个 PR：cargo fmt、clippy -D warnings、cargo test 全绿、三平台 CI。
 - 每个工具：至少一个集成测试 + 一个真实页面冒烟测试。
 - 每周：72h 短跑一次稳定性回归（可并行在后台）。
 - 每次发布：版本号、变更日志、二进制签名、校验和。

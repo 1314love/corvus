@@ -288,7 +288,7 @@ SQLite 位于 `~/.corvus/corvus.db`（Windows 为 `%USERPROFILE%\.corvus\corvus.
 ## 11. 构建与 CI
 
 - cargo workspace，edition 2021，MSRV 由 rust-toolchain.toml 固定。
-- CI 矩阵：windows-latest、macos-latest、ubuntu-22.04，各自跑 fmt、clippy -D warnings、nextest。
+- CI 矩阵：windows-latest、macos-latest、ubuntu-22.04，各自跑 fmt、clippy -D warnings、cargo test。
 - 扩展：esbuild 打包，无框架；体积预算 1MB；manifest key 固定，保证扩展 id 跨机器稳定。
 - 发布：交叉编译产物加校验和，Release 说明由规范化提交信息生成。
 
