@@ -1,14 +1,23 @@
 # Corvus
 
-> **The browser hub built for AI agents.** 让浏览器成为 AI 的器官，而不是它的沙箱。
+**The browser hub built for AI agents.** 让浏览器成为 AI 的器官，而不是它的沙箱。
 
-Corvus is a Rust-powered local daemon plus a browser extension that gives any MCP-capable agent full, persistent, zero-friction control over the browser you are actually using. No approval dialogs. No pairing ritual. No separate browser. No disconnect.
+[English](#english) | [中文](#中文)
 
 ---
 
-## Why
+## English
 
-Browser automation usually begins from the assumption that the agent is an intruder: every action needs a permission, every permission needs a human, and every human decision is one more chance to be interrupted. That trade-off makes sense when a stranger drives your machine. It is the wrong trade-off for an agent that already works for you.
+Corvus is a Rust-powered local daemon plus a browser extension that gives any MCP-capable agent full,
+persistent, zero-friction control over the browser you are actually using. No approval dialogs. No pairing
+ritual. No separate browser. No disconnect.
+
+### Why
+
+Browser automation usually begins from the assumption that the agent is an intruder: every action needs a
+permission, every permission needs a human, and every human decision is one more chance to be interrupted.
+That trade-off makes sense when a stranger drives your machine. It is the wrong trade-off for an agent that
+already works for you.
 
 Corvus starts from the opposite premise: **the browser is an organ of the agent, not a sandbox it visits.**
 
@@ -20,7 +29,7 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 | No ceiling | every operation the browser can perform becomes a tool, not a curated subset |
 | No blind spots | every command, snapshot and request is recorded and replayable |
 
-## What it is
+### Shape
 
     +-----------------+        MCP (stdio | streamable-http)        +------------------+
     |  agent client   | <-----------------------------------------> |  corvusd (Rust)  |
@@ -34,11 +43,11 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
                                                                              |
                                                        Edge / Chrome / Firefox / ...
 
-- **corvusd**: the daemon. MCP server, transport hub, command router, session recorder, site memory.
-- **corvus**: the CLI. doctor, serve, attach, session replay, bench.
-- **extension**: MV3, zero pages. Its popup holds exactly one switch: the debugger-grade control channel (a single on/off switch, nothing else).
+- **corvusd** - the daemon: MCP server, transport hub, command router, session recorder, site memory.
+- **corvus** - the CLI: doctor, serve, attach, session replay, bench.
+- **extension** - MV3, zero pages. Its popup holds exactly one switch: the debugger-grade control channel.
 
-## Feature surface (target)
+### Feature surface (target)
 
 - **Perception**: hybrid DOM + accessibility snapshot, screenshot (viewport / element / full page), text, HTML, console, network waterfall.
 - **Action**: navigate, click, type, press, hover, drag, select, scroll, upload, download, multi-tab concurrency.
@@ -46,22 +55,90 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 - **Continuity**: idempotent commands, replayable sessions, resumable connection across daemon restarts, multi-browser fan-out.
 - **Memory**: per-domain site cards learned from successful runs, stored in SQLite, exportable and shareable.
 
-## Status
+### Status
 
-Design phase. v0.1 targets: single-browser full tool surface, MCP over stdio and HTTP, recording and replay. See [docs/03-roadmap.md](docs/03-roadmap.md).
+Design phase. v0.1 targets: single-browser full tool surface, MCP over stdio and HTTP, recording and replay.
+See [docs/03-roadmap.md](docs/03-roadmap.md).
 
-## Docs
+### Docs
 
-- [立项书](docs/00-立项书.md) - why this exists, scope, milestones, decisions
-- [需求规格说明书](docs/01-需求规格说明书.md) - functional and non-functional requirements
+- [Charter](docs/00-charter.md) - why this exists, scope, milestones, decisions
+- [Requirements](docs/01-requirements.md) - functional and non-functional requirements
 - [Architecture](docs/02-architecture.md) - components, protocols, data model
 - [Roadmap](docs/03-roadmap.md) - milestones and acceptance tasks
+- [Language policy](docs/LANGUAGE.md) - how the bilingual editions are maintained
 
-## License
+### License
 
-**PolyForm Noncommercial License 1.0.0** — source available: read, run, modify and redistribute for any
+**PolyForm Noncommercial License 1.0.0** - source available: read, run, modify and redistribute for any
 noncommercial purpose. Commercial use is not allowed without a separate paid license; contact
-`cosher@163.com` to arrange one.
+`cosher@163.com` to arrange one. This is deliberately not an OSI-approved open source license: the source is
+public, commercial use is not. See [LICENSE](LICENSE) for the binding text.
 
-This is deliberately not an OSI-approved open source license: the source is public, commercial use is not.
-See [LICENSE](LICENSE) for the binding text.
+---
+
+## 中文
+
+Corvus 是一个 Rust 本地守护进程加一个浏览器扩展：它把「你正在使用的那个浏览器」完整、持续、零摩擦地交给任何支持
+MCP 的 AI 代理。没有审批弹窗，没有配对仪式，不用另开浏览器，不会掉线。
+
+### 为什么做
+
+浏览器自动化长期被一个假设锁住：操作浏览器的是陌生人，所以每一次点击都要授权，每一个下载都要挂起，每一个敏感
+字段都要人工放行。这套假设在「陌生脚本」场景里是必要的；但当操作者是已经在你机器上工作、持有你账号权限的 AI
+代理时，它只剩下摩擦——人会疲劳，审批会被无脑点过，真正的风险信号被淹没在噪声里。
+
+Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱。**
+
+| 理念 | 在产品里的含义 |
+|---|---|
+| 零摩擦 | 没有审批弹窗、没有配对步骤、没有安装向导 |
+| 零界面 | 没有侧边栏、没有设置页；只有一个开关的极小弹窗，用于调试通道 |
+| 永不掉线 | 连接是一等子系统：多传输、看门狗、重启后自动恢复 |
+| 能力不设上限 | 浏览器能做的每一件事都成为工具，而不是精选子集 |
+| 全可观测 | 每条命令、每次快照、每个请求都可记录、可回放 |
+
+### 形态
+
+    +-----------------+        MCP（stdio | streamable-http）        +------------------+
+    |   AI 客户端      | <------------------------------------------> |  corvusd（Rust）  |
+    +-----------------+                                              +---------+--------+
+                                                                               |
+                                                      WS / Native Messaging / CDP
+                                                                               |
+                                                 +-----------------------------+----+
+                                                 |   Corvus 扩展（MV3，无界面）      |
+                                                 +-----------------------------+----+
+                                                                               |
+                                                         Edge / Chrome / Firefox / ...
+
+- **corvusd**：守护进程。MCP 服务端、传输中枢、命令路由、会话录制、站点记忆。
+- **corvus**：命令行。doctor、serve、attach、会话回放、bench。
+- **扩展**：MV3、零页面。弹窗里只有一个开关：debugger 级控制通道。
+
+### 能力面（目标）
+
+- **感知**：DOM + 可访问性混合快照、截图（视口 / 元素 / 整页）、文本、HTML、控制台、网络瀑布。
+- **动作**：导航、点击、输入、按键、悬停、拖拽、选择、滚动、上传、下载、多标签并发。
+- **强力**：页面或隔离世界执行 JS、Cookie 与存储读写、请求拦截、设备与网络模拟、PDF 导出。
+- **连续性**：幂等命令、可回放会话、守护进程重启后连接自愈、多浏览器分发。
+- **记忆**：按域名从成功运行中学习站点卡片，存于 SQLite，可导出、可分享。
+
+### 状态
+
+设计阶段。v0.1 目标：单浏览器全工具面、stdio 与 HTTP 双栈 MCP、录制与回放。见
+[docs/03-roadmap.zh.md](docs/03-roadmap.zh.md)。
+
+### 文档
+
+- [立项书](docs/00-charter.zh.md) —— 为什么做、范围、里程碑、决策记录
+- [需求规格](docs/01-requirements.zh.md) —— 功能与非功能需求
+- [架构](docs/02-architecture.md) —— 组件、协议、数据模型
+- [路线图](docs/03-roadmap.zh.md) —— 里程碑与验收任务
+- [语言政策](docs/LANGUAGE.md) —— 双语版本如何维护
+
+### 许可
+
+**PolyForm Noncommercial License 1.0.0** —— 源码公开：可阅读、可运行、可修改、可在非商业用途下再分发。
+未经单独授权不得商用；商用请联系 `cosher@163.com`。这刻意不是 OSI 认可的开源许可：源码公开，但商用受限。
+以 [LICENSE](LICENSE) 条文为准。

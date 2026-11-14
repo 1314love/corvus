@@ -1,35 +1,37 @@
-# Corvus 路线图
+# Corvus Roadmap
 
-## 里程碑
+[English](03-roadmap.md) | [中文](03-roadmap.zh.md)
 
-| 阶段 | 目标 | 关键交付 | 出口标准 |
+## Milestones
+
+| Phase | Goal | Key deliverables | Exit criterion |
 |---|---|---|---|
-| M0 立项 | 把「做什么」写清楚 | 立项书、需求规格、架构、路线图、空仓库与 CI | 四份文档评审通过 |
-| M1 骨架 | 打通一条真实链路 | corvusd + 扩展 + MCP(stdio/http) + navigate/snapshot/click/type | 在 DSH 里完成一个真实网页任务 |
-| M2 全量 | 把能力铺满 | 60+ 工具、多浏览器、多标签并发、网络拦截、上传下载 | 需求规格第 6 节 10 个验收任务全过 |
-| M3 观测 | 让一切可复盘 | 录制、trace、回放、站点记忆、Prometheus | 任意历史会话可逐步回放 |
-| M4 生态 | 让别人用得起来 | 安装器、客户端配置生成、文档站、示例库、发布流水线 | 陌生用户 5 分钟跑通快速开始 |
+| M0 Charter | Write down what we build | charter, requirements, architecture, roadmap, empty repo with CI | four documents reviewed |
+| M1 Skeleton | Prove one real path end to end | corvusd + extension + MCP (stdio/http) + navigate/snapshot/click/type | one real web task completed in DSH |
+| M2 Full surface | Fill the capability matrix | 60+ tools, multi-browser, tab concurrency, request interception, upload/download | the 10 acceptance tasks in the requirements spec pass |
+| M3 Observability | Make everything reviewable | recording, trace, replay, site memory, Prometheus | any historical session replays step by step |
+| M4 Ecosystem | Make it adoptable | installers, client config generators, docs site, examples, release pipeline | a stranger completes the quick start in 5 minutes |
 
-## 建议排期（以 1 名主力 + AI 结对估算）
+## Suggested schedule (one main developer + AI pairing)
 
-| 周 | 内容 |
+| Week | Content |
 |---|---|
-| W1 | workspace 骨架、MCP 双栈、扩展最小连接、navigate/snapshot |
-| W2 | click/type/press/scroll、错误码与超时体系、M1 验收 |
-| W3-W4 | 感知全家桶、动作全家桶、标签并发 |
-| W5-W6 | 网络拦截、cookie/storage、下载上传、多浏览器 |
-| W7-W8 | 录制、回放、站点记忆、指标、M2 验收 |
-| W9-W10 | 安装器、客户端配置、文档站、M3/M4 |
+| W1 | workspace skeleton, MCP dual stack, minimal extension link, navigate/snapshot |
+| W2 | click/type/press/scroll, error codes and timeouts, M1 acceptance |
+| W3-W4 | perception suite, action suite, tab concurrency |
+| W5-W6 | request interception, cookies and storage, upload/download, multi-browser |
+| W7-W8 | recording, replay, site memory, metrics, M2 acceptance |
+| W9-W10 | installers, client configuration, docs site, M3/M4 |
 
-## 质量门禁
+## Quality gates
 
-- 每个 PR：cargo fmt、clippy -D warnings、nextest 全绿、三平台 CI。
-- 每个工具：至少一个集成测试 + 一个真实页面冒烟测试。
-- 每周：72h 短跑一次稳定性回归（可并行在后台）。
-- 每次发布：版本号、变更日志、二进制签名、校验和。
+- Every PR: cargo fmt, clippy -D warnings, tests green, three-platform CI.
+- Every tool: at least one integration test plus one real-page smoke test.
+- Every week: one stability regression (72h soak can run in the background in parallel).
+- Every release: version bump, changelog, signed binaries, checksums.
 
-## 风险缓冲
+## Risk buffer
 
-- MV3 生命周期问题优先在 M1 解决，不要拖到 M2。
-- debugger 通道与纯 DOM 通道必须实现为可切换的两条路径，避免单点依赖。
-- Firefox 兼容性单独排期，不与 Chromium 主线混做。
+- Solve MV3 lifetime problems in M1; do not carry them into M2.
+- The debugger channel and the DOM channel must stay two switchable paths, never a single point of failure.
+- Firefox compatibility gets its own slot and is not mixed into the Chromium mainline.

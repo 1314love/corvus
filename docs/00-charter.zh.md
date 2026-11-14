@@ -1,5 +1,7 @@
 # Corvus 立项书
 
+[English](00-charter.md) | [中文](00-charter.zh.md)
+
 | 项 | 内容 |
 |---|---|
 | 项目代号 | Corvus（渡鸦） |

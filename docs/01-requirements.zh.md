@@ -1,5 +1,7 @@
 # Corvus 需求规格说明书 v0.1
 
+[English](01-requirements.md) | [中文](01-requirements.zh.md)
+
 读者：产品负责人与实现者。工程内部细节见 02-architecture.md。
 
 ## 1. 用户与场景
