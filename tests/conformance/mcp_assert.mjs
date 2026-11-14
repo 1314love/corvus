@@ -10,6 +10,7 @@
 //   node mcp_assert.mjs snapshot <body-file> <expected-url> [<needle>]
 //   node mcp_assert.mjs result   <body-file> <expected-json> [<needle>]
 //   node mcp_assert.mjs command  <jsonl-file> <tool> <expected-args-json>
+//   node mcp_assert.mjs command-any <jsonl-file> <tool> <expected-args-json>
 //   node mcp_assert.mjs command-mode <jsonl-file> <tool> <expected-mode>
 //
 // The body may be plain JSON or an SSE stream (event:/data: lines). Prints one
@@ -99,7 +100,10 @@ function loadBody(path) {
   }
 }
 
-const message = mode === "command-mode" || mode === "command" ? null : loadBody(file);
+const message =
+  mode === "command-mode" || mode === "command" || mode === "command-any"
+    ? null
+    : loadBody(file);
 const expectation = rest[0];
 const needle = rest[1];
 
@@ -227,6 +231,28 @@ if (mode === "command") {
   if (problem) fail(problem);
   ok(toolName + " command args match " + JSON.stringify(expected));
   process.exit(0);
+}
+
+if (mode === "command-any") {
+  const [toolName] = rest;
+  const expected = parseExpectedJson("command-any");
+  if (!toolName) fail("usage: command-any <jsonl> <tool> <expected-args-json>");
+  let candidates = 0;
+  let firstProblem = null;
+  for (const envelope of loadJsonl(file)) {
+    if (envelope.kind !== "command" || envelope.tool !== toolName) continue;
+    candidates += 1;
+    if (typeof envelope.id !== "string" || envelope.id.length === 0) continue;
+    if (typeof envelope.browser !== "string" || envelope.browser.length === 0) continue;
+    const problem = mismatch(envelope.args, expected, toolName + ".args");
+    if (!problem) {
+      ok(toolName + " command args match " + JSON.stringify(expected) + " (" + candidates + " candidates)");
+      process.exit(0);
+    }
+    if (!firstProblem) firstProblem = problem;
+  }
+  if (candidates === 0) fail("no command envelope for " + toolName + " in " + file);
+  fail(firstProblem || toolName + " command envelopes have no id/browser");
 }
 
 if (mode === "health") {

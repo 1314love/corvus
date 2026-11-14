@@ -18,7 +18,11 @@ const routes = new Map([
   ["/m2-b.html", fixture("m2-b.html")],
   ["/m2-c", fixture("m2-c.html")],
   ["/m2-c.html", fixture("m2-c.html")],
+  ["/m2-csp", fixture("m2-csp.html")],
+  ["/m2-csp.html", fixture("m2-csp.html")],
 ]);
+
+const cspPaths = new Set(["/m2-csp", "/m2-csp.html"]);
 
 const server = createServer(async (req, res) => {
   const path = new URL(req.url || "/", "http://" + host).pathname;
@@ -26,10 +30,15 @@ const server = createServer(async (req, res) => {
   if (req.method === "GET" && file) {
     try {
       const body = await readFile(file);
-      res.writeHead(200, {
+      const headers = {
         "content-type": "text/html; charset=utf-8",
         "cache-control": "no-store",
-      });
+      };
+      if (cspPaths.has(path)) {
+        headers["content-security-policy"] =
+          "script-src 'self'; object-src 'none'; base-uri 'none'";
+      }
+      res.writeHead(200, headers);
       res.end(body);
     } catch (error) {
       res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });

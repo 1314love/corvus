@@ -398,6 +398,16 @@ expect_tool_error() { # label tool arguments-json error-code prefix
   fi
 }
 
+expect_command_any() { # label tool expected-args-json
+  local label="$1" tool="$2" expected="$3"
+  local detail=""
+  if detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" command-any "$TMP/mock-envelopes.jsonl" "$tool" "$expected" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "$detail"
+  fi
+}
+
 INIT_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"'"$EXPECTED_PROTOCOL_VERSION"'","capabilities":{},"clientInfo":{"name":"corvus-conformance","version":"0.1.0"}}}'
 STATUS=$(mcp_post "$INIT_PAYLOAD" "$TMP/init.json" "$TMP/init.headers" "" 0)
 SESSION=$(tr -d '\r' < "$TMP/init.headers" 2>/dev/null | sed -n 's/^[Mm][Cc][Pp]-[Ss][Ee][Ss][Ss][Ii][Oo][Nn]-[Ii][Dd]:[[:space:]]*//p' | head -n 1 || true)
@@ -503,6 +513,8 @@ if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ]; then
     '{"tab_id":"tab-1","url":"'$PAGE_A'","title":"Mock page","active":true}' "tab-switch"
   expect_tool_error "tab_switch unknown tab is NOT_FOUND" tab_switch '{"tab_id":"tab-999"}' \
     NOT_FOUND "tab-not-found"
+  expect_tool_error "tab_close unknown string tab_id is NOT_FOUND" tab_close '{"tab_id":"tab-999"}' \
+    NOT_FOUND "tab-close-not-found"
   expect_result "tab_close closes tab-2" tab_close '{"tab_id":"tab-2"}' \
     '{"closed":true,"tab_id":"tab-2"}' "tab-close"
   expect_result "tab_list returns to one tab" tab_list '{}' \
@@ -565,6 +577,7 @@ expect_bad_args "browser_history rejects refresh" '{"jsonrpc":"2.0","id":21,"met
 expect_bad_args "tab_new rejects active yes" '{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"tab_new","arguments":{"active":"yes"}}}' "bad-tab-new"
 expect_bad_args "tab_close rejects missing tab_id" '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"tab_close","arguments":{}}}' "bad-tab-close"
 expect_bad_args "tab_switch rejects missing tab_id" '{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"tab_switch","arguments":{}}}' "bad-tab-switch"
+expect_bad_args "tab_switch rejects numeric tab_id" '{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"tab_switch","arguments":{"tab_id":999}}}' "bad-tab-switch-numeric"
 
 if [ -f "$TMP/mock-envelopes.jsonl" ]; then
   RECORDED=$(wc -l < "$TMP/mock-envelopes.jsonl" | tr -d ' ')
@@ -583,6 +596,12 @@ if [ -f "$TMP/mock-envelopes.jsonl" ]; then
   else
     record FAIL "recorded browser_eval default world" "$OUT"
   fi
+  expect_command_any "tab_switch forwards string tab_id" tab_switch '{"tab_id":"tab-1"}'
+  expect_command_any "tab_switch forwards unknown string tab_id" tab_switch '{"tab_id":"tab-999"}'
+  expect_command_any "tab_close forwards string tab_id" tab_close '{"tab_id":"tab-2"}'
+  expect_command_any "tab_close forwards unknown string tab_id" tab_close '{"tab_id":"tab-999"}'
+  expect_command_any "tab_new forwards string tab_id request" tab_new '{"url":"http://127.0.0.1:8808/c","active":true}'
+  expect_command_any "page_text forwards string tab_id" page_text '{"tab_id":"tab-1"}'
 fi
 
 if [ "$USE_MOCK" = "1" ]; then

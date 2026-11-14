@@ -33,11 +33,12 @@ automatically. It has no controls.
    the service worker with chrome.runtime.sendMessage. The service worker
    validates the envelope, resolves the target tab, chooses the execution path,
    and answers with a response envelope that carries the same id.
-5. There are three execution paths:
+5. There are four execution paths:
    - Tab tools (tab_list, tab_new, tab_close, tab_switch) use chrome.tabs only
      and never need a content script.
-   - browser_eval uses chrome.scripting.executeScript directly in the requested
-     world.
+   - browser_eval uses the managed debugger channel and CDP Runtime.evaluate.
+   - browser_history back and forward use the debugger channel; reload uses
+     chrome.tabs.reload.
    - The other tools are forwarded to content.js. The service worker pings the
      tab first and injects content.js when no listener is present yet.
 6. The content script answers exactly once per command with either
@@ -149,7 +150,9 @@ with BAD_ARGS.
 Common rules:
 
 - tab_id is an optional string on every tool. When omitted, the active tab of
-  the last focused window is used. tab_close and tab_switch require it.
+  the last focused window is used. tab_close and tab_switch require it. A numeric
+  string is resolved as a tab id; any other non-empty string is an unknown tab
+  and answers NOT_FOUND with details.tab_id.
 - Every tab id in a result is a decimal string, matching the tab_id argument.
 - target is an element reference ("@e12") or a CSS selector. The legacy aliases
   ref and selector are accepted for target; target wins when both are present.
@@ -325,10 +328,10 @@ and value is the select's value.
 
 ### Evaluation, waiting and history
 
-browser_eval evaluates expression with chrome.scripting.executeScript in the
-requested world. world "isolated" (the default) runs in the content-script
-world; "main" runs in the page world. The injected function uses indirect eval,
-awaits a returned thenable and returns JSON-serializable data.
+browser_eval evaluates expression through the managed debugger channel with CDP
+Runtime.evaluate (awaitPromise true, returnByValue true, userGesture true).
+world "isolated" (the default) creates a private world named corvus-eval with
+Page.createIsolatedWorld and evaluates there; "main" evaluates in the page world.
 
 ~~~json
 { "expression": "document.title" }
@@ -344,8 +347,11 @@ If page code throws, the tool call itself succeeds and args is
 { "ok": false, "error": { "name": "TypeError", "message": "..." } }; the
 envelope has no error field. Only tool-level problems such as a restricted page
 or a missing tab set the envelope error. If the result cannot be serialized to
-JSON, args is { "ok": true, "value": null, "value_note": "unserializable" }.
-Top-level await in expression is not supported; use an async IIFE.
+JSON, including a circular object, args is
+{ "ok": true, "value": null, "value_note": "unserializable" }. If the debugger
+channel cannot attach, the envelope error is CAPABILITY_UNAVAILABLE with details
+{ tab_id, cause, reason }, never INTERNAL. Top-level await in expression is not
+supported; use an async IIFE.
 
 browser_wait accepts at least one of selector, text or url_contains. It polls
 every 100 ms. selector is checked with document.querySelector, text is a
@@ -356,9 +362,12 @@ alone can run on a restricted page. timeout_ms is an integer from 100 through
 the condition is not met by the deadline the command fails with TIMEOUT and
 details.waited_ms.
 
-browser_history runs back, forward or reload. It waits for the tab to reach
-status complete and reports the final url and loaded. A back or forward with no
-history entry is NOT_FOUND; a closed tab is BROWSER_GONE.
+browser_history runs back, forward or reload. Back and forward read the page's
+navigation entries with CDP Page.getNavigationHistory and activate the adjacent
+entry with Page.navigateToHistoryEntry, so they also work for entries created
+before the tool touched the tab; reload uses chrome.tabs.reload. All three wait
+for the tab to reach status complete and report the final url and loaded. A back
+or forward with no history entry is NOT_FOUND; a closed tab is BROWSER_GONE.
 
 ### Tabs
 
@@ -441,6 +450,10 @@ Payload checks:
 - tab_list lists the open tabs with string tab_id values; tab_new opens one and
   returns its tab_id and previous_tab_id; tab_switch activates it; tab_close
   closes it and reports next_tab_id when it was active.
+- browser_history back after a normal navigation returns the previous url with
+  loaded true; forward returns the later url.
+- browser_eval with a circular object returns value null and value_note
+  "unserializable"; tab_close with tab_id "tab-999" returns NOT_FOUND.
 
 Negative checks:
 
@@ -477,9 +490,10 @@ Negative checks:
   name.
 - The debugger channel is managed automatically: it is always advertised in
   capabilities, attached lazily by the first command that needs CDP and detached
-  after thirty seconds idle, on tab close and on reconnect. The eighteen tools
-  run on the DOM and scripting channels; no command currently issues CDP methods.
-  A tab owned by DevTools answers CAPABILITY_UNAVAILABLE with a reason.
+  after thirty seconds idle, on tab close and on reconnect. browser_eval and
+  browser_history back and forward use it; the other tools run on the tabs,
+  scripting and content-script channels. A tab owned by DevTools answers
+  CAPABILITY_UNAVAILABLE with a reason.
 - webRequest, downloads and unlimitedStorage are declared as required by the
   architecture but no command uses them yet.
 - Commands are not buffered while the socket is down; nothing can be sent over

@@ -104,7 +104,7 @@ M2 第一波冻结的工具面共 18 个。`browser_navigate`、`page_snapshot`�
 
 通用约定：
 
-- 页面与动作类工具的 `tab_id` 可省略，省略时作用于当前活动标签；`tab_close` 与 `tab_switch` 必须显式给出目标标签。
+- `tab_id` 在参数和结果中都是字符串，页面与动作类工具可省略；省略时作用于当前活动标签。语法上不属于本扩展或不存在的 id 返回 `NOT_FOUND`，而不是 `BAD_ARGS`。`tab_close` 与 `tab_switch` 必须显式给出目标标签。
 - `target` 接受 `@eN` 引用或 CSS 选择器。引用按文档分配，`page_snapshot` 与 `page_find` 共用一个引用空间，因此两者产出的引用都可直接用于 `browser_click`、`browser_type`、`browser_hover`、`browser_press`、`browser_scroll` 或 `browser_select`。
 - `max_chars` 上限会截断返回字符串并置 `truncated: true`，不会把成功调用变成错误。
 
@@ -121,9 +121,9 @@ M2 第一波冻结的工具面共 18 个。`browser_navigate`、`page_snapshot`�
 | `browser_press` | `keys`，字符串或字符串数组；`target?`；`tab_id?` | `pressed: true`、`keys[]`、`url` |
 | `browser_scroll` | `direction`（`up`、`down`、`left`、`right`）；`pages?` 0..50 默认 1；`target?`；`tab_id?` | `scrolled: true`、`x`、`y`、`url` |
 | `browser_select` | `target`；`values[]`；`tab_id?` | `selected[]`、`value`、`url` |
-| `browser_eval` | `expression`；`world?`（`main` 或 `isolated` 默认）；`tab_id?` | `ok: true`、`value`；或 `ok: false`、`error`（含 `name`、`message`） |
+| `browser_eval` | `expression`；`world?`（`main` 或 `isolated` 默认；经 CDP `Runtime.evaluate` 执行）；`tab_id?` | `ok: true`、`value`；或 `ok: false`、`error`（含 `name`、`message`） |
 | `browser_wait` | `tab_id?`；`selector?`、`text?`、`url_contains?` 至少一个；`timeout_ms?` 100..120000 默认 10000 | `matched: true`、`waited_ms`、`url` |
-| `browser_history` | `action`（`back`、`forward`、`reload`）；`tab_id?` | `action`、`url`、`loaded` |
+| `browser_history` | `action`（`back`、`forward`、`reload`；back/forward 移动一个条目）；`tab_id?` | `action`、最终 `url`、`loaded` |
 | `tab_list` | 无 | `tabs[]`，元素含 `tab_id`、`index`、`active`、`url`、`title`、`status` |
 | `tab_new` | `url?`；`active?` 默认 true | `tab_id`、`url`、`loaded`、`previous_tab_id` |
 | `tab_close` | `tab_id` | `closed: true`、`tab_id`、`next_tab_id?` |
@@ -133,7 +133,8 @@ M2 第一波冻结的工具面共 18 个。`browser_navigate`、`page_snapshot`�
 
 - `browser_press` 接受 Enter、Tab、Escape、Backspace、Delete、Space、ArrowUp、ArrowDown、ArrowLeft、ArrowRight、PageUp、PageDown、Home、End、单字符键，以及 Control+、Shift+、Alt+、Meta+ 修饰键（例如 `Control+Shift+KeyK`）。
 - `browser_select` 写入 `values` 中的每个值；`<select multiple>` 支持多个值。
-- `browser_eval` 默认在隔离世界执行，可按需切到页面世界。页面异常属于成功的工具调用，返回 `{ "ok": false, "error": { "name", "message" } }`；只有工具级失败才置 `isError`。无法序列化为 JSON 的值返回 `null` 并附 `"value_note": "unserializable"`。
+- `browser_eval` 由 debugger 通道驱动：通过自动的按标签 debugger 通道调用 CDP `Runtime.evaluate` 执行表达式。`isolated`（默认）由该通道创建的专用隔离世界执行，`main` 在页面世界执行；页面 Content-Security-Policy 不会限制该表达式。debugger 挂载被拒绝时返回 `CAPABILITY_UNAVAILABLE`。页面异常属于成功的工具调用，返回 `{ "ok": false, "error": { "name", "message" } }`；只有工具级失败才置 `isError`。无法序列化为 JSON 的值返回 `null` 并附 `"value_note": "unserializable"`。
+- `browser_history` 的每次 `back` 或 `forward` 都通过 CDP `Page.getNavigationHistory` 与 `Page.navigateToHistoryEntry` 精确移动一个条目，等待文档加载完成后返回最终 `url`；越界条目返回 `NOT_FOUND`。
 - `browser_wait` 至少需要一个条件；超时为 `TIMEOUT`，`details.waited_ms` 给出已等待时长。 错误带有 `details` 时，MCP 工具结果的文本会以紧凑 JSON 追加这些内容（例如 `TIMEOUT: wait timed out after 100 ms {"waited_ms":4321}`）；错误结果不携带 `structuredContent`。
 - `tab_close` 关闭活动标签并激活相邻标签时返回 `next_tab_id`。
 

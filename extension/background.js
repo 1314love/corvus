@@ -597,15 +597,32 @@ function isRestrictedUrl(url) {
 
 async function resolveTab(args) {
   const raw = args ? (args.tab_id !== undefined ? args.tab_id : args.tabId) : undefined;
-  if (raw !== undefined && raw !== null && raw !== '') {
-    const tabId = Number(raw);
-    if (!Number.isInteger(tabId) || tabId < 0) {
-      throw new ToolError('BAD_ARGS', 'args.tab_id must be a non-negative integer', { tab_id: raw });
+  if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
+    // The protocol documents tab_id as a string, while chrome.tabs uses a
+    // number. Accept both forms, but a string that is not made of digits is a
+    // well-formed id for a tab that does not exist, not a schema violation.
+    let tabId = null;
+    if (typeof raw === 'number') {
+      if (!Number.isInteger(raw) || raw < 0) {
+        throw new ToolError('BAD_ARGS', 'args.tab_id must be a tab id string or non-negative integer', { tab_id: raw });
+      }
+      tabId = raw;
+    } else if (typeof raw === 'string') {
+      const text = raw.trim();
+      if (!/^\d+$/.test(text)) {
+        throw new ToolError('NOT_FOUND', 'tab ' + text + ' does not exist', { tab_id: raw });
+      }
+      tabId = Number(text);
+      if (!Number.isSafeInteger(tabId) || tabId < 0) {
+        throw new ToolError('NOT_FOUND', 'tab ' + text + ' does not exist', { tab_id: raw });
+      }
+    } else {
+      throw new ToolError('BAD_ARGS', 'args.tab_id must be a tab id string or non-negative integer', { tab_id: raw });
     }
     try {
       return await chrome.tabs.get(tabId);
     } catch (error) {
-      throw new ToolError('NOT_FOUND', 'tab ' + tabId + ' does not exist', { tab_id: tabId });
+      throw new ToolError('NOT_FOUND', 'tab ' + tabId + ' does not exist', { tab_id: raw });
     }
   }
 
@@ -891,30 +908,61 @@ async function historyTool(args, frame) {
 
   const beforeUrl = tab.url || null;
   const budget = actionBudgetMs(frame);
-  const watch = budget > 0 ? watchTabLoad(tab.id, beforeUrl, rawAction, budget) : null;
+  let outcome = { loaded: false, url: beforeUrl };
 
-  try {
-    if (rawAction === 'back') {
-      await chrome.tabs.goBack(tab.id);
-    } else if (rawAction === 'forward') {
-      await chrome.tabs.goForward(tab.id);
-    } else {
+  if (rawAction === 'reload') {
+    const watch = budget > 0 ? watchTabLoad(tab.id, beforeUrl, rawAction, budget) : null;
+    try {
       await chrome.tabs.reload(tab.id);
+    } catch (error) {
+      if (watch) watch.cancel();
+      const message = describeError(error);
+      if (/No tab with id|Invalid tab ID/i.test(message)) {
+        throw new ToolError('BROWSER_GONE', 'the tab was closed before history could change', { reason: 'tab_closed' });
+      }
+      throw new ToolError('INTERNAL', 'history reload failed: ' + message);
     }
-  } catch (error) {
-    if (watch) watch.cancel();
-    const message = describeError(error);
-    if (/No tab with id|Invalid tab ID/i.test(message)) {
-      throw new ToolError('BROWSER_GONE', 'the tab was closed before history could change', { reason: 'tab_closed' });
+    if (watch) outcome = await watch.promise;
+  } else {
+    // The tabs API back and forward commands walk the browser's session
+    // history, which can skip entries created by earlier tool calls. The CDP
+    // navigation history is the page's real entry list, so pick the adjacent
+    // entry by index and ask the browser to activate exactly that entry.
+    let history = null;
+    try {
+      history = await sendCdpCommand(tab.id, 'Page.getNavigationHistory', {});
+    } catch (error) {
+      if (error instanceof ToolError) throw error;
+      throw new ToolError('INTERNAL', 'browser_history could not read the navigation history: ' + describeError(error));
     }
-    if (/Cannot find|history/i.test(message)) {
+
+    const entries = history && Array.isArray(history.entries) ? history.entries : [];
+    const currentIndex = history && Number.isInteger(history.currentIndex) ? history.currentIndex : -1;
+    const targetIndex = currentIndex + (rawAction === 'back' ? -1 : 1);
+    if (targetIndex < 0 || targetIndex >= entries.length) {
       throw new ToolError('NOT_FOUND', 'no ' + rawAction + ' history entry is available', { action: rawAction });
     }
-    throw new ToolError('INTERNAL', 'history ' + rawAction + ' failed: ' + message);
-  }
 
-  let outcome = { loaded: false, url: beforeUrl };
-  if (watch) outcome = await watch.promise;
+    const targetEntry = entries[targetIndex];
+    if (!targetEntry || targetEntry.id === undefined || targetEntry.id === null) {
+      throw new ToolError('INTERNAL', 'the ' + rawAction + ' history entry has no id', { action: rawAction });
+    }
+
+    const watch = budget > 0 ? watchTabLoad(tab.id, beforeUrl, rawAction, budget) : null;
+    try {
+      await sendCdpCommand(tab.id, 'Page.navigateToHistoryEntry', { entryId: targetEntry.id });
+    } catch (error) {
+      if (watch) watch.cancel();
+      if (error instanceof ToolError && error.code === 'CAPABILITY_UNAVAILABLE') throw error;
+      const message = describeError(error);
+      if (/Cannot find|No entry|entry.*not found|not found|invalid/i.test(message)) {
+        throw new ToolError('NOT_FOUND', 'no ' + rawAction + ' history entry is available', { action: rawAction });
+      }
+      if (error instanceof ToolError) throw error;
+      throw new ToolError('INTERNAL', 'history ' + rawAction + ' failed: ' + message);
+    }
+    if (watch) outcome = await watch.promise;
+  }
 
   let current = null;
   try {
@@ -1004,28 +1052,82 @@ async function waitTool(args, frame) {
   }
 }
 
-// This function is serialised into the page by chrome.scripting.executeScript,
-// so it must be completely self-contained. It runs in the world selected by
-// browser_eval: the page world for main and the extension world for isolated.
-async function corvusEvaluateExpression(expression) {
-  try {
-    let value = (0, eval)(expression);
-    if (value && typeof value.then === 'function') value = await value;
-    let encoded = null;
-    try {
-      encoded = JSON.stringify(value);
-    } catch (error) {
-      return { ok: true, value: null, value_note: 'unserializable' };
-    }
-    if (encoded === undefined) {
-      return { ok: true, value: null, value_note: 'unserializable' };
-    }
-    return { ok: true, value: JSON.parse(encoded) };
-  } catch (error) {
-    const name = error && error.name ? String(error.name) : 'Error';
-    const message = error && error.message ? String(error.message) : String(error);
-    return { ok: false, error: { name: name, message: message } };
+function isCdpSerializationError(message) {
+  return /(could not|couldn't) be returned by value|object reference chain|circular|not serializ|serializ(e|ation) failed/i.test(String(message));
+}
+
+function remoteObjectToEvalResult(remote) {
+  if (!remote || typeof remote !== 'object') {
+    return { ok: true, value: null, value_note: 'unserializable' };
   }
+  if (typeof remote.description === 'string' && isCdpSerializationError(remote.description)) {
+    return { ok: true, value: null, value_note: 'unserializable' };
+  }
+  if (Object.prototype.hasOwnProperty.call(remote, 'value')) {
+    return { ok: true, value: remote.value === undefined ? null : remote.value };
+  }
+  if (remote.subtype === 'null') {
+    return { ok: true, value: null };
+  }
+  // JSON has no representation for undefined, functions, symbols or BigInt.
+  // NaN and Infinity become null through the JSON round trip, so report them
+  // as null without the unserializable note, matching the previous contract.
+  const unserializable = remote.unserializableValue;
+  if (unserializable === 'NaN' || unserializable === 'Infinity' || unserializable === '-Infinity' || unserializable === '-0') {
+    return { ok: true, value: null };
+  }
+  return { ok: true, value: null, value_note: 'unserializable' };
+}
+
+function exceptionDetailsToEvalResult(details) {
+  const exception = details && details.exception ? details.exception : {};
+  let name = exception.className ? String(exception.className) : '';
+  let message = '';
+  if (typeof exception.description === 'string' && exception.description !== '') {
+    message = exception.description;
+  } else if (exception.value !== undefined) {
+    message = String(exception.value);
+  } else if (details && details.text) {
+    message = String(details.text);
+  }
+  if (!name) name = 'Error';
+  if (message.indexOf(name + ': ') === 0) {
+    message = message.slice(name.length + 2);
+  } else if (message.indexOf(name + ':') === 0) {
+    message = message.slice(name.length + 1);
+  }
+  const newline = message.indexOf('\n');
+  if (newline !== -1) message = message.slice(0, newline);
+  message = message.trim();
+  if (message === '') message = details && details.text ? String(details.text) : name;
+  return { ok: false, error: { name: name, message: message } };
+}
+
+function buildEvalResult(response) {
+  if (!response || typeof response !== 'object') {
+    throw new ToolError('INTERNAL', 'Runtime.evaluate returned no response');
+  }
+  if (response.exceptionDetails) {
+    return exceptionDetailsToEvalResult(response.exceptionDetails);
+  }
+  return remoteObjectToEvalResult(response.result);
+}
+
+async function createIsolatedEvalContext(tabId) {
+  const tree = await sendCdpCommand(tabId, 'Page.getFrameTree', {});
+  const frame = tree && tree.frameTree && tree.frameTree.frame;
+  if (!frame || typeof frame.id !== 'string' || frame.id === '') {
+    throw new ToolError('INTERNAL', 'browser_eval could not resolve the main frame', { tab_id: tabIdString(tabId) });
+  }
+  const world = await sendCdpCommand(tabId, 'Page.createIsolatedWorld', {
+    frameId: frame.id,
+    worldName: 'corvus-eval',
+  });
+  const contextId = world && world.executionContextId;
+  if (!Number.isInteger(contextId) || contextId < 0) {
+    throw new ToolError('INTERNAL', 'browser_eval could not create an isolated world', { tab_id: tabIdString(tabId) });
+  }
+  return contextId;
 }
 
 async function evalTool(args, frame) {
@@ -1053,33 +1155,32 @@ async function evalTool(args, frame) {
   if (isRestrictedUrl(tab.url)) {
     throw new ToolError('CAPABILITY_UNAVAILABLE', 'this page cannot be scripted: ' + String(tab.url), { url: tab.url, reason: 'restricted_scheme' });
   }
-  if (!chrome.scripting || typeof chrome.scripting.executeScript !== 'function') {
-    throw new ToolError('CAPABILITY_UNAVAILABLE', 'the scripting API is unavailable');
-  }
 
-  let results = null;
+  // Runtime.evaluate runs the string as page code, so MV3's extension CSP does
+  // not apply. The automatic debugger channel is the only execution path here;
+  // scripting is not required for browser_eval anymore.
+  const params = {
+    expression: expression,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  };
+
   try {
-    results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, allFrames: false },
-      world: world === 'main' ? 'MAIN' : 'ISOLATED',
-      func: corvusEvaluateExpression,
-      args: [expression],
-    });
+    if (world === 'isolated') {
+      params.contextId = await createIsolatedEvalContext(tab.id);
+    }
+    const response = await sendCdpCommand(tab.id, 'Runtime.evaluate', params);
+    return buildEvalResult(response);
   } catch (error) {
-    throw classifyInjectionFailure(error);
+    if (error instanceof ToolError && error.code === 'CAPABILITY_UNAVAILABLE') throw error;
+    const message = describeError(error);
+    if (isCdpSerializationError(message)) {
+      return { ok: true, value: null, value_note: 'unserializable' };
+    }
+    if (error instanceof ToolError) throw error;
+    throw new ToolError('INTERNAL', 'browser_eval failed: ' + message);
   }
-
-  if (!Array.isArray(results) || results.length === 0) {
-    throw new ToolError('INTERNAL', 'browser_eval returned no result');
-  }
-  const frameResult = results[0];
-  if (frameResult && frameResult.error) {
-    throw new ToolError('INTERNAL', 'browser_eval injection failed: ' + String(frameResult.error));
-  }
-  if (!frameResult || frameResult.result === undefined) {
-    throw new ToolError('INTERNAL', 'browser_eval returned no value');
-  }
-  return frameResult.result;
 }
 
 async function tabListTool() {
@@ -1524,11 +1625,10 @@ async function navigateTool(args, frame) {
 // Debugger channel (managed automatically, never by the user)
 // ---------------------------------------------------------------------------
 //
-// The eighteen M2 tools run on the DOM and scripting channels and never attach
-// the debugger. A later CDP-backed handler calls ensureDebuggerChannel() or
-// sendCdpCommand() at the start of its command; that first call attaches
-// lazily. The channel detaches after thirty seconds without a CDP command, when
-// its tab closes, and on every websocket reconnect.
+// browser_eval and the back and forward paths of browser_history call
+// ensureDebuggerChannel() or sendCdpCommand() at the start of their command;
+// that first call attaches lazily. The channel detaches after thirty seconds
+// without a CDP command, when its tab closes, and on every websocket reconnect.
 
 function debuggerUnavailable(tabId, message, cause, reason) {
   const details = { tab_id: tabIdString(tabId), cause: cause };

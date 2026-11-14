@@ -32,8 +32,11 @@ M2 wave 1 新增：
 | 标签页 | `tab_list`、`tab_new`、`tab_close`、`tab_switch` |
 
 页面工具和操作工具上的 `tab_id` 可选，省略时表示活动标签页；`tab_close` 和
-`tab_switch` 必须提供。`target` 可以是 `page_snapshot` 或 `page_find` 返回的
-`@eN` ref，也可以是 CSS 选择器。不要自行发明工具名、参数键或错误码。
+`tab_switch` 必须提供。`tab_id` 是 JSON 字符串；数字 JSON 值（例如 `999`）为
+BAD_ARGS。未知字符串（例如 `"tab-999"`）会原样传递并返回 NOT_FOUND，错误文本
+携带 `details.tab_id`，而不是 BAD_ARGS。`target` 可以是 `page_snapshot`
+或 `page_find` 返回的 `@eN` ref，也可以是 CSS 选择器。不要自行发明工具名、
+参数键或错误码。
 
 当前超时策略：默认 60000 ms，上限 125000 ms。`browser_eval` 使用 30000 ms。
 `browser_wait` 使用 `args.timeout_ms + 5000`，封顶 125000 ms，其自身
@@ -90,8 +93,10 @@ curl -fsS -o /dev/null -w 'fixture status=%{http_code}\n' http://127.0.0.1:8808/
 ```
 
 M2 固定页面是 `http://127.0.0.1:8808/m2`（文件
-`tests/acceptance/fixtures/m2-page.html`）。标签页和历史检查还会用到
-`/m2-b` 与 `/m2-c`。
+`tests/acceptance/fixtures/m2-page.html`）。标签页、历史与 CSP 检查还会用到
+`/m2-b`、`/m2-c` 和 `/m2-csp`。`/m2-csp` 响应带
+`Content-Security-Policy: script-src 'self'; object-src 'none'; base-uri 'none'`，
+标题为 `Corvus CSP Page`，文本标记为 `CSP fixture marker 7f3c`。
 
 ## 5. 加载扩展
 
@@ -305,6 +310,8 @@ call eval-cyclic '{"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name
 - 循环对象返回 `{"ok":true,"value":null,"value_note":"unserializable"}`。
 - `world` 默认 `isolated`；`world:"main"` 也应返回标题。`world:"server"`
   为 BAD_ARGS。该工具超时为 30000 ms。
+- 下一小节的严格 CSP 回归对两个 `world` 值都必须通过；`/m2-csp` 上出现
+  `EvalError` 即硬失败。
 
 ### browser_wait
 
@@ -321,23 +328,90 @@ call wait-timeout '{"jsonrpc":"2.0","id":39,"method":"tools/call","params":{"nam
 `matched=true` 且 `waited_ms > 0`（fixture 约 1200 ms 后显示）。若返回 0 ms，
 说明 reload 或轮询可疑，记录并重试一次。其余正常调用返回 `matched=true`、非负 `waited_ms` 和 fixture
 `url`；`waited_ms` 小于请求的超时。超时调用返回结构化 TIMEOUT 错误，耗时约为
-100 ms 加传输开销；MCP 错误文本只含 `CODE: message`，`ErrorBody.details.waited_ms`
-保留在信封上，不要在 MCP 结果中强制要求。没有条件为 BAD_ARGS。守护进程
+100 ms 加传输开销；MCP 错误文本以 `CODE: message` 开头，并在末尾附加
+`ErrorBody.details` 的 JSON，从该对象记录 `details.waited_ms`。没有条件为 BAD_ARGS。守护进程
 有效超时为 `args.timeout_ms + 5000` 且封顶 125000 ms，因此 5000 ms 的等待上限为
 10000 ms。
 
 ### browser_history
 
 ```bash
-call navigate-b '{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2-b"}}}'
-call history-back '{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"back"}}}'
-call history-forward '{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"forward"}}}'
-call history-reload '{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"reload"}}}'
+call history-base '{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2"}}}'
+call navigate-b '{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2-b"}}}'
+call history-back '{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"back"}}}'
+call history-forward '{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"forward"}}}'
+call history-reload '{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"reload"}}}'
 ```
 
-通过标准：back 返回 `action:"back"`、URL `/m2`、`loaded:true`；forward
-返回 URL `/m2-b`、`loaded:true`；reload 保持当前 URL 且 `loaded:true`。
-动作不是 back、forward、reload 时为 BAD_ARGS。新标签页没有历史时 back 为 NOT_FOUND。
+通过标准：该序列必须每次只移动一个历史条目。`history-back` 返回
+`action:"back"`、URL `/m2`、`loaded:true`，不得跳到更早页面；
+`history-forward` 返回 URL `/m2-b`、`loaded:true`；reload 保持 `/m2-b` 且
+`loaded:true`。动作不是 back、forward、reload 时为 BAD_ARGS。只有一条历史
+记录的新标签页执行 back 返回结构化 NOT_FOUND，而不是 BAD_ARGS；在第 11 节
+切换前用 `NEW_TAB` 验证。
+
+### bfcache 与紧随其后的 DOM 调用
+
+本序列是往返缓存（bfcache）恢复的回归检查。缺陷现象：`browser_history back`
+从 bfcache 恢复 `/m2` 后，content script 的卸载标志仍为 true，导致
+`page_text` 与 `page_snapshot` 返回 NAVIGATION_LOST，即使
+`document.readyState` 已是 `complete`。所有步骤必须连续执行，不得插入 sleep，
+也不得重试 DOM 调用。
+
+```bash
+call bfcache-tab-new '{"jsonrpc":"2.0","id":80,"method":"tools/call","params":{"name":"tab_new","arguments":{"url":"http://127.0.0.1:8808/m2","active":true}}}'
+call bfcache-navigate-b '{"jsonrpc":"2.0","id":81,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2-b","tab_id":"BF_TAB"}}}'
+call bfcache-back '{"jsonrpc":"2.0","id":82,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"back","tab_id":"BF_TAB"}}}'
+call bfcache-back-text '{"jsonrpc":"2.0","id":83,"method":"tools/call","params":{"name":"page_text","arguments":{"tab_id":"BF_TAB"}}}'
+call bfcache-back-snapshot '{"jsonrpc":"2.0","id":84,"method":"tools/call","params":{"name":"page_snapshot","arguments":{"tab_id":"BF_TAB","mode":"interactive"}}}'
+call bfcache-forward '{"jsonrpc":"2.0","id":85,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"forward","tab_id":"BF_TAB"}}}'
+call bfcache-forward-text '{"jsonrpc":"2.0","id":86,"method":"tools/call","params":{"name":"page_text","arguments":{"tab_id":"BF_TAB"}}}'
+call bfcache-forward-snapshot '{"jsonrpc":"2.0","id":87,"method":"tools/call","params":{"name":"page_snapshot","arguments":{"tab_id":"BF_TAB","mode":"interactive"}}}'
+call bfcache-reload '{"jsonrpc":"2.0","id":88,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"reload","tab_id":"BF_TAB"}}}'
+call bfcache-reload-text '{"jsonrpc":"2.0","id":89,"method":"tools/call","params":{"name":"page_text","arguments":{"tab_id":"BF_TAB"}}}'
+call bfcache-reload-snapshot '{"jsonrpc":"2.0","id":90,"method":"tools/call","params":{"name":"page_snapshot","arguments":{"tab_id":"BF_TAB","mode":"interactive"}}}'
+call bfcache-close '{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"tab_close","arguments":{"tab_id":"BF_TAB"}}}'
+```
+
+从 `bfcache-tab-new.json` 读取 `BF_TAB`，之后每次调用都原样传入。
+
+通过标准：`bfcache-back` 返回 `action:"back"`、URL `/m2`、`loaded:true`；
+紧随其后的 `bfcache-back-text` 与 `bfcache-back-snapshot` 都必须
+`isError:false`，URL 为 `/m2`，标题为 `Corvus M2 Page`。`bfcache-forward`
+返回 `/m2-b`；其后的两次 DOM 调用均 `isError:false`，URL 为 `/m2-b`，标题为
+`Corvus M2 Page B`。`bfcache-reload` 保持 `/m2-b` 且 `loaded:true`，其后的
+两次 DOM 调用同样 `isError:false`。六次紧随其后的调用中任一次出现
+NAVIGATION_LOST、其他 `isError:true`，或快照仍是上一页面，均为硬失败。这是
+卸载标志残留回归，不是加载时序问题；稍后重试、sleep 或
+`document.readyState === "complete"` 都不能算通过。最后关闭该标签页，保持第
+11 节的标签页状态干净。
+
+### 严格 CSP 页面上的 browser_eval
+
+调用前先确认响应头：
+
+```bash
+curl -sS -D - -o /dev/null http://127.0.0.1:8808/m2-csp | grep -i '^content-security-policy:'
+```
+
+必须输出
+`content-security-policy: script-src 'self'; object-src 'none'; base-uri 'none'`。
+页面标题为 `Corvus CSP Page`，文本标记为 `CSP fixture marker 7f3c`。
+
+```bash
+call csp-navigate '{"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2-csp"}}}'
+call csp-text '{"jsonrpc":"2.0","id":61,"method":"tools/call","params":{"name":"page_text","arguments":{}}}'
+call csp-eval-isolated '{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"browser_eval","arguments":{"expression":"document.title","world":"isolated"}}}'
+call csp-eval-main '{"jsonrpc":"2.0","id":63,"method":"tools/call","params":{"name":"browser_eval","arguments":{"expression":"document.title","world":"main"}}}'
+call csp-back '{"jsonrpc":"2.0","id":64,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2"}}}'
+```
+
+通过标准：`csp-navigate` 返回 `loaded:true` 且 URL 为 `/m2-csp`；
+`csp-text` 包含 `Corvus CSP Page` 和 `CSP fixture marker 7f3c`。两次 eval
+都返回 `{"ok":true,"value":"Corvus CSP Page"}`。任一次出现 `EvalError`、
+`ok:false` 或 `isError:true` 即硬失败：自动 debugger 通道必须在页面 CSP
+限制下完成求值，不得禁用 CSP 或注入页面脚本。`csp-back` 返回 `/m2`，
+供标签页小节继续使用。
 
 ## 11. 标签页
 
@@ -347,10 +421,14 @@ call tab-new '{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"t
 ```
 
 从 `tab-new.json` 读取 `tab_id` 记为 `NEW_TAB`，从 `tabs-before.json`
-读取一个之前的 tab id 记为 `OLD_TAB`。
+读取一个之前的 tab id 记为 `OLD_TAB`。id 是 JSON 字符串，必须原样复制。
+切换前用 `action:"back"` 和 `tab_id:"NEW_TAB"` 调用 `browser_history`；
+新标签页只有一条历史记录，必须返回结构化 NOT_FOUND，保存为
+`history-fresh-tab.json`。
 
 ```bash
 call tabs-after-new '{"jsonrpc":"2.0","id":52,"method":"tools/call","params":{"name":"tab_list","arguments":{}}}'
+call tab-fresh-history '{"jsonrpc":"2.0","id":56,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"back","tab_id":"NEW_TAB"}}}'
 call tab-switch '{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"tab_switch","arguments":{"tab_id":"NEW_TAB"}}}'
 call tab-close '{"jsonrpc":"2.0","id":54,"method":"tools/call","params":{"name":"tab_close","arguments":{"tab_id":"NEW_TAB"}}}'
 call tabs-after-close '{"jsonrpc":"2.0","id":55,"method":"tools/call","params":{"name":"tab_list","arguments":{}}}'
@@ -358,15 +436,19 @@ call tabs-after-close '{"jsonrpc":"2.0","id":55,"method":"tools/call","params":{
 
 通过标准：`tab_list` 返回 `tabs`，每项含字符串 `tab_id`、数字 `index`、
 布尔 `active`、`url`、`title`、`status`；恰好一个 tab 为 active。
-`tab_new` 返回 `tab_id`、`url`、`loaded`、`previous_tab_id`；新标签页
-出现在 `tab_list`，当 `active` 为 true 时成为活动页。`tab_switch` 返回请求的
-`tab_id`、其 `url`、`title` 和 `active:true`。`tab_close` 返回
-`closed:true` 和 `tab_id`；仅当关闭的是活动标签页且相邻标签页被激活时才有
-`next_tab_id`。关闭后 `tab_list` 不再包含该标签页。
+`tab_new` 返回字符串 `tab_id`、`url`、`loaded`、`previous_tab_id`；新标签页
+出现在 `tab_list`，当 `active` 为 true 时成为活动页。id 必须原样复制，
+不得转成数字。`tab_switch` 返回请求的 `tab_id`、其 `url`、`title` 和
+`active:true`。`tab_close` 返回 `closed:true` 和 `tab_id`；仅当关闭的是
+活动标签页且相邻标签页被激活时才有 `next_tab_id`。关闭后 `tab_list` 不再
+包含该标签页。`tab-fresh-history` 在新标签页上必须返回结构化 NOT_FOUND，
+证明单条历史记录被正确处理。
 
-负向检查：`tab_close` 或 `tab_switch` 缺少 `tab_id` 为 BAD_ARGS；未知 id
-为 NOT_FOUND；`tab_new` 的 `active` 不是布尔值为 BAD_ARGS。之后使用已关闭的
-tab id 是 NOT_FOUND 或 BROWSER_GONE，不能是裸字符串。
+负向检查：`tab_close` 或 `tab_switch` 缺少 `tab_id` 或传非字符串为
+BAD_ARGS，数字 JSON `tab_id`（例如 `999`）同为 BAD_ARGS；未知字符串 id
+（例如 `"tab-999"`）原样传递并返回 NOT_FOUND，错误文本携带 `details.tab_id`，
+绝不是 BAD_ARGS；`tab_new` 的 `active` 不是布尔值为 BAD_ARGS。之后使用已
+关闭的 tab id 是 NOT_FOUND 或 BROWSER_GONE，不能是裸字符串。
 
 ## 12. 负向与错误路径矩阵
 
@@ -391,12 +473,15 @@ tab id 是 NOT_FOUND 或 BROWSER_GONE，不能是裸字符串。
 | `browser_select` | `{"target":"#pick","values":["missing"]}` | NOT_FOUND |
 | `browser_eval` | `{"expression":"1","world":"server"}` | BAD_ARGS |
 | `browser_wait` | `{}` | BAD_ARGS |
-| `browser_wait` | `{"selector":"#never","timeout_ms":100}` | TIMEOUT；记录耗时，details 保留在信封 |
+| `browser_wait` | `{"selector":"#never","timeout_ms":100}` | TIMEOUT；记录耗时与末尾 JSON 中的 `details.waited_ms` |
 | `browser_history` | `{"action":"refresh"}` | BAD_ARGS |
 | `tab_new` | `{"active":"yes"}` | BAD_ARGS |
 | `tab_close` | `{}` | BAD_ARGS |
-| `tab_close` | `{"tab_id":"tab-999"}` | NOT_FOUND |
+| `tab_close` | `{"tab_id":"tab-999"}` | NOT_FOUND；错误文本含 `details.tab_id` `"tab-999"` |
 | `tab_switch` | `{}` | BAD_ARGS |
+| `tab_switch` | `{"tab_id":"tab-999"}` | NOT_FOUND；错误文本含 `details.tab_id` `"tab-999"` |
+| `tab_switch` | `{"tab_id":999}` | BAD_ARGS（tab_id 必须是字符串） |
+| `browser_history` | 仅一条历史的新标签页 `{"action":"back"}` | NOT_FOUND |
 | 禁用扩展 | 任意页面工具 | TRANSPORT_DOWN |
 
 停用扩展后调用 `page_text` 必须返回 TRANSPORT_DOWN，且守护进程不得崩溃。重新启用扩展，
@@ -410,6 +495,10 @@ tab id 是 NOT_FOUND 或 BROWSER_GONE，不能是裸字符串。
 - `health-before.json`、`health-after.json`
 - `init.headers`、`init.json`、`tools-list.json`
 - 每次正常调用和负向调用各一个 `<tool>.json`
+- `csp-headers.txt`、`csp-eval-isolated.json`、`csp-eval-main.json`
+- `history-step-back.json`、`history-step-forward.json`、`history-fresh-tab.json`
+- `bfcache-*.json`：tab-new、navigate-b、back、back-text、back-snapshot、
+  forward、forward-text、forward-snapshot、reload、reload-text、reload-snapshot、close
 - 辅助函数输出的 `curl` `time_total` 行，或带时间戳的延迟文件
 - 截图：扩展页、已连接的弹窗、交互前的 fixture、type/click 后、scroll 后、
   tab switch 后
@@ -431,9 +520,9 @@ tab id 是 NOT_FOUND 或 BROWSER_GONE，不能是裸字符串。
 | `browser_press` | `pressed=true`；keys 回显；keydown 生效 | <= 1000 ms |
 | `browser_scroll` | `scrolled=true`；偏移按请求方向变化 | <= 1000 ms |
 | `browser_select` | selected 与 value 正确 | <= 1000 ms |
-| `browser_eval` | value 类型正确；页面抛错为 `ok=false`；循环对象不可序列化 | <= 1000 ms |
+| `browser_eval` | value 类型正确；严格 CSP 标题在两个 world 都通过；页面抛错为 `ok=false`；循环对象不可序列化 | <= 1000 ms |
 | `browser_wait` | 条件匹配；超时为结构化 TIMEOUT（记录耗时） | <= waited + 500 ms |
-| `browser_history` | action、URL、loaded 正确 | <= 2000 ms |
+| `browser_history` | back/forward 精确单步；新标签页 back 为 NOT_FOUND；bfcache back/forward/reload 后立即 page_text 与 page_snapshot 均 `isError:false`；action、URL、loaded 正确 | <= 2000 ms |
 | `tab_list` | 列出全部标签页，恰好一个 active，形状正确 | <= 2000 ms |
 | `tab_new` | 新 tab id、URL、previous id、loaded 正确 | <= 2000 ms |
 | `tab_switch` | 请求的标签页成为 active，URL/title 正确 | <= 2000 ms |

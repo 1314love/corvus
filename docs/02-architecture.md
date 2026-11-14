@@ -104,7 +104,7 @@ The frozen M2 wave 1 surface has 18 tools. `browser_navigate`, `page_snapshot`, 
 
 Common conventions:
 
-- `tab_id` is optional on page and action tools; when omitted the tool acts on the active tab. `tab_close` and `tab_switch` require the target tab explicitly.
+- `tab_id` is a string in both arguments and results and is optional on page and action tools; when omitted the tool acts on the active tab. A syntactically foreign or unknown id returns `NOT_FOUND` rather than `BAD_ARGS`. `tab_close` and `tab_switch` require the target tab explicitly.
 - `target` accepts an `@eN` reference or a CSS selector. References are allocated per document, and `page_snapshot` and `page_find` share one reference space, so either can feed `browser_click`, `browser_type`, `browser_hover`, `browser_press`, `browser_scroll` or `browser_select`.
 - `max_chars` caps truncate the returned string and set `truncated: true`; they never turn a successful call into an error.
 
@@ -121,9 +121,9 @@ Common conventions:
 | `browser_press` | `keys` string or string[]; `target?`; `tab_id?` | `pressed: true`, `keys[]`, `url` |
 | `browser_scroll` | `direction` (`up`, `down`, `left`, `right`); `pages?` 0..50 default 1; `target?`; `tab_id?` | `scrolled: true`, `x`, `y`, `url` |
 | `browser_select` | `target`; `values[]`; `tab_id?` | `selected[]`, `value`, `url` |
-| `browser_eval` | `expression`; `world?` (`main` or `isolated` default); `tab_id?` | `ok: true`, `value`; or `ok: false`, `error` with `name`, `message` |
+| `browser_eval` | `expression`; `world?` (`main` or `isolated` default; evaluated through CDP `Runtime.evaluate`); `tab_id?` | `ok: true`, `value`; or `ok: false`, `error` with `name`, `message` |
 | `browser_wait` | `tab_id?`; at least one of `selector?`, `text?`, `url_contains?`; `timeout_ms?` 100..120000 default 10000 | `matched: true`, `waited_ms`, `url` |
-| `browser_history` | `action` (`back`, `forward`, `reload`); `tab_id?` | `action`, `url`, `loaded` |
+| `browser_history` | `action` (`back`, `forward`, `reload`; back/forward move one entry); `tab_id?` | `action`, final `url`, `loaded` |
 | `tab_list` | none | `tabs[]` with `tab_id`, `index`, `active`, `url`, `title`, `status` |
 | `tab_new` | `url?`; `active?` default true | `tab_id`, `url`, `loaded`, `previous_tab_id` |
 | `tab_close` | `tab_id` | `closed: true`, `tab_id`, `next_tab_id?` |
@@ -133,7 +133,8 @@ Notes:
 
 - `browser_press` accepts Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, PageUp, PageDown, Home, End, single character keys, and the Control+, Shift+, Alt+ and Meta+ modifiers (for example `Control+Shift+KeyK`).
 - `browser_select` writes every value in `values`; a `<select multiple>` accepts more than one.
-- `browser_eval` runs in the isolated world by default and in the page world on request. A page exception is a successful tool call with `{ "ok": false, "error": { "name", "message" } }`; only tool-level failures set `isError`. Values that cannot be serialised to JSON return `null` with `"value_note": "unserializable"`.
+- `browser_eval` is debugger-backed: it evaluates through the automatic per-tab debugger channel with CDP `Runtime.evaluate`. The default `isolated` world runs in a dedicated isolated world created by the channel, and `main` runs in the page world; the page Content-Security-Policy does not restrict the expression. A debugger attach refusal maps to `CAPABILITY_UNAVAILABLE`. A page exception is a successful tool call with `{ "ok": false, "error": { "name", "message" } }`; only tool-level failures set `isError`. Values that cannot be serialised to JSON return `null` with `"value_note": "unserializable"`.
+- `browser_history` moves exactly one entry per `back` or `forward` through CDP `Page.getNavigationHistory` and `Page.navigateToHistoryEntry`, waits for the document to load, and returns the final `url`; an out-of-range entry is `NOT_FOUND`.
 - `browser_wait` needs at least one condition; a timeout is `TIMEOUT` with `details.waited_ms`. When an error carries `details`, the MCP tool result text appends them as compact JSON (for example `TIMEOUT: wait timed out after 100 ms {"waited_ms":4321}`); error results do not carry `structuredContent`.
 - `tab_close` returns `next_tab_id` when closing the active tab activates a neighbour.
 

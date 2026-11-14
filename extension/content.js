@@ -108,8 +108,17 @@
   let refCounter = 0;
   let unloading = false;
 
+  // pagehide fires both for a real departure and when the document enters the
+  // back-forward cache. A cached document is frozen, but the same JavaScript
+  // context can be restored later, so pageshow must clear the flag; otherwise
+  // every command after a history back would report NAVIGATION_LOST on a
+  // healthy page.
   window.addEventListener('pagehide', () => {
     unloading = true;
+  });
+
+  window.addEventListener('pageshow', () => {
+    unloading = false;
   });
 
   // -------------------------------------------------------------------------

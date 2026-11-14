@@ -46,18 +46,19 @@ This evidence exercises the daemon and MCP surface, not a real browser.
 
 | item | observed |
 |---|---|
-| Build | `CARGO_TARGET_DIR=target/qa-m2-gates cargo build --offline -p corvusd --bin corvusd` exit 0 |
-| Result | `RESULT: 64 passed, 0 failed, 0 skipped`, exit 0 |
+| Build | `CARGO_TARGET_DIR=target/qa-t18-build cargo build --offline -p corvusd --bin corvusd` exit 0 |
+| Result | `RESULT: 72 passed, 0 failed, 0 skipped`, exit 0 |
 | Health | version `0.1.0`, protocol `2025-06-18`, ws `127.0.0.1:27330`, http `127.0.0.1:27331` |
 | `tools/list` | exactly 18 frozen names, four boolean annotations, frozen schemas |
 | Round trip | `page_snapshot` `isError=false`, 700-byte structured result |
 | Navigate A/B | `loaded=true`, final URL matches the request |
 | Immediate snapshot after B | snapshot URL is page B, two nodes |
 | Timeout | `browser_wait` selector `#never` with `timeout_ms:100` -> structured `TIMEOUT` |
-| Unknown tab | `tab_switch` `tab-999` -> structured `NOT_FOUND` |
+| Unknown tab | `tab_switch` and `tab_close` with `"tab-999"` -> structured `NOT_FOUND` |
+| `tab_id` pass-through | string ids reach envelopes unchanged; numeric `tab_id` -> `BAD_ARGS` |
 | Defaults on the wire | `page_html.max_chars=200000`, `browser_eval.world="isolated"` |
 | Navigate without load | `loaded=false` answer is not an error; `url` is the current document |
-| Envelopes | 32 command envelopes recorded by the mock |
+| Envelopes | 33 command envelopes recorded by the mock |
 
 Fill the real-browser tables below from the current run; do not copy these
 conformance values into the browser tables.
@@ -95,6 +96,11 @@ payload; latency is client-side `curl %{time_total}` in milliseconds.
 | 24 | `tab_switch` | `{"tab_id":"<NEW_TAB>"}` | `active=true`, url `/m2-c` |  |  | tab-switch.json |  |
 | 25 | `tab_close` | `{"tab_id":"<NEW_TAB>"}` | `closed=true`, `tab_id` echoes, optional `next_tab_id` |  |  | tab-close.json |  |
 | 26 | `page_text` | `{"max_chars":20}` | `truncated=true`, text length <=20 |  |  | page-text-truncated.json |  |
+| 27 | `browser_eval` | `{"expression":"document.title","world":"isolated"}` then world `main` on `/m2-csp` | `ok=true`, `value="Corvus CSP Page"`; no `EvalError`, `isError=false` |  |  | csp-eval-isolated.json, csp-eval-main.json, csp-headers.txt |  |
+| 28 | `browser_history` | `/m2` then `/m2-b`, `back`, `forward`; `back` on a fresh single-entry tab | `back` lands `/m2`, `forward` lands `/m2-b`, fresh tab returns `NOT_FOUND` |  |  | history-step-back.json, history-step-forward.json, history-fresh-tab.json |  |
+| 29 | `browser_history` bfcache back | `tab_new /m2` -> `browser_navigate /m2-b` -> `back` -> immediate `page_text`, `page_snapshot` | `back` URL `/m2`, `loaded=true`; both immediate calls `isError=false`; snapshot title `Corvus M2 Page` |  |  | bfcache-tab-new.json, bfcache-navigate-b.json, bfcache-back.json, bfcache-back-text.json, bfcache-back-snapshot.json |  |
+| 30 | `browser_history` bfcache forward | then `forward` -> immediate `page_text`, `page_snapshot` | URL `/m2-b`; both immediate calls `isError=false`; title `Corvus M2 Page B` |  |  | bfcache-forward.json, bfcache-forward-text.json, bfcache-forward-snapshot.json |  |
+| 31 | `browser_history` bfcache reload | then `reload` -> immediate `page_text`, `page_snapshot` | URL `/m2-b`, `loaded=true`; both immediate calls `isError=false` |  |  | bfcache-reload.json, bfcache-reload-text.json, bfcache-reload-snapshot.json, bfcache-close.json |  |
 
 ## 5. Negative cases
 
@@ -116,12 +122,15 @@ Every row must return a structured error (or, for evaluate page throws, an
 | 11 | `browser_eval` `{}` | `BAD_ARGS` |  | negative-eval-empty.json |  |
 | 12 | `browser_eval` `{"expression":"1","world":"server"}` | `BAD_ARGS` |  | negative-eval-world.json |  |
 | 13 | `browser_wait` `{}` | `BAD_ARGS` |  | negative-wait-empty.json |  |
-| 14 | `browser_wait` `{"selector":"#never","timeout_ms":100}` | structured `TIMEOUT`; record elapsed |  | negative-wait-timeout.json |  |
+| 14 | `browser_wait` `{"selector":"#never","timeout_ms":100}` | structured `TIMEOUT`; record elapsed and `details.waited_ms` |  | negative-wait-timeout.json |  |
 | 15 | `browser_history` `{"action":"refresh"}` | `BAD_ARGS` |  | negative-history.json |  |
 | 16 | `tab_close` `{}` | `BAD_ARGS` |  | negative-tab-close.json |  |
-| 17 | `tab_switch` `{"tab_id":"tab-999"}` | `NOT_FOUND` |  | negative-tab-missing.json |  |
+| 17 | `tab_switch` `{"tab_id":"tab-999"}` | `NOT_FOUND`; `content[0].text` carries `details.tab_id` `"tab-999"` |  | negative-tab-missing.json |  |
 | 18 | stale ref `browser_click @e999999` | `NOT_FOUND` |  | negative-stale-ref.json |  |
 | 19 | extension disabled, then `page_text` | `TRANSPORT_DOWN` |  | negative-no-extension.json |  |
+| 20 | `browser_history` `{"action":"back"}` on a fresh tab with one entry | `NOT_FOUND`; string `tab_id` is forwarded unchanged |  | history-fresh-tab.json |  |
+| 21 | `tab_switch` `{"tab_id":999}` (numeric JSON) | `BAD_ARGS`; `tab_id` must be a string |  | negative-tab-numeric.json |  |
+| 22 | `tab_close` `{"tab_id":"tab-999"}` | `NOT_FOUND`; `details.tab_id` echoes `"tab-999"` |  | negative-tab-close-missing.json |  |
 
 ## 6. Error codes observed
 
@@ -141,10 +150,11 @@ Any code outside this table is a defect. In MCP a structured tool error is
 `isError:true` with `content[0].text` beginning `CODE: message`; a JSON-RPC
 `error` for a tool-level failure is a defect.
 
-MCP observability: current `tools/call` error results carry only the text
-`CODE: message`; `ErrorBody.details` is not forwarded. Record details such as
-`waited_ms` from daemon logs or envelopes when needed; absence from the MCP text
-alone is not a failure.
+MCP observability: current `tools/call` error results append
+`ErrorBody.details` as a trailing JSON object to `content[0].text`, after
+`CODE: message`. For example an unknown tab id ends with `{"tab_id":"tab-999"}`.
+Record `details.waited_ms` and `details.tab_id` from that text; absence is a
+defect unless the tool produced no structured details at all.
 
 ## 7. Performance
 
@@ -177,6 +187,12 @@ Report contract mismatches to the Team Lead instead of patching `crates/` or
 Known timing risk: a `browser_navigate` answer with `loaded=false` is a
 success, not an error. If an immediate snapshot still shows the previous page,
 record both JSON payloads and retry after 500 ms before classifying it.
+
+Known bfcache regression to retest (extension task-20): after
+`browser_history back` or `forward` restores a page from the back-forward cache,
+`page_text` and `page_snapshot` must still work on the same `tab_id`. If they
+return `NAVIGATION_LOST` while `document.readyState` is `complete`, record all
+payloads, do not retry as a pass, and classify it as S1/S2 by frequency.
 
 ## 9. Environment notes
 

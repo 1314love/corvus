@@ -35,8 +35,11 @@ M2 wave 1 adds:
 | tabs | `tab_list`, `tab_new`, `tab_close`, `tab_switch` |
 
 `tab_id` is optional on page and action tools and means the active tab when it
-is omitted. `tab_close` and `tab_switch` require it. `target` is either an
-`@eN` ref from `page_snapshot` or `page_find`, or a CSS selector.
+is omitted. `tab_close` and `tab_switch` require it. A `tab_id` is a JSON
+string; a numeric JSON value such as `999` is BAD_ARGS. An unknown string such
+as `"tab-999"` is forwarded unchanged and returns NOT_FOUND with
+`details.tab_id` in the error text, never BAD_ARGS. `target` is either an `@eN` ref from
+`page_snapshot` or `page_find`, or a CSS selector.
 Do not invent tool names, argument keys or error codes.
 
 Current timeout policy: 60000 ms default, 125000 ms ceiling.
@@ -97,8 +100,11 @@ curl -fsS -o /dev/null -w 'fixture status=%{http_code}\n' http://127.0.0.1:8808/
 ```
 
 The M2 fixture is `http://127.0.0.1:8808/m2` (file
-`tests/acceptance/fixtures/m2-page.html`). Two extra documents are used by
-the tab and history checks: `/m2-b` and `/m2-c`.
+`tests/acceptance/fixtures/m2-page.html`). Three extra documents are used by
+the tab, history and CSP checks: `/m2-b`, `/m2-c` and `/m2-csp`. The
+`/m2-csp` response carries
+`Content-Security-Policy: script-src 'self'; object-src 'none'; base-uri 'none'`,
+has title `Corvus CSP Page` and text marker `CSP fixture marker 7f3c`.
 
 ## 5. Load the extension
 
@@ -327,6 +333,8 @@ Pass criteria:
 - cyclic object returns `{"ok":true,"value":null,"value_note":"unserializable"}`.
 - `world` defaults to `isolated`; `world:"main"` also returns the title.
   `world:"server"` is BAD_ARGS. The tool timeout is 30000 ms.
+- The strict-CSP regression in the next subsection is mandatory for both
+  `world` values; an `EvalError` on `/m2-csp` is a hard failure.
 
 ### browser_wait
 
@@ -345,9 +353,9 @@ reveals it after about 1200 ms). A zero wait means the reload or the polling
 loop is suspect; record it and retry once. Each other happy call returns
 `matched=true`, a non-negative `waited_ms`, and the fixture `url`;
 `waited_ms` is below the requested timeout. The timeout call returns a structured TIMEOUT error and completes in
-roughly 100 ms plus transport overhead. MCP error text carries `CODE: message`
-only; `ErrorBody.details.waited_ms` stays on the envelope, so do not require it
-in the MCP result.
+roughly 100 ms plus transport overhead. MCP error text starts with
+`CODE: message` and appends `ErrorBody.details` as trailing JSON, so record
+`details.waited_ms` from that object.
 A call with no condition is BAD_ARGS. The effective daemon timeout is
 `args.timeout_ms + 5000` capped at 125000 ms, so a 5000 ms wait is bounded by
 10000 ms.
@@ -355,16 +363,84 @@ A call with no condition is BAD_ARGS. The effective daemon timeout is
 ### browser_history
 
 ```bash
-call navigate-b '{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2-b"}}}'
-call history-back '{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"back"}}}'
-call history-forward '{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"forward"}}}'
-call history-reload '{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"reload"}}}'
+call history-base '{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2"}}}'
+call navigate-b '{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2-b"}}}'
+call history-back '{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"back"}}}'
+call history-forward '{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"forward"}}}'
+call history-reload '{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"reload"}}}'
 ```
 
-Pass criteria: back returns `action:"back"`, URL `/m2`, `loaded:true`;
-forward returns URL `/m2-b`, `loaded:true`; reload keeps the current URL and
-returns `loaded:true`. An action outside back, forward and reload is
-BAD_ARGS. Back on a fresh tab with no history entry is NOT_FOUND.
+Pass criteria: this sequence must step exactly one history entry at a time.
+`history-back` returns `action:"back"`, URL `/m2`, `loaded:true`; it must
+not skip to an older page. `history-forward` returns URL `/m2-b`,
+`loaded:true`; reload keeps `/m2-b` and returns `loaded:true`. An action
+outside back, forward and reload is BAD_ARGS. Back on a fresh tab that has only
+one history entry returns a structured NOT_FOUND, not BAD_ARGS; verify this
+with `NEW_TAB` in section 11 before switching away.
+
+### bfcache and immediate DOM calls
+
+This sequence is a regression check for back-forward cache restores. The bug
+symptom: `browser_history back` restored `/m2` from the bfcache, but the content
+script kept its unloading flag set, so `page_text` and `page_snapshot` returned
+NAVIGATION_LOST even though `document.readyState` was `complete`. Run every step
+back to back; do not insert a sleep or retry the DOM call.
+
+```bash
+call bfcache-tab-new '{"jsonrpc":"2.0","id":80,"method":"tools/call","params":{"name":"tab_new","arguments":{"url":"http://127.0.0.1:8808/m2","active":true}}}'
+call bfcache-navigate-b '{"jsonrpc":"2.0","id":81,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2-b","tab_id":"BF_TAB"}}}'
+call bfcache-back '{"jsonrpc":"2.0","id":82,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"back","tab_id":"BF_TAB"}}}'
+call bfcache-back-text '{"jsonrpc":"2.0","id":83,"method":"tools/call","params":{"name":"page_text","arguments":{"tab_id":"BF_TAB"}}}'
+call bfcache-back-snapshot '{"jsonrpc":"2.0","id":84,"method":"tools/call","params":{"name":"page_snapshot","arguments":{"tab_id":"BF_TAB","mode":"interactive"}}}'
+call bfcache-forward '{"jsonrpc":"2.0","id":85,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"forward","tab_id":"BF_TAB"}}}'
+call bfcache-forward-text '{"jsonrpc":"2.0","id":86,"method":"tools/call","params":{"name":"page_text","arguments":{"tab_id":"BF_TAB"}}}'
+call bfcache-forward-snapshot '{"jsonrpc":"2.0","id":87,"method":"tools/call","params":{"name":"page_snapshot","arguments":{"tab_id":"BF_TAB","mode":"interactive"}}}'
+call bfcache-reload '{"jsonrpc":"2.0","id":88,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"reload","tab_id":"BF_TAB"}}}'
+call bfcache-reload-text '{"jsonrpc":"2.0","id":89,"method":"tools/call","params":{"name":"page_text","arguments":{"tab_id":"BF_TAB"}}}'
+call bfcache-reload-snapshot '{"jsonrpc":"2.0","id":90,"method":"tools/call","params":{"name":"page_snapshot","arguments":{"tab_id":"BF_TAB","mode":"interactive"}}}'
+call bfcache-close '{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"tab_close","arguments":{"tab_id":"BF_TAB"}}}'
+```
+
+Read `BF_TAB` from `bfcache-tab-new.json` and pass it verbatim on every call.
+
+Pass criteria: `bfcache-back` returns `action:"back"`, URL `/m2` and
+`loaded:true`; the immediately following `bfcache-back-text` and
+`bfcache-back-snapshot` both return `isError:false`, with `/m2` and title
+`Corvus M2 Page`. `bfcache-forward` returns `/m2-b`; its two immediate DOM
+calls return `isError:false` with `/m2-b` and title `Corvus M2 Page B`.
+`bfcache-reload` keeps `/m2-b` with `loaded:true`; its two immediate DOM
+calls are also `isError:false`. A NAVIGATION_LOST, any other `isError:true`, or
+a snapshot of the previous page on any of the six immediate calls is a hard
+failure. This is the stale unloading-flag regression, not load timing: a later
+retry, a sleep, or `document.readyState === "complete"` does not make it pass.
+Close the tab at the end to keep the section 11 tab state clean.
+
+### browser_eval on a strict-CSP page
+
+Confirm the header before calling the tool:
+
+```bash
+curl -sS -D - -o /dev/null http://127.0.0.1:8808/m2-csp | grep -i '^content-security-policy:'
+```
+
+It must print
+`content-security-policy: script-src 'self'; object-src 'none'; base-uri 'none'`.
+The page title is `Corvus CSP Page`; its text marker is `CSP fixture marker 7f3c`.
+
+```bash
+call csp-navigate '{"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2-csp"}}}'
+call csp-text '{"jsonrpc":"2.0","id":61,"method":"tools/call","params":{"name":"page_text","arguments":{}}}'
+call csp-eval-isolated '{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"browser_eval","arguments":{"expression":"document.title","world":"isolated"}}}'
+call csp-eval-main '{"jsonrpc":"2.0","id":63,"method":"tools/call","params":{"name":"browser_eval","arguments":{"expression":"document.title","world":"main"}}}'
+call csp-back '{"jsonrpc":"2.0","id":64,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"http://127.0.0.1:8808/m2"}}}'
+```
+
+Pass criteria: `csp-navigate` returns `loaded:true` with the `/m2-csp`
+URL and `csp-text` contains `Corvus CSP Page` and `CSP fixture marker 7f3c`.
+Both eval calls return `{"ok":true,"value":"Corvus CSP Page"}`. `EvalError`,
+`ok:false` or `isError:true` on either call is a hard failure: the automatic
+debugger channel must evaluate despite the page's CSP, without disabling CSP
+or injecting page script. `csp-back` returns to `/m2` for the tabs section.
 
 ## 11. Tabs
 
@@ -374,10 +450,14 @@ call tab-new '{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"t
 ```
 
 Read `tab_id` from `tab-new.json` as `NEW_TAB`, and read a previous tab id
-from `tabs-before.json` as `OLD_TAB`.
+from `tabs-before.json` as `OLD_TAB`. The ids are JSON strings; copy them
+verbatim. Before switching away, call `browser_history` with `action:"back"`
+and `tab_id:"NEW_TAB"`; the brand-new tab has only one history entry, so this
+must return a structured NOT_FOUND. Save it as `history-fresh-tab.json`.
 
 ```bash
 call tabs-after-new '{"jsonrpc":"2.0","id":52,"method":"tools/call","params":{"name":"tab_list","arguments":{}}}'
+call tab-fresh-history '{"jsonrpc":"2.0","id":56,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"back","tab_id":"NEW_TAB"}}}'
 call tab-switch '{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"tab_switch","arguments":{"tab_id":"NEW_TAB"}}}'
 call tab-close '{"jsonrpc":"2.0","id":54,"method":"tools/call","params":{"name":"tab_close","arguments":{"tab_id":"NEW_TAB"}}}'
 call tabs-after-close '{"jsonrpc":"2.0","id":55,"method":"tools/call","params":{"name":"tab_list","arguments":{}}}'
@@ -385,17 +465,22 @@ call tabs-after-close '{"jsonrpc":"2.0","id":55,"method":"tools/call","params":{
 
 Pass criteria: `tab_list` returns `tabs` with string `tab_id`, numeric
 `index`, boolean `active`, `url`, `title` and `status`; exactly one tab is
-active. `tab_new` returns `tab_id`, `url`, `loaded` and
+active. `tab_new` returns string `tab_id`, `url`, `loaded` and
 `previous_tab_id`; the new tab appears in `tab_list` and becomes active when
-`active` is true. `tab_switch` returns the requested `tab_id`, its `url`,
-`title` and `active:true`. `tab_close` returns `closed:true` and the
-`tab_id`; `next_tab_id` is present only when the active tab was closed and a
-neighbour was activated. After closing, `tab_list` no longer contains the tab.
+`active` is true. Copy ids verbatim, never coerce them to numbers.
+`tab_switch` returns the requested `tab_id`, its `url`, `title` and
+`active:true`. `tab_close` returns `closed:true` and the `tab_id`;
+`next_tab_id` is present only when the active tab was closed and a neighbour
+was activated. After closing, `tab_list` no longer contains the tab.
+`tab-fresh-history` on the newly opened tab must return structured NOT_FOUND,
+proving one-entry history is handled.
 
-Negative checks: missing `tab_id` on `tab_close` or `tab_switch` is
-BAD_ARGS; an unknown id is NOT_FOUND; `tab_new` with `active` not a boolean
-is BAD_ARGS. A closed tab id used later is NOT_FOUND or BROWSER_GONE, not a
-bare string.
+Negative checks: missing or non-string `tab_id` on `tab_close` or
+`tab_switch` is BAD_ARGS; a numeric JSON `tab_id` such as `999` is BAD_ARGS.
+An unknown string id such as `"tab-999"` is forwarded unchanged and returns
+NOT_FOUND with `details.tab_id` in `content[0].text`, never BAD_ARGS;
+`tab_new` with `active` not a boolean is BAD_ARGS. A closed tab id used later
+is NOT_FOUND or BROWSER_GONE, not a bare string.
 
 ## 12. Negative and error-path matrix
 
@@ -421,12 +506,15 @@ The JSON-RPC layer must not turn tool failures into `error` objects.
 | `browser_select` | `{"target":"#pick","values":["missing"]}` | NOT_FOUND |
 | `browser_eval` | `{"expression":"1","world":"server"}` | BAD_ARGS |
 | `browser_wait` | `{}` | BAD_ARGS |
-| `browser_wait` | `{"selector":"#never","timeout_ms":100}` | TIMEOUT; record elapsed, details stay on the envelope |
+| `browser_wait` | `{"selector":"#never","timeout_ms":100}` | TIMEOUT; record elapsed and `details.waited_ms` from the trailing JSON |
 | `browser_history` | `{"action":"refresh"}` | BAD_ARGS |
 | `tab_new` | `{"active":"yes"}` | BAD_ARGS |
 | `tab_close` | `{}` | BAD_ARGS |
-| `tab_close` | `{"tab_id":"tab-999"}` | NOT_FOUND |
+| `tab_close` | `{"tab_id":"tab-999"}` | NOT_FOUND; error text carries `details.tab_id` `"tab-999"` |
 | `tab_switch` | `{}` | BAD_ARGS |
+| `tab_switch` | `{"tab_id":"tab-999"}` | NOT_FOUND; error text carries `details.tab_id` `"tab-999"` |
+| `tab_switch` | `{"tab_id":999}` | BAD_ARGS (tab_id must be a string) |
+| `browser_history` | `{"action":"back"}` on a fresh one-entry tab | NOT_FOUND |
 | disabled extension | any page tool | TRANSPORT_DOWN |
 
 Stopping the extension, then issuing `page_text`, must return TRANSPORT_DOWN
@@ -441,6 +529,11 @@ Create one directory per run. Keep raw bodies, not only summaries.
 - `health-before.json`, `health-after.json`
 - `init.headers`, `init.json`, `tools-list.json`
 - one `<tool>.json` for every happy call and every negative call
+- `csp-headers.txt`, `csp-eval-isolated.json`, `csp-eval-main.json`
+- `history-step-back.json`, `history-step-forward.json`, `history-fresh-tab.json`
+- `bfcache-*.json`: tab-new, navigate-b, back, back-text, back-snapshot,
+  forward, forward-text, forward-snapshot, reload, reload-text,
+  reload-snapshot, close
 - `curl` `time_total` lines from the helper, or a timestamped latency file
 - screenshots: extension page, popup connected, fixture before interaction,
   after type/click, after scroll, after tab switch
@@ -465,9 +558,9 @@ this fixture; record the distribution for repeated runs.
 | `browser_press` | `pressed=true`; keys echoed; keydown effect | <= 1000 ms |
 | `browser_scroll` | `scrolled=true`; offsets change in the requested direction | <= 1000 ms |
 | `browser_select` | selected values and value correct | <= 1000 ms |
-| `browser_eval` | value type correct; thrown error is `ok=false`; cyclic is unserializable | <= 1000 ms |
+| `browser_eval` | value type correct; strict-CSP title passes in both worlds; thrown error is `ok=false`; cyclic is unserializable | <= 1000 ms |
 | `browser_wait` | matched condition; timeout is structured TIMEOUT (record elapsed) | <= waited + 500 ms |
-| `browser_history` | action, URL and loaded correct | <= 2000 ms |
+| `browser_history` | exact one-step back/forward; fresh-tab back is NOT_FOUND; bfcache back/forward/reload each followed immediately by page_text and page_snapshot with `isError:false`; action, URL and loaded correct | <= 2000 ms |
 | `tab_list` | all tabs, one active, correct shape | <= 2000 ms |
 | `tab_new` | new tab id, URL, previous id, loaded | <= 2000 ms |
 | `tab_switch` | requested tab active with URL/title | <= 2000 ms |

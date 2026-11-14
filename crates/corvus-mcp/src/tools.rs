@@ -128,7 +128,7 @@ const SPECS: [Spec; 18] = [
     Spec {
         name: "browser_eval",
         title: "Evaluate script",
-        description: "Evaluate a JavaScript expression in the page. Page exceptions are reported as ok=false with the error name and message, not as a tool error.",
+        description: "Evaluate a JavaScript expression through the page debugger channel. The world defaults to \"isolated\", which uses a dedicated isolated world; \"main\" uses the page main world. Page CSP does not restrict the expression. A page exception is a successful call with {ok:false,error:{name,message}}, not a tool error.",
         schema: eval_schema,
         read_only: false,
         destructive: true,
@@ -148,7 +148,7 @@ const SPECS: [Spec; 18] = [
     Spec {
         name: "browser_history",
         title: "History",
-        description: "Go back, go forward or reload the page in a tab and report the resulting url and load state.",
+        description: "Go back or forward exactly one entry in the tab session history, or reload the page. The result reports the action, the final loaded url and the load state.",
         schema: history_schema,
         read_only: false,
         destructive: false,
@@ -1010,6 +1010,26 @@ mod tests {
             validate("browser_type", &json!({ "target": "@e1", "text": "" })).expect("type");
         assert_eq!(typed.get("clear").and_then(Value::as_bool), Some(true));
         assert_eq!(typed.get("blur").and_then(Value::as_bool), Some(false));
+    }
+
+    #[test]
+    fn string_tab_ids_pass_through_unchanged() {
+        let close = validate("tab_close", &json!({ "tab_id": "tab-999" })).expect("tab_close");
+        assert_eq!(close.get("tab_id").and_then(Value::as_str), Some("tab-999"));
+        let switch = validate("tab_switch", &json!({ "tab_id": "tab-42" })).expect("tab_switch");
+        assert_eq!(switch.get("tab_id").and_then(Value::as_str), Some("tab-42"));
+        let eval = validate(
+            "browser_eval",
+            &json!({ "expression": "1 + 1", "tab_id": "tab-7" }),
+        )
+        .expect("browser_eval");
+        assert_eq!(eval.get("tab_id").and_then(Value::as_str), Some("tab-7"));
+        let history = validate(
+            "browser_history",
+            &json!({ "action": "back", "tab_id": "tab-8" }),
+        )
+        .expect("browser_history");
+        assert_eq!(history.get("tab_id").and_then(Value::as_str), Some("tab-8"));
     }
 
     #[test]
