@@ -70,6 +70,12 @@ Independent tabs run concurrently: calls are ordered per browser tab and run in 
 `scripts/dev-setup.sh` checks the Rust toolchain and offline dependencies; `scripts/build.sh` builds release
 binaries into `dist/` with checksums. Process, review gates and release cadence: [docs/PROCESS.md](docs/PROCESS.md).
 
+### Install
+
+`scripts/install-windows.ps1` registers the daemon as a Windows service, and `scripts/uninstall-windows.ps1`
+removes it. Build the release bundle with `scripts/package.sh`; install, extension load and the five-minute
+walkthrough are in [docs/04-install.md](docs/04-install.md).
+
 ### Docs
 
 - [Charter](docs/00-charter.md) - why this exists, scope, milestones, decisions
@@ -147,6 +153,11 @@ M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的
 ### 开发
 
 `scripts/dev-setup.sh` 检查 Rust 工具链与离线依赖；`scripts/build.sh` 构建发布二进制到 `dist/` 并生成校验和。开发流程、评审门禁与发布节奏见 [docs/PROCESS.md](docs/PROCESS.zh.md)。
+
+### 安装
+
+`scripts/install-windows.ps1` 把守护进程注册为 Windows 服务，`scripts/uninstall-windows.ps1` 负责卸载。
+用 `scripts/package.sh` 构建发布包；完整安装、扩展加载与五分钟流程见 [docs/04-install.zh.md](docs/04-install.zh.md)。
 
 ### 文档
 

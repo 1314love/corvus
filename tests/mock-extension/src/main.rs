@@ -28,6 +28,8 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 const PROTOCOL_VERSION: u64 = 1;
 /// Daemon capability names understood by protocol v1. Tool names are not capabilities.
 const DEFAULT_CAPABILITIES: &str = "dom,scripting";
+/// Synthetic page_snapshot payload for the 10k-node performance fixture.
+const PERF_SNAPSHOT_NODES: usize = 3000;
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 type WsSink = SplitSink<WsStream, Message>;
@@ -885,6 +887,31 @@ fn navigate_answer(args: &Value, state: &mut MockState) -> MockResult<Value> {
 fn snapshot_answer(args: &Value, state: &MockState) -> MockResult<Value> {
     let index = resolve_tab(args, state)?;
     let tab = &state.tabs[index];
+    if tab.url.contains("/perf-10k") {
+        let nodes: Vec<Value> = (1..=PERF_SNAPSHOT_NODES)
+            .map(|i| {
+                json!({
+                    "kind": "element",
+                    "ref": format!("@e{i}"),
+                    "tag": "i",
+                    "role": "generic",
+                    "name": format!("perf-{i}"),
+                })
+            })
+            .collect();
+        return Ok(json!({
+            "url": tab.url.clone(),
+            "title": tab.title.clone(),
+            "mode": "full",
+            "node_cap": PERF_SNAPSHOT_NODES,
+            "node_count": PERF_SNAPSHOT_NODES,
+            "element_count": PERF_SNAPSHOT_NODES,
+            "text_count": 0,
+            "ref_count": PERF_SNAPSHOT_NODES,
+            "truncated": true,
+            "nodes": nodes,
+        }));
+    }
     Ok(json!({
         "url": tab.url.clone(),
         "title": tab.title.clone(),

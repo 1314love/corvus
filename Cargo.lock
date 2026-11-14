@@ -232,6 +232,7 @@ dependencies = [
  "corvus-mcp",
  "corvus-proto",
  "corvusd",
+ "serde_json",
  "tokio",
  "tracing-subscriber",
 ]
