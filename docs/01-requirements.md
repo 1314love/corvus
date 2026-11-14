@@ -25,7 +25,7 @@ person using the browser, not like a robot asking for permission before every cl
 | Term | Meaning |
 |---|---|
 | daemon | the corvusd process: MCP server and command routing centre |
-| extension | the browser-side MV3 extension: no pages, only a single-switch popup |
+| extension | the browser-side MV3 extension: no pages, only a read-only status popup |
 | transport | a channel between daemon and extension: WS / Native Messaging / direct CDP |
 | session | one recordable sequence of operations: commands, responses, page snapshots, network events |
 | site card | verified selectors, flows and pitfalls for one domain, stored in SQLite |
@@ -100,7 +100,7 @@ person using the browser, not like a robot asking for permission before every cl
 
 | ID | Requirement | Priority | Acceptance |
 |---|---|---|---|
-| FR-D1 | Debugger channel: CDP domains (DOM, Network, Runtime, Emulation) | P1 | available when the popup switch is on; degrades to the DOM channel when off |
+| FR-D1 | Debugger channel: CDP domains (DOM, Network, Runtime, Emulation) | P1 | always advertised, attached on demand; CAPABILITY_UNAVAILABLE only when the browser refuses the attach |
 | FR-D2 | Device emulation: viewport, DPR, touch, UA | P1 | matchMedia results are correct after emulation |
 | FR-D3 | Geolocation, timezone, language, dark mode emulation | P2 | corresponding navigator fields change together |
 | FR-D4 | PDF export separate from full-page screenshots | P2 | the exported file opens in a PDF reader |
@@ -142,6 +142,20 @@ Emulation and debugging: emulate_device, emulate_geo, emulate_timezone, emulate_
 Sessions and memory: session_start, session_stop, session_replay, session_export, trace_start, trace_stop, site_card_get, site_card_put
 
 System: browser_list, browser_attach, browser_detach, extension_status, health, doctor, version
+
+### 4.1 M2 wave 1 traceability
+
+M2 wave 1 ships all 18 tools. The following requirements have an implemented tool path in that surface; partial coverage is stated explicitly, and everything not listed here remains open.
+
+- **FR-P1** — `page_snapshot` produces the hybrid tree with stable references, and `page_find` returns references in the same space.
+- **FR-P2** — `page_text` and `page_html` cover text and HTML extraction. Link and form-structure extraction remain open.
+- **FR-P5** — `browser_wait` covers selector, text and URL conditions with a timeout. Disappearance, network-idle and JS-condition waits remain open.
+- **FR-A1** — `browser_navigate` and `browser_history` cover navigate, back, forward and reload.
+- **FR-A4** — `browser_press` covers modifier chords, named keys and per-key sequences.
+- **FR-A5** — `browser_hover`, `browser_select` and `browser_scroll` cover hover, select and scroll. Drag remains open.
+- **FR-A7** — `browser_eval` covers page-world and isolated-world evaluation with structured exceptions.
+- **FR-A8** — `page_find` covers text and role lookup, and matches accessible labels and placeholders for form controls.
+- **FR-T1** — `tab_list`, `tab_new`, `tab_close` and `tab_switch` cover list, create, close and switch. Duplicate remains open.
 
 ## 5. Non-functional requirements
 

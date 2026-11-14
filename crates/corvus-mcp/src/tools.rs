@@ -14,7 +14,7 @@ struct Spec {
     open_world: bool,
 }
 
-const SPECS: [Spec; 4] = [
+const SPECS: [Spec; 18] = [
     Spec {
         name: "browser_navigate",
         title: "Navigate",
@@ -53,6 +53,146 @@ const SPECS: [Spec; 4] = [
         read_only: false,
         destructive: true,
         idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "page_text",
+        title: "Page text",
+        description: "Return the visible text of a page, capped by max_chars. The result reports the page url and title, the text and whether the text was truncated.",
+        schema: page_text_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "page_html",
+        title: "Page HTML",
+        description: "Return the HTML of the document, or of one element when target is given, capped by max_chars. The result reports the page url, the html and whether it was truncated.",
+        schema: page_html_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "page_find",
+        title: "Find in page",
+        description: "Search the page text, optionally filtered by accessibility role, and return element references that browser_click accepts. The references share the page_snapshot reference space.",
+        schema: page_find_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_hover",
+        title: "Hover",
+        description: "Move the pointer over the element that target refers to and report the element it resolved.",
+        schema: hover_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_press",
+        title: "Press keys",
+        description: "Send one key or a sequence of keys to the page or to a target element. Modifiers use Control+, Shift+, Alt+ or Meta+ prefixes.",
+        schema: press_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_scroll",
+        title: "Scroll",
+        description: "Scroll the page or a target element by a number of viewport pages and report the resulting scroll offset.",
+        schema: scroll_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_select",
+        title: "Select options",
+        description: "Choose one or more values in a select element. The result reports the selected values and the current value.",
+        schema: select_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_eval",
+        title: "Evaluate script",
+        description: "Evaluate a JavaScript expression in the page. Page exceptions are reported as ok=false with the error name and message, not as a tool error.",
+        schema: eval_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_wait",
+        title: "Wait for condition",
+        description: "Wait until a selector, text or URL condition matches, up to timeout_ms. The timeout is reported as the TIMEOUT error code.",
+        schema: wait_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_history",
+        title: "History",
+        description: "Go back, go forward or reload the page in a tab and report the resulting url and load state.",
+        schema: history_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "tab_list",
+        title: "List tabs",
+        description: "List the open tabs with their identifiers, indexes, urls, titles and load status.",
+        schema: tab_list_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "tab_new",
+        title: "New tab",
+        description: "Open a new tab, optionally at a url, and report the new tab identifier and the previously active tab.",
+        schema: tab_new_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "tab_close",
+        title: "Close tab",
+        description: "Close a tab and report which tab becomes active next when the browser provides one.",
+        schema: tab_close_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "tab_switch",
+        title: "Switch tab",
+        description: "Make a tab active and report its url, title and active state.",
+        schema: tab_switch_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: true,
         open_world: true,
     },
 ];
@@ -176,6 +316,319 @@ fn type_schema() -> Value {
     })
 }
 
+fn page_text_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to read; the active tab when omitted.",
+            },
+            "max_chars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200000,
+                "default": 100000,
+                "description": "Upper bound on the characters returned.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn page_html_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to read; the active tab when omitted.",
+            },
+            "target": {
+                "type": "string",
+                "description": "Element reference from page_snapshot such as @e12, or a CSS selector; the whole document when omitted.",
+            },
+            "max_chars": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500000,
+                "default": 200000,
+                "description": "Upper bound on the characters returned.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn page_find_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Text or pattern to find.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to search; the active tab when omitted.",
+            },
+            "role": {
+                "type": "string",
+                "description": "Accessibility role to restrict matches, for example link or button.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 20,
+                "description": "Upper bound on the matches returned.",
+            },
+            "regex": {
+                "type": "boolean",
+                "default": false,
+                "description": "Treat query as a regular expression.",
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": false,
+    })
+}
+
+fn hover_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "Element reference from page_snapshot such as @e12, or a CSS selector.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab that holds the element; the active tab when omitted.",
+            },
+        },
+        "required": ["target"],
+        "additionalProperties": false,
+    })
+}
+
+fn press_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "keys": {
+                "description": "One key or a sequence of keys. Supported keys: Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, PageUp, PageDown, Home, End, single characters, and combinations with Control+, Shift+, Alt+ or Meta+.",
+                "oneOf": [
+                    { "type": "string", "minLength": 1 },
+                    {
+                        "type": "array",
+                        "items": { "type": "string", "minLength": 1 },
+                        "minItems": 1,
+                    }
+                ],
+            },
+            "target": {
+                "type": "string",
+                "description": "Element to focus before pressing keys; the current focus when omitted.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab that holds the page; the active tab when omitted.",
+            },
+        },
+        "required": ["keys"],
+        "additionalProperties": false,
+    })
+}
+
+fn scroll_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "direction": {
+                "type": "string",
+                "enum": ["up", "down", "left", "right"],
+                "description": "Direction to scroll.",
+            },
+            "pages": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 50,
+                "default": 1,
+                "description": "Number of viewport pages to scroll.",
+            },
+            "target": {
+                "type": "string",
+                "description": "Element to scroll; the page when omitted.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab that holds the page; the active tab when omitted.",
+            },
+        },
+        "required": ["direction"],
+        "additionalProperties": false,
+    })
+}
+
+fn select_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "Select element reference from page_snapshot such as @e12, or a CSS selector.",
+            },
+            "values": {
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1,
+                "description": "Values to select. Multiple values require a select element that allows multiple selections.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab that holds the element; the active tab when omitted.",
+            },
+        },
+        "required": ["target", "values"],
+        "additionalProperties": false,
+    })
+}
+
+fn eval_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "expression": {
+                "type": "string",
+                "description": "JavaScript expression to evaluate.",
+            },
+            "world": {
+                "type": "string",
+                "enum": ["main", "isolated"],
+                "default": "isolated",
+                "description": "main evaluates in the page world, isolated in the content-script world.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab that holds the page; the active tab when omitted.",
+            },
+        },
+        "required": ["expression"],
+        "additionalProperties": false,
+    })
+}
+
+fn wait_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to watch; the active tab when omitted.",
+            },
+            "selector": {
+                "type": "string",
+                "description": "CSS selector that must match an element.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Text that must appear in the page.",
+            },
+            "url_contains": {
+                "type": "string",
+                "description": "Text that the page url must contain.",
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 120000,
+                "default": 10000,
+                "description": "Maximum time to wait for the condition.",
+            },
+        },
+        "anyOf": [
+            { "required": ["selector"] },
+            { "required": ["text"] },
+            { "required": ["url_contains"] }
+        ],
+        "additionalProperties": false,
+    })
+}
+
+fn history_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["back", "forward", "reload"],
+                "description": "History action to perform.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to act on; the active tab when omitted.",
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": false,
+    })
+}
+
+fn tab_list_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false,
+    })
+}
+
+fn tab_new_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Absolute URL to open in the new tab.",
+            },
+            "active": {
+                "type": "boolean",
+                "default": true,
+                "description": "Make the new tab active.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn tab_close_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to close.",
+            },
+        },
+        "required": ["tab_id"],
+        "additionalProperties": false,
+    })
+}
+
+fn tab_switch_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to make active.",
+            },
+        },
+        "required": ["tab_id"],
+        "additionalProperties": false,
+    })
+}
+
 /// Check a tool call against the catalogue and normalise its arguments.
 ///
 /// Everything this function rejects is a caller mistake, so the returned error
@@ -242,6 +695,86 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
             object.entry("clear".to_string()).or_insert(json!(true));
             object.entry("blur".to_string()).or_insert(json!(false));
         }
+        "page_text" => {
+            optional_string(&object, "tab_id", name)?;
+            optional_integer_range(&object, "max_chars", 1, 200_000, name)?;
+            fill_default(&mut object, "max_chars", json!(100_000));
+        }
+        "page_html" => {
+            optional_string(&object, "tab_id", name)?;
+            optional_string(&object, "target", name)?;
+            optional_integer_range(&object, "max_chars", 1, 500_000, name)?;
+            fill_default(&mut object, "max_chars", json!(200_000));
+        }
+        "page_find" => {
+            required_string(&object, "query", name)?;
+            optional_string(&object, "tab_id", name)?;
+            optional_string(&object, "role", name)?;
+            optional_integer_range(&object, "limit", 1, 100, name)?;
+            optional_bool(&object, "regex", name)?;
+            fill_default(&mut object, "limit", json!(20));
+            fill_default(&mut object, "regex", json!(false));
+        }
+        "browser_hover" => {
+            required_string(&object, "target", name)?;
+            optional_string(&object, "tab_id", name)?;
+        }
+        "browser_press" => {
+            required_keys(&object, name)?;
+            optional_string(&object, "target", name)?;
+            optional_string(&object, "tab_id", name)?;
+        }
+        "browser_scroll" => {
+            required_choice(&object, "direction", &["up", "down", "left", "right"], name)?;
+            optional_number_range(&object, "pages", 0.0, 50.0, name)?;
+            optional_string(&object, "target", name)?;
+            optional_string(&object, "tab_id", name)?;
+            fill_default(&mut object, "pages", json!(1));
+        }
+        "browser_select" => {
+            required_string(&object, "target", name)?;
+            required_string_list(&object, "values", name)?;
+            optional_string(&object, "tab_id", name)?;
+        }
+        "browser_eval" => {
+            required_string(&object, "expression", name)?;
+            optional_choice(&object, "world", &["main", "isolated"], name)?;
+            optional_string(&object, "tab_id", name)?;
+            fill_default(&mut object, "world", json!("isolated"));
+        }
+        "browser_wait" => {
+            optional_string(&object, "tab_id", name)?;
+            optional_string(&object, "selector", name)?;
+            optional_string(&object, "text", name)?;
+            optional_string(&object, "url_contains", name)?;
+            if ["selector", "text", "url_contains"]
+                .iter()
+                .all(|field| matches!(object.get(*field), None | Some(Value::Null)))
+            {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "browser_wait requires at least one of selector, text or url_contains",
+                ));
+            }
+            optional_integer_range(&object, "timeout_ms", 100, 120_000, name)?;
+            fill_default(&mut object, "timeout_ms", json!(10_000));
+        }
+        "browser_history" => {
+            required_choice(&object, "action", &["back", "forward", "reload"], name)?;
+            optional_string(&object, "tab_id", name)?;
+        }
+        "tab_list" => {}
+        "tab_new" => {
+            optional_string(&object, "url", name)?;
+            optional_bool(&object, "active", name)?;
+            fill_default(&mut object, "active", json!(true));
+        }
+        "tab_close" => {
+            required_string(&object, "tab_id", name)?;
+        }
+        "tab_switch" => {
+            required_string(&object, "tab_id", name)?;
+        }
         other => {
             return Err(
                 ErrorBody::new(ErrorCode::BadArgs, format!("unknown tool {other}"))
@@ -284,6 +817,123 @@ fn optional_string(object: &Map<String, Value>, field: &str, tool: &str) -> Resu
     }
 }
 
+fn optional_integer_range(
+    object: &Map<String, Value>,
+    field: &str,
+    min: u64,
+    max: u64,
+    tool: &str,
+) -> Result<(), ErrorBody> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(()),
+        Some(value) => match value.as_u64() {
+            Some(number) if (min..=max).contains(&number) => Ok(()),
+            _ => Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                format!("{tool} argument {field} must be an integer from {min} to {max}"),
+            )),
+        },
+    }
+}
+
+fn optional_number_range(
+    object: &Map<String, Value>,
+    field: &str,
+    min: f64,
+    max: f64,
+    tool: &str,
+) -> Result<(), ErrorBody> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(()),
+        Some(value) => match value.as_f64() {
+            Some(number) if number >= min && number <= max => Ok(()),
+            _ => Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                format!("{tool} argument {field} must be a number from {min} to {max}"),
+            )),
+        },
+    }
+}
+
+fn required_choice(
+    object: &Map<String, Value>,
+    field: &str,
+    allowed: &[&str],
+    tool: &str,
+) -> Result<(), ErrorBody> {
+    match object.get(field).and_then(Value::as_str) {
+        Some(value) if allowed.contains(&value) => Ok(()),
+        _ => Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            format!("{tool} {field} must be one of {}", allowed.join(", ")),
+        )),
+    }
+}
+
+fn optional_choice(
+    object: &Map<String, Value>,
+    field: &str,
+    allowed: &[&str],
+    tool: &str,
+) -> Result<(), ErrorBody> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(value)) if allowed.contains(&value.as_str()) => Ok(()),
+        Some(_) => Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            format!(
+                "{tool} argument {field} must be one of {}",
+                allowed.join(", ")
+            ),
+        )),
+    }
+}
+
+fn required_string_list(
+    object: &Map<String, Value>,
+    field: &str,
+    tool: &str,
+) -> Result<(), ErrorBody> {
+    match object.get(field) {
+        Some(Value::Array(items))
+            if !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| item.as_str().is_some_and(|value| !value.trim().is_empty())) =>
+        {
+            Ok(())
+        }
+        _ => Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            format!("{tool} requires a non-empty array of strings {field} argument"),
+        )),
+    }
+}
+
+fn required_keys(object: &Map<String, Value>, tool: &str) -> Result<(), ErrorBody> {
+    match object.get("keys") {
+        Some(Value::String(keys)) if !keys.trim().is_empty() => Ok(()),
+        Some(Value::Array(keys))
+            if !keys.is_empty()
+                && keys
+                    .iter()
+                    .all(|key| key.as_str().is_some_and(|value| !value.trim().is_empty())) =>
+        {
+            Ok(())
+        }
+        _ => Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            format!("{tool} requires keys as a non-empty string or an array of non-empty strings"),
+        )),
+    }
+}
+
+fn fill_default(object: &mut Map<String, Value>, field: &str, value: Value) {
+    if matches!(object.get(field), None | Some(Value::Null)) {
+        object.insert(field.to_string(), value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,7 +941,7 @@ mod tests {
     #[test]
     fn definitions_carry_names_schemas_and_annotations() {
         let definitions = definitions();
-        assert_eq!(definitions.len(), 4);
+        assert_eq!(definitions.len(), 18);
         for definition in &definitions {
             assert!(definition.get("name").and_then(Value::as_str).is_some());
             let schema = definition.get("inputSchema").expect("schema");
@@ -315,7 +965,21 @@ mod tests {
                 "browser_navigate",
                 "page_snapshot",
                 "browser_click",
-                "browser_type"
+                "browser_type",
+                "page_text",
+                "page_html",
+                "page_find",
+                "browser_hover",
+                "browser_press",
+                "browser_scroll",
+                "browser_select",
+                "browser_eval",
+                "browser_wait",
+                "browser_history",
+                "tab_list",
+                "tab_new",
+                "tab_close",
+                "tab_switch",
             ]
         );
     }
@@ -349,6 +1013,25 @@ mod tests {
     }
 
     #[test]
+    fn new_tool_defaults_are_filled() {
+        let text = validate("page_text", &json!({})).expect("page_text");
+        assert_eq!(text.get("max_chars").and_then(Value::as_u64), Some(100_000));
+        let html = validate("page_html", &json!({})).expect("page_html");
+        assert_eq!(html.get("max_chars").and_then(Value::as_u64), Some(200_000));
+        let find = validate("page_find", &json!({ "query": "hello" })).expect("page_find");
+        assert_eq!(find.get("limit").and_then(Value::as_u64), Some(20));
+        assert_eq!(find.get("regex").and_then(Value::as_bool), Some(false));
+        let scroll = validate("browser_scroll", &json!({ "direction": "down" })).expect("scroll");
+        assert_eq!(scroll.get("pages").and_then(Value::as_u64), Some(1));
+        let eval = validate("browser_eval", &json!({ "expression": "1 + 1" })).expect("eval");
+        assert_eq!(eval.get("world").and_then(Value::as_str), Some("isolated"));
+        let wait = validate("browser_wait", &json!({ "text": "ready" })).expect("wait");
+        assert_eq!(wait.get("timeout_ms").and_then(Value::as_u64), Some(10_000));
+        let tab = validate("tab_new", &json!({})).expect("tab_new");
+        assert_eq!(tab.get("active").and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
     fn validation_rejects_bad_arguments_with_bad_args() {
         let cases = [
             ("browser_navigate", json!({})),
@@ -364,6 +1047,33 @@ mod tests {
                 "browser_type",
                 json!({ "target": "@e1", "text": "x", "clear": "yes" }),
             ),
+            ("page_text", json!({ "max_chars": 0 })),
+            ("page_text", json!({ "max_chars": 200_001 })),
+            ("page_html", json!({ "max_chars": 500_001 })),
+            ("page_find", json!({})),
+            ("page_find", json!({ "query": "x", "limit": 0 })),
+            ("page_find", json!({ "query": "x", "limit": 101 })),
+            ("browser_hover", json!({})),
+            ("browser_press", json!({})),
+            ("browser_press", json!({ "keys": [] })),
+            ("browser_scroll", json!({ "direction": "diagonal" })),
+            (
+                "browser_scroll",
+                json!({ "direction": "down", "pages": -1 }),
+            ),
+            ("browser_select", json!({ "target": "#s" })),
+            ("browser_select", json!({ "target": "#s", "values": [] })),
+            ("browser_eval", json!({})),
+            (
+                "browser_eval",
+                json!({ "expression": "1", "world": "server" }),
+            ),
+            ("browser_wait", json!({})),
+            ("browser_wait", json!({ "text": "x", "timeout_ms": 99 })),
+            ("browser_history", json!({ "action": "refresh" })),
+            ("tab_close", json!({})),
+            ("tab_switch", json!({})),
+            ("tab_new", json!({ "active": "yes" })),
             ("browser_wiggle", json!({})),
         ];
         for (tool, arguments) in cases {

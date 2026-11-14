@@ -93,7 +93,7 @@ async fn initialize_echoes_an_older_supported_revision() {
 }
 
 #[tokio::test]
-async fn tools_list_exposes_four_fully_annotated_tools() {
+async fn tools_list_exposes_eighteen_fully_annotated_tools() {
     let server = server(Ok(json!({})));
     let answer = call(
         &server,
@@ -105,7 +105,7 @@ async fn tools_list_exposes_four_fully_annotated_tools() {
         .and_then(|result| result.get("tools"))
         .and_then(Value::as_array)
         .expect("tools array");
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 18);
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
@@ -116,7 +116,21 @@ async fn tools_list_exposes_four_fully_annotated_tools() {
             "browser_navigate",
             "page_snapshot",
             "browser_click",
-            "browser_type"
+            "browser_type",
+            "page_text",
+            "page_html",
+            "page_find",
+            "browser_hover",
+            "browser_press",
+            "browser_scroll",
+            "browser_select",
+            "browser_eval",
+            "browser_wait",
+            "browser_history",
+            "tab_list",
+            "tab_new",
+            "tab_close",
+            "tab_switch"
         ]
     );
     for tool in tools {
@@ -163,10 +177,9 @@ async fn a_successful_tool_call_returns_content_and_no_error() {
 
 #[tokio::test]
 async fn backend_failures_become_tool_results_with_the_error_code() {
-    let server = server(Err(ErrorBody::new(
-        ErrorCode::Timeout,
-        "no answer within 5000 ms",
-    )));
+    let error = ErrorBody::new(ErrorCode::Timeout, "no answer within 5000 ms")
+        .with_details(json!({ "waited_ms": 4321 }));
+    let server = server(Err(error));
     let answer = call(
         &server,
         tools_call(4, "browser_click", json!({ "target": "@e1" })),
@@ -185,6 +198,33 @@ async fn backend_failures_become_tool_results_with_the_error_code() {
         .and_then(Value::as_str)
         .expect("text content");
     assert!(text.starts_with("TIMEOUT: "), "unexpected text: {text}");
+    assert!(
+        text.contains("{\"waited_ms\":4321}"),
+        "the details must reach the text: {text}"
+    );
+}
+
+#[tokio::test]
+async fn a_not_found_error_without_details_stays_clean() {
+    let server = server(Err(ErrorBody::new(
+        ErrorCode::NotFound,
+        "no element matches @e9",
+    )));
+    let answer = call(
+        &server,
+        tools_call(41, "browser_click", json!({ "target": "@e9" })),
+    )
+    .await;
+    let result = answer.get("result").expect("result");
+    assert_eq!(result.get("isError").and_then(Value::as_bool), Some(true));
+    let text = result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .expect("text content");
+    assert_eq!(text, "NOT_FOUND: no element matches @e9");
 }
 
 #[tokio::test]

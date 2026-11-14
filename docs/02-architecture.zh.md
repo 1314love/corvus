@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：设计草案（M0）。读者：工程实现者。
+状态：M1 已实现，M2 进行中。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
@@ -77,7 +77,7 @@
 - 传输：stdio（IDE 类客户端默认）与 streamable-http，监听 127.0.0.1:7331/mcp（DSH 及 Web 类客户端默认）。
 - 工具命名：<域>_<动词>，一经发布永久稳定；别名只废弃不删除。
 - 每个工具都声明注解：readOnlyHint、destructiveHint、idempotentHint、openWorldHint。
-- 长输出分页：首次返回摘要加游标，代理按需拉取后续内容。
+- 长输出按调用截断：`max_chars` 截断长字符串并置 `truncated: true`；M2 第一波不做游标分页。
 - Resource：corvus://session/<id>/step/<n> 返回该步骤记录下来的页面快照，代理无需重跑即可查看历史。
 - Prompt：M1 不提供（代理应当直接用工具），M3 再评估。
 
@@ -98,6 +98,45 @@
 
 扩展会等新文档就绪后才应答，因此 `browser_navigate` 之后的 `page_snapshot` 反映的是新页面。等待预算为 `max(0, min(meta.timeout_ms - 2000, 15000))` 毫秒；预算耗尽时调用仍然成功，返回 `loaded: false` 和当前 `url`，绝不会变成 `TIMEOUT`。守护进程原样转发该结果。
 
+### 5.2 M2 第一波工具面
+
+M2 第一波冻结的工具面共 18 个。`browser_navigate`、`page_snapshot`、`browser_click`、`browser_type` 保持 M1 行为不变；其余 14 个在本波加入。下表结果均为成功 MCP 工具结果中的 JSON 对象；失败使用第 8 节的错误分类并置 `isError`。
+
+通用约定：
+
+- 页面与动作类工具的 `tab_id` 可省略，省略时作用于当前活动标签；`tab_close` 与 `tab_switch` 必须显式给出目标标签。
+- `target` 接受 `@eN` 引用或 CSS 选择器。引用按文档分配，`page_snapshot` 与 `page_find` 共用一个引用空间，因此两者产出的引用都可直接用于 `browser_click`、`browser_type`、`browser_hover`、`browser_press`、`browser_scroll` 或 `browser_select`。
+- `max_chars` 上限会截断返回字符串并置 `truncated: true`，不会把成功调用变成错误。
+
+| 工具 | 参数（除标注 ? 外必填） | 结果 |
+|---|---|---|
+| `browser_navigate` | `url`；`tab_id?` | `navigated`、`loaded`、`url`、`previous`、`same_document`、`started_at` |
+| `page_snapshot` | `tab_id?`；`mode?`（`interactive` 默认或 `full`）；`max_nodes?` 40..3000 | `url`、`title`、`viewport`、`mode`、`node_cap`、`node_count`、`element_count`、`text_count`、`ref_count`、`truncated`、`nodes[]` |
+| `browser_click` | `target`；`tab_id?` | `clicked`、`ref`、`selector`、`tag`、`role`、`name`、`bbox`、`point`、`events[]`、`url` |
+| `browser_type` | `target`；`text`；`clear?` 默认 true；`blur?` 默认 false；`tab_id?` | `typed`、`ref`、`selector`、`tag`、`role`、`cleared`、`events[]`、`value_length`、`url`、`value`（密码字段改回 `masked`） |
+| `page_text` | `tab_id?`；`max_chars?` 1..200000 默认 100000 | `url`、`title`、`text`、`truncated` |
+| `page_html` | `tab_id?`；`target?` 默认整个文档；`max_chars?` 1..500000 默认 200000 | `url`、`html`、`truncated` |
+| `page_find` | `query`；`tab_id?`；`role?`；`limit?` 1..100 默认 20；`regex?` 默认 false | `url`、`count`、`matches[]`，元素含 `ref`、`tag`、`role`、`text` |
+| `browser_hover` | `target`；`tab_id?` | `hovered: true`、`url`、`target`（含 `ref?`、`tag`、`text?`） |
+| `browser_press` | `keys`，字符串或字符串数组；`target?`；`tab_id?` | `pressed: true`、`keys[]`、`url` |
+| `browser_scroll` | `direction`（`up`、`down`、`left`、`right`）；`pages?` 0..50 默认 1；`target?`；`tab_id?` | `scrolled: true`、`x`、`y`、`url` |
+| `browser_select` | `target`；`values[]`；`tab_id?` | `selected[]`、`value`、`url` |
+| `browser_eval` | `expression`；`world?`（`main` 或 `isolated` 默认）；`tab_id?` | `ok: true`、`value`；或 `ok: false`、`error`（含 `name`、`message`） |
+| `browser_wait` | `tab_id?`；`selector?`、`text?`、`url_contains?` 至少一个；`timeout_ms?` 100..120000 默认 10000 | `matched: true`、`waited_ms`、`url` |
+| `browser_history` | `action`（`back`、`forward`、`reload`）；`tab_id?` | `action`、`url`、`loaded` |
+| `tab_list` | 无 | `tabs[]`，元素含 `tab_id`、`index`、`active`、`url`、`title`、`status` |
+| `tab_new` | `url?`；`active?` 默认 true | `tab_id`、`url`、`loaded`、`previous_tab_id` |
+| `tab_close` | `tab_id` | `closed: true`、`tab_id`、`next_tab_id?` |
+| `tab_switch` | `tab_id` | `tab_id`、`url`、`title`、`active: true` |
+
+说明：
+
+- `browser_press` 接受 Enter、Tab、Escape、Backspace、Delete、Space、ArrowUp、ArrowDown、ArrowLeft、ArrowRight、PageUp、PageDown、Home、End、单字符键，以及 Control+、Shift+、Alt+、Meta+ 修饰键（例如 `Control+Shift+KeyK`）。
+- `browser_select` 写入 `values` 中的每个值；`<select multiple>` 支持多个值。
+- `browser_eval` 默认在隔离世界执行，可按需切到页面世界。页面异常属于成功的工具调用，返回 `{ "ok": false, "error": { "name", "message" } }`；只有工具级失败才置 `isError`。无法序列化为 JSON 的值返回 `null` 并附 `"value_note": "unserializable"`。
+- `browser_wait` 至少需要一个条件；超时为 `TIMEOUT`，`details.waited_ms` 给出已等待时长。 错误带有 `details` 时，MCP 工具结果的文本会以紧凑 JSON 追加这些内容（例如 `TIMEOUT: wait timed out after 100 ms {"waited_ms":4321}`）；错误结果不携带 `structuredContent`。
+- `tab_close` 关闭活动标签并激活相邻标签时返回 `next_tab_id`。
+
 ## 6. 扩展设计
 
 三个上下文，零页面：
@@ -106,7 +145,7 @@
 2. **内容脚本**：DOM 快照、点击与输入合成、等待、变更观察。
 3. **offscreen 文档**：WebSocket 持有者（Service Worker 无法可靠持有长连接）、保活、重连循环。
 
-弹窗只做一件事：切换 debugger 通道。整页约 40 行，一个开关加一个状态点。
+弹窗只读：一个连接状态点加一行状态文字，没有任何控件。debugger 能力在握手中始终声明，需要 CDP 的工具按需挂载；只有浏览器拒绝挂载时该通道才不可用。
 
 重连策略：指数退避加抖动（250ms 起，顶到 8s），网络恢复事件立即重试，30 秒一次 alarm 兜底，守护进程重启时主动下发 resume 消息。
 
@@ -114,7 +153,7 @@
 
     扩展状态：IDLE -> CONNECTING -> READY -> DEGRADED -> IDLE
 
-- DEGRADED 表示已连上但能力不全（例如 debugger 通道关闭）。依赖该能力的工具直接返回 CAPABILITY_UNAVAILABLE，而不是挂住。
+- DEGRADED 表示已连上但某项能力不可用（例如浏览器拒绝 debugger 挂载）。依赖该能力的工具直接返回 CAPABILITY_UNAVAILABLE，而不是挂住。
 - 每条命令都有截止时间；超时后守护进程向扩展发起取消，并返回带可重放 id 的 TIMEOUT。
 - 路由器为「不可交错」的动作（click/type）保留按浏览器的串行队列，为只读感知保留并行池。
 - 守护进程重启不丢会话：会话状态在 SQLite 里，扩展通过重放未确认命令续上。
@@ -128,7 +167,7 @@
 | NOT_INTERACTABLE | 元素被遮挡、禁用或不在视口 | 是，滚动后 |
 | TIMEOUT | 超过截止时间 | 是 |
 | NAVIGATION_LOST | 命令执行中页面发生导航 | 是，需重新定位 |
-| CAPABILITY_UNAVAILABLE | 例如 debugger 关闭、缺少权限 | 否，直到重新打开 |
+| CAPABILITY_UNAVAILABLE | 浏览器拒绝 debugger 挂载，或页面不允许脚本注入 | 否，直到页面或权限变化 |
 | BROWSER_GONE | 标签或浏览器已关闭 | 否 |
 | TRANSPORT_DOWN | 扩展断连 | 是，重连后 |
 | INTERNAL | 缺陷；携带 trace id | 否 |
@@ -163,11 +202,13 @@ SQLite 位于 ~/.corvus/corvus.db（WAL 模式）。
 
     [tools]
     paginate_over_bytes = 65536
-    default_timeout_ms = 15000
+    default_timeout_ms = 60000
 
     [memory]
     enabled = true
     export_format = "jsonl"
+
+按工具覆盖超时：`browser_wait` 为 `args.timeout_ms + 5000` 毫秒、上限 125000 毫秒，`browser_eval` 为 30000 毫秒，其余工具使用 60000 毫秒默认值；路由器把所有截止时间统一限制在 125000 毫秒以内。
 
 ## 11. 构建与 CI
 

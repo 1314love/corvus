@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Corvus M1 MCP conformance checks.
+# Corvus M2 MCP conformance checks.
 #
 # Starts corvusd, waits for the MCP HTTP endpoint on 127.0.0.1:7331, drives
 # initialize / notifications/initialized / tools/list / tools/call with curl,
-# and asserts the M1 contract. A mock extension is started when available so
-# the positive tools/call exercises the whole daemon -> extension -> daemon path.
-# Navigation checks cover loaded/url, an immediate snapshot of the new document,
-# and a loaded=false answer that must still be a successful tool call.
+# and asserts the frozen M2 contract from docs/02-architecture.md section 5.2.
+# A stateful mock extension is started when available so positive tool calls
+# exercise the complete daemon -> extension -> daemon path.
+#
+# Coverage: all 18 tools with at least one happy call and one negative per
+# family, navigation loaded/url and immediate-snapshot checks, default argument
+# normalization in recorded envelopes, and a loaded=false navigate that must
+# still be a successful tool call.
 #
 # Usage:
 #   tests/conformance/run.sh [--no-mock] [--keep-tmp]
@@ -18,7 +22,7 @@
 #   CORVUS_WS_URL      default ws://127.0.0.1:7330
 #   CARGO              cargo binary (default: cargo, then the known Windows path)
 #   EXPECTED_PROTOCOL_VERSION  default 2025-06-18
-#   EXPECTED_TOOLS     comma separated, default the four M1 tools
+#   EXPECTED_TOOLS     comma separated, default the 18 M2 tools
 #   KEEP_TMP=1         keep logs even on success
 #
 # Exit codes: 0 all checks passed (skips allowed), 1 one or more checks failed.
@@ -30,7 +34,7 @@ MCP_URL=${CORVUS_MCP_URL:-http://127.0.0.1:7331/mcp}
 WS_URL=${CORVUS_WS_URL:-ws://127.0.0.1:7330}
 HEALTH_URL=${CORVUS_HEALTH_URL:-${MCP_URL%/mcp}/health}
 EXPECTED_PROTOCOL_VERSION=${EXPECTED_PROTOCOL_VERSION:-2025-06-18}
-EXPECTED_TOOLS=${EXPECTED_TOOLS:-browser_navigate,page_snapshot,browser_click,browser_type}
+EXPECTED_TOOLS=${EXPECTED_TOOLS:-browser_navigate,page_snapshot,browser_click,browser_type,page_text,page_html,page_find,browser_hover,browser_press,browser_scroll,browser_select,browser_eval,browser_wait,browser_history,tab_list,tab_new,tab_close,tab_switch}
 export EXPECTED_PROTOCOL_VERSION EXPECTED_TOOLS
 
 USE_MOCK=1
@@ -40,7 +44,7 @@ for arg in "$@"; do
     --no-mock) USE_MOCK=0 ;;
     --keep-tmp) KEEP_TMP=1 ;;
     -h|--help)
-      sed -n '2,26p' "$0" | sed 's/^# {0,1}//'
+      sed -n '2,30p' "$0" | sed 's/^# {0,1}//'
       exit 0
       ;;
     *)
@@ -291,14 +295,11 @@ wait_for_no_browsers() {
   return 1
 }
 
-MOCK_ANSWER_MAP='{"browser_navigate":{"loaded":true,"url":"{{request_url}}","previous":"http://127.0.0.1:8808/a","same_document":false,"started_at":1763000000000},"page_snapshot":{"url":"{{last_navigate_url}}","title":"Mock page","nodes":[{"ref":"@e1","role":"heading","name":"new document"}]}}'
 PAGE_A='http://127.0.0.1:8808/a'
 PAGE_B='http://127.0.0.1:8808/b'
 MOCK_READY=0
 if [ "$USE_MOCK" = "1" ] && [ -n "$MOCK_BIN" ]; then
   if start_mock "$TMP/mock.log" "$TMP/mock-envelopes.jsonl" "mock:conformance" \
-    --answer-map "$MOCK_ANSWER_MAP" \
-    --answer-json '{"ok":true}' \
     --exit-after 100; then
     MOCK_READY=1
     record PASS "mock extension handshake" "$(grep -m1 '^READY ' "$TMP/mock.log")"
@@ -367,6 +368,36 @@ expect_snapshot() { # label expected-url needle prefix
   fi
 }
 
+CALL_ID=20
+
+expect_result() { # label tool arguments-json expected-json prefix [needle]
+  local label="$1" tool="$2" arguments="$3" expected="$4" prefix="$5" text_needle="${6:-}"
+  CALL_ID=$((CALL_ID + 1))
+  local payload status detail
+  payload=$(printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":%s}}' \
+    "$CALL_ID" "$tool" "$arguments")
+  status=$(mcp_post "$payload" "$TMP/$prefix.json" "$TMP/$prefix.headers" "$SESSION")
+  if [ "$status" = "200" ] && detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" result "$TMP/$prefix.json" "$expected" "$text_needle" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "HTTP $status ${detail:-$(head -c 200 "$TMP/$prefix.json" 2>/dev/null)}"
+  fi
+}
+
+expect_tool_error() { # label tool arguments-json error-code prefix
+  local label="$1" tool="$2" arguments="$3" code="$4" prefix="$5"
+  CALL_ID=$((CALL_ID + 1))
+  local payload status detail
+  payload=$(printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":%s}}' \
+    "$CALL_ID" "$tool" "$arguments")
+  status=$(mcp_post "$payload" "$TMP/$prefix.json" "$TMP/$prefix.headers" "$SESSION")
+  if [ "$status" = "200" ] && detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" call "$TMP/$prefix.json" error "$code" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "HTTP $status ${detail:-$(head -c 200 "$TMP/$prefix.json" 2>/dev/null)}"
+  fi
+}
+
 INIT_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"'"$EXPECTED_PROTOCOL_VERSION"'","capabilities":{},"clientInfo":{"name":"corvus-conformance","version":"0.1.0"}}}'
 STATUS=$(mcp_post "$INIT_PAYLOAD" "$TMP/init.json" "$TMP/init.headers" "" 0)
 SESSION=$(tr -d '\r' < "$TMP/init.headers" 2>/dev/null | sed -n 's/^[Mm][Cc][Pp]-[Ss][Ee][Ss][Ss][Ii][Oo][Nn]-[Ii][Dd]:[[:space:]]*//p' | head -n 1 || true)
@@ -395,7 +426,7 @@ if [ "$LIST_STATUS" != "200" ]; then
 else
   if OUT=$(node "$ROOT/tests/conformance/mcp_assert.mjs" tools "$TMP/tools.json" 2>&1); then
     NAME_LINE=$(printf '%s\n' "$OUT" | sed -n '1p')
-    record PASS "tools/list exactly four M1 tools" "$NAME_LINE"
+    record PASS "tools/list exactly 18 M2 tools" "$NAME_LINE"
     record PASS "tools/list annotation hints" "$(printf '%s\n' "$OUT" | sed -n '2p')"
     record PASS "tools/list input schema shapes" "$(printf '%s\n' "$OUT" | sed -n '3p')"
   else
@@ -408,7 +439,7 @@ CALL_STATUS=$(mcp_post "$CALL_PAYLOAD" "$TMP/call.json" "$TMP/call.headers" "$SE
 if [ "$USE_MOCK" = "1" ]; then
   if [ "$CALL_STATUS" != "200" ]; then
     record FAIL "tools/call page_snapshot" "HTTP $CALL_STATUS ($(head -c 200 "$TMP/call.json" 2>/dev/null))"
-  elif OUT=$(node "$ROOT/tests/conformance/mcp_assert.mjs" call "$TMP/call.json" success "Mock page" 2>&1); then
+  elif OUT=$(node "$ROOT/tests/conformance/mcp_assert.mjs" call "$TMP/call.json" success "Run" 2>&1); then
     record PASS "tools/call page_snapshot (round trip)" "$OUT"
   else
     record FAIL "tools/call page_snapshot (round trip)" "$OUT"
@@ -424,11 +455,73 @@ fi
 if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ]; then
   expect_navigate "browser_navigate loaded and final url" "$PAGE_A" true "navigate-a"
   expect_navigate "browser_navigate switches to page B" "$PAGE_B" true "navigate-b"
-  expect_snapshot "snapshot immediately after navigate sees page B" "$PAGE_B" "new document" "snapshot-b"
+  expect_snapshot "snapshot immediately after navigate sees page B" "$PAGE_B" "Run" "snapshot-b"
 else
   record SKIP "browser_navigate loaded and final url" "no mock extension"
   record SKIP "browser_navigate switches to page B" "no mock extension"
   record SKIP "snapshot immediately after navigate sees page B" "no mock extension"
+fi
+
+# --- M2 tool matrix ---------------------------------------------------------
+
+if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ]; then
+  expect_result "page_text returns page B text" page_text '{}' \
+    '{"url":"'$PAGE_B'","truncated":false}' "page-text" "Mock page text"
+  expect_result "page_html returns document html" page_html '{}' \
+    '{"url":"'$PAGE_B'","truncated":false}' "page-html" "<h1>Mock page</h1>"
+  expect_result "page_find finds Run" page_find '{"query":"Run"}' \
+    '{"url":"'$PAGE_B'","count":1}' "page-find" "@e1"
+  expect_result "browser_hover resolves target" browser_hover '{"target":"@e1"}' \
+    '{"hovered":true,"url":"'$PAGE_B'","target":{"ref":"@e1","tag":"button"}}' "hover"
+  expect_result "browser_press sends keys" browser_press '{"keys":["Enter","Tab"]}' \
+    '{"pressed":true,"keys":["Enter","Tab"],"url":"'$PAGE_B'"}' "press"
+  expect_result "browser_scroll moves page" browser_scroll '{"direction":"down","pages":2}' \
+    '{"scrolled":true,"x":0,"y":200,"url":"'$PAGE_B'"}' "scroll"
+  expect_result "browser_select chooses values" browser_select '{"target":"#sel","values":["alpha","beta"]}' \
+    '{"selected":["alpha","beta"],"value":"alpha","url":"'$PAGE_B'"}' "select"
+  expect_result "browser_eval returns a value" browser_eval '{"expression":"1 + 1"}' \
+    '{"ok":true,"value":2}' "eval-value"
+  expect_result "browser_eval page exception is ok=false" browser_eval '{"expression":"throw new Error(\"boom\")"}' \
+    '{"ok":false,"error":{"name":"Error"}}' "eval-throw" "mock page error"
+  expect_result "browser_eval unserializable value" browser_eval '{"expression":"window"}' \
+    '{"ok":true,"value":null,"value_note":"unserializable"}' "eval-unserializable"
+  expect_result "browser_wait matches selector" browser_wait '{"selector":"#ready","timeout_ms":1000}' \
+    '{"matched":true,"url":"'$PAGE_B'"}' "wait-match"
+  expect_result "browser_history goes back" browser_history '{"action":"back"}' \
+    '{"action":"back","url":"'$PAGE_A'","loaded":true}' "history-back"
+  expect_tool_error "browser_wait timeout is TIMEOUT" browser_wait '{"selector":"#never","timeout_ms":100}' \
+    TIMEOUT "wait-timeout"
+  expect_result "tab_list shows the active tab" tab_list '{}' \
+    '{"tabs":[{"tab_id":"tab-1","index":0,"active":true,"url":"'$PAGE_A'"}]}' "tab-list-1"
+  expect_result "tab_new opens tab-2" tab_new '{"url":"http://127.0.0.1:8808/c","active":true}' \
+    '{"tab_id":"tab-2","url":"http://127.0.0.1:8808/c","loaded":true,"previous_tab_id":"tab-1"}' "tab-new"
+  expect_result "page_text honours tab_id" page_text '{"tab_id":"tab-1"}' \
+    '{"url":"'$PAGE_A'","truncated":false}' "page-text-tab"
+  expect_result "tab_list shows both tabs" tab_list '{}' \
+    '{"tabs":[{"tab_id":"tab-1","active":false,"url":"'$PAGE_A'"},{"tab_id":"tab-2","active":true,"url":"http://127.0.0.1:8808/c"}]}' "tab-list-2"
+  expect_result "tab_switch activates tab-1" tab_switch '{"tab_id":"tab-1"}' \
+    '{"tab_id":"tab-1","url":"'$PAGE_A'","title":"Mock page","active":true}' "tab-switch"
+  expect_tool_error "tab_switch unknown tab is NOT_FOUND" tab_switch '{"tab_id":"tab-999"}' \
+    NOT_FOUND "tab-not-found"
+  expect_result "tab_close closes tab-2" tab_close '{"tab_id":"tab-2"}' \
+    '{"closed":true,"tab_id":"tab-2"}' "tab-close"
+  expect_result "tab_list returns to one tab" tab_list '{}' \
+    '{"tabs":[{"tab_id":"tab-1","active":true,"url":"'$PAGE_A'"}]}' "tab-list-3"
+  expect_result "browser_type captures text" browser_type '{"target":"@e1","text":"hello corvus"}' \
+    '{"typed":true,"ref":"@e1","value":"hello corvus","value_length":12,"url":"'$PAGE_A'"}' "type-m2"
+  expect_result "browser_click dispatches pointer events" browser_click '{"target":"@e2"}' \
+    '{"clicked":true,"ref":"@e2","url":"'$PAGE_A'"}' "click-m2" "pointerdown"
+  expect_result "page_text truncates at max_chars" page_text '{"max_chars":20}' \
+    '{"url":"'$PAGE_A'","truncated":true}' "page-text-truncated"
+  expect_result "page_html truncates at max_chars" page_html '{"max_chars":10}' \
+    '{"url":"'$PAGE_A'","truncated":true}' "page-html-truncated"
+  expect_result "page_find reports no matches" page_find '{"query":"nothing"}' \
+    '{"url":"'$PAGE_A'","count":0}' "page-find-none"
+  expect_result "page_html default max_chars after overrides" page_html '{}' \
+    '{"url":"'$PAGE_A'","truncated":false}' "page-html-default"
+else
+  record SKIP "M2 happy tool matrix" "no mock extension"
+  record SKIP "M2 extension error paths" "no mock extension"
 fi
 
 UNKNOWN_PAYLOAD='{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"corvus_tool_that_does_not_exist","arguments":{}}}'
@@ -458,13 +551,37 @@ expect_bad_args "page_snapshot rejects mode everything" '{"jsonrpc":"2.0","id":5
 expect_bad_args "page_snapshot rejects max_nodes 10" '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"page_snapshot","arguments":{"max_nodes":10}}}' "bad-max-nodes"
 expect_bad_args "browser_click rejects missing target" '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"browser_click","arguments":{}}}' "bad-click"
 expect_bad_args "browser_type rejects missing text" '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"browser_type","arguments":{"target":"@e1"}}}' "bad-type"
+expect_bad_args "browser_navigate rejects missing url" '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"browser_navigate","arguments":{}}}' "bad-navigate"
+expect_bad_args "page_text rejects max_chars 0" '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"page_text","arguments":{"max_chars":0}}}' "bad-page-text"
+expect_bad_args "page_html rejects max_chars 500001" '{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"page_html","arguments":{"max_chars":500001}}}' "bad-page-html"
+expect_bad_args "page_find rejects missing query" '{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"page_find","arguments":{}}}' "bad-page-find"
+expect_bad_args "browser_hover rejects missing target" '{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"browser_hover","arguments":{}}}' "bad-hover"
+expect_bad_args "browser_press rejects empty keys" '{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"browser_press","arguments":{"keys":[]}}}' "bad-press"
+expect_bad_args "browser_scroll rejects diagonal" '{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"browser_scroll","arguments":{"direction":"diagonal"}}}' "bad-scroll"
+expect_bad_args "browser_select rejects empty values" '{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"browser_select","arguments":{"target":"#sel","values":[]}}}' "bad-select"
+expect_bad_args "browser_eval rejects world server" '{"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"browser_eval","arguments":{"expression":"1 + 1","world":"server"}}}' "bad-eval"
+expect_bad_args "browser_wait rejects no condition" '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"browser_wait","arguments":{}}}' "bad-wait"
+expect_bad_args "browser_history rejects refresh" '{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"browser_history","arguments":{"action":"refresh"}}}' "bad-history"
+expect_bad_args "tab_new rejects active yes" '{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"tab_new","arguments":{"active":"yes"}}}' "bad-tab-new"
+expect_bad_args "tab_close rejects missing tab_id" '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"tab_close","arguments":{}}}' "bad-tab-close"
+expect_bad_args "tab_switch rejects missing tab_id" '{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"tab_switch","arguments":{}}}' "bad-tab-switch"
 
 if [ -f "$TMP/mock-envelopes.jsonl" ]; then
   RECORDED=$(wc -l < "$TMP/mock-envelopes.jsonl" | tr -d ' ')
-  if [ "$RECORDED" -ge 2 ]; then
+  if [ "$RECORDED" -ge 18 ]; then
     record PASS "envelope recording" "$RECORDED received envelopes in mock-envelopes.jsonl"
   else
     record FAIL "envelope recording" "only $RECORDED envelopes in mock-envelopes.jsonl"
+  fi
+  if OUT=$(node "$ROOT/tests/conformance/mcp_assert.mjs" command "$TMP/mock-envelopes.jsonl" page_html '{"max_chars":200000}' 2>&1); then
+    record PASS "recorded page_html default max_chars" "$OUT"
+  else
+    record FAIL "recorded page_html default max_chars" "$OUT"
+  fi
+  if OUT=$(node "$ROOT/tests/conformance/mcp_assert.mjs" command "$TMP/mock-envelopes.jsonl" browser_eval '{"world":"isolated"}' 2>&1); then
+    record PASS "recorded browser_eval default world" "$OUT"
+  else
+    record FAIL "recorded browser_eval default world" "$OUT"
   fi
 fi
 

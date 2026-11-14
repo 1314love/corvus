@@ -3,6 +3,9 @@
 Status: template. Copy this file to `tests/report/M1-report-<yyyy-mm-dd>.md`,
 fill every table, and keep the evidence directory next to the report.
 
+M2 wave 1 (18 tools) uses `tests/report/M2a-report-template.md` and the
+bilingual M2a playbooks instead.
+
 ## 1. Run metadata
 
 | field | value |
@@ -63,7 +66,7 @@ Use one row per tool call. Add rows for repeats and negative cases.
 |---|---|---|---|---|---|---|---|
 | 1 | `browser_navigate` | `{"url":"http://127.0.0.1:8808/"}` | `{"navigated":true,"loaded":true,"url":"..."}` | false / - |  | navigate.json, screenshot-navigate.png |  |
 | 2 | `page_snapshot` | `{"mode":"interactive"}` | `{"title":"Corvus Test Page","node_count":7,"nodes":[...]}` | false / - |  | snapshot.json |  |
-| 3 | `browser_type` | `{"target":"@e1","text":"hello corvus"}` | `{"typed":true,"value":"hello corvus","value_length":11}` | false / - |  | type.json, screenshot-type.png |  |
+| 3 | `browser_type` | `{"target":"@e1","text":"hello corvus"}` | `{"typed":true,"value":"hello corvus","value_length":12}` | false / - |  | type.json, screenshot-type.png |  |
 | 4 | `page_snapshot` | `{"mode":"full"}` | input `attributes.value` is `hello corvus` | false / - |  | snapshot-after-type.json |  |
 | 5 | `browser_click` | `{"target":"@e2"}` | `{"clicked":true,"events":[...]}` | false / - |  | click.json, screenshot-click.png |  |
 | 6 | `page_snapshot` | `{"mode":"full"}` | text `clicked:hello corvus` present | false / - |  | snapshot-after-click.json |  |

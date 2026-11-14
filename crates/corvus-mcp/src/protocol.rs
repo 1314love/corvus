@@ -249,6 +249,10 @@ fn tool_error(error: &ErrorBody) -> Value {
     if let Some(trace_id) = &error.trace_id {
         text.push_str(&format!(" (trace {trace_id})"));
     }
+    if let Some(details) = &error.details {
+        text.push(' ');
+        text.push_str(&encode(details));
+    }
     json!({
         "content": [{ "type": "text", "text": text }],
         "isError": true,

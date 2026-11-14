@@ -1,21 +1,23 @@
 # Corvus browser extension
 
 A zero-UI Manifest V3 extension that bridges the local Corvus daemon and this
-browser. It loads no remote code, uses no bundler and has no build step: every
-file in this directory is shipped as is.
+browser. Every file in this directory is shipped as is: there is no bundler, no
+npm package, no build step, no remote code and no inline script.
 
-The only visible surface is one popup with a single debugger switch and one
-connection status dot.
+The only visible surface is one popup: a read-only status card with a connection
+dot, connection details, and one line noting that the debugger channel is managed
+automatically. It has no controls.
 
 ## Files
 
 | File | Role |
 | --- | --- |
 | manifest.json | MV3 manifest: permissions, content script, service worker, popup. |
-| background.js | Service worker: protocol envelopes, command routing, tab resolution, content script injection, debugger channel, watchdog alarm. |
+| background.js | Service worker: protocol envelopes, command routing, tab resolution, content-script injection, the managed debugger channel, watchdog alarm. |
 | offscreen.html / offscreen.js | Offscreen document: owns the only WebSocket, reconnects with backoff, relays frames to the service worker. |
-| content.js | Content script: navigate, snapshot, click and type inside the page. |
-| popup.html / popup.js | Single switch for the debugger channel and one status dot. |
+| content.js | Content script: page-scoped tools inside the page (snapshot, text, HTML, find, click, type, hover, press, scroll, select, wait probe). |
+| popup.html / popup.js | Read-only status card: connection dot and state, browser id, version, capabilities. |
+| README.md | This document. |
 
 ## Message flow
 
@@ -29,13 +31,19 @@ connection status dot.
    version, and marks the connection as connected. The popup dot turns green.
 4. The daemon sends command envelopes. The offscreen document relays them to
    the service worker with chrome.runtime.sendMessage. The service worker
-   validates the envelope, resolves the target tab, injects content.js when the
-   tab has no listener yet, forwards the command, and answers with a response
-   envelope that carries the same id.
-5. The content script answers exactly once per command with either
+   validates the envelope, resolves the target tab, chooses the execution path,
+   and answers with a response envelope that carries the same id.
+5. There are three execution paths:
+   - Tab tools (tab_list, tab_new, tab_close, tab_switch) use chrome.tabs only
+     and never need a content script.
+   - browser_eval uses chrome.scripting.executeScript directly in the requested
+     world.
+   - The other tools are forwarded to content.js. The service worker pings the
+     tab first and injects content.js when no listener is present yet.
+6. The content script answers exactly once per command with either
    {ok:true, result} or {ok:false, error}. The service worker wraps that answer
-   in the response envelope.
-6. The offscreen document relays the response to the daemon over the socket.
+   in the response envelope as raw args or as a top-level typed error.
+7. The offscreen document relays the response to the daemon over the socket.
 
 Resilience rules:
 
@@ -106,9 +114,7 @@ Failed response, same id:
 The envelope carries a response in one of two shapes. On success args is the raw
 tool result, with no wrapper and no extra fields, so the daemon can hand it
 straight to MCP structured output. On failure args is null and the typed error
-object sits in the top level error field; it is never a bare string. This
-matches crates/corvus-proto/src/envelope.rs, where Envelope::response_ok puts the
-result in args and Envelope::response_err sets error.
+object sits in the top level error field; it is never a bare string.
 
 Hello and hello_ack:
 
@@ -116,40 +122,74 @@ Hello and hello_ack:
 { "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello",
   "browser": "edge:7f3a91c0d2b4e6f8",
   "args": { "profile": "7f3a91c0d2b4e6f8", "version": "0.1.0",
-            "capabilities": ["dom", "scripting"] } }
+            "capabilities": ["dom", "scripting", "debugger"] } }
 ~~~
 
 ~~~json
 { "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello_ack",
   "browser": "edge:default",
   "args": { "daemon": "corvus", "version": "0.1.0", "protocol": 1,
-            "capabilities": ["dom", "scripting"],
-            "limits": { "max_timeout_ms": 120000, "default_timeout_ms": 15000,
+            "capabilities": ["dom", "scripting", "debugger"],
+            "limits": { "max_timeout_ms": 125000, "default_timeout_ms": 60000,
                         "max_inflight": 64, "max_snapshot_nodes": 20000 } } }
 ~~~
 
-The browser token is browser name plus a random profile token persisted in
-chrome.storage.local. Extension APIs cannot read the real profile name.
+The advertised capabilities are always dom, scripting and debugger. The debugger
+name is part of the hello even before any session exists; the channel itself is
+attached lazily by the first CDP-backed command and detached after thirty seconds
+of inactivity, when its tab closes and on every reconnect. The browser token is
+browser name plus a random profile token persisted in chrome.storage.local.
+Extension APIs cannot read the real profile name.
 
-## Tool payloads
+## Tool contract
 
-The frozen M1 tool names and argument shapes are:
+There are eighteen frozen tool names. The service worker rejects any other name
+with BAD_ARGS.
+
+Common rules:
+
+- tab_id is an optional string on every tool. When omitted, the active tab of
+  the last focused window is used. tab_close and tab_switch require it.
+- Every tab id in a result is a decimal string, matching the tab_id argument.
+- target is an element reference ("@e12") or a CSS selector. The legacy aliases
+  ref and selector are accepted for target; target wins when both are present.
+- Every command resolves. A tool-level failure is a response envelope whose
+  args is null and whose top-level error carries one of the nine codes below.
+- Page commands run in the top frame only.
+
+### Payload table
 
 | Tool | Arguments | Success result |
 | --- | --- | --- |
 | browser_navigate | { "url": string, "tab_id"?: string } | { navigated, loaded, url, previous, same_document, started_at } |
-| page_snapshot | { "tab_id"?: string, "mode"?: "interactive" \| "full", "max_nodes"?: 40..3000 } | { url, title, viewport, mode, nodes, ... } |
+| page_snapshot | { "tab_id"?: string, "mode"?: "interactive" \| "full", "max_nodes"?: 40..3000 } | { url, title, viewport, mode, node_cap, node_count, element_count, text_count, ref_count, truncated, nodes } |
 | browser_click | { "target": string, "tab_id"?: string } | { clicked, ref, selector, tag, role, name, bbox, point, events, url } |
-| browser_type | { "target": string, "text": string, "clear"?: boolean, "blur"?: boolean, "tab_id"?: string } | { typed, ref, selector, tag, role, cleared, events, value, ... } |
+| browser_type | { "target": string, "text": string, "clear"?: boolean, "blur"?: boolean, "tab_id"?: string } | { typed, ref, selector, tag, role, cleared, events, value, value_length, url } |
+| page_text | { "tab_id"?: string, "max_chars"?: 1..200000 } | { url, title, text, truncated } |
+| page_html | { "tab_id"?: string, "target"?: string, "max_chars"?: 1..500000 } | { url, html, truncated } |
+| page_find | { "query": string, "tab_id"?: string, "role"?: string, "limit"?: 1..100, "regex"?: boolean } | { url, count, matches: [{ ref, tag, role, text }] } |
+| browser_hover | { "target": string, "tab_id"?: string } | { hovered: true, url, target: { ref, tag, text? } } |
+| browser_press | { "keys": string \| string[], "target"?: string, "tab_id"?: string } | { pressed: true, keys, url } |
+| browser_scroll | { "direction": "up" \| "down" \| "left" \| "right", "pages"?: 0..50, "target"?: string, "tab_id"?: string } | { scrolled: true, x, y, url } |
+| browser_select | { "target": string, "values": string[], "tab_id"?: string } | { selected, value, url } |
+| browser_eval | { "expression": string, "world"?: "main" \| "isolated", "tab_id"?: string } | { ok: true, value } or { ok: false, error: { name, message } } |
+| browser_wait | { "tab_id"?: string, "selector"?: string, "text"?: string, "url_contains"?: string, "timeout_ms"?: 100..120000 } | { matched: true, waited_ms, url } |
+| browser_history | { "action": "back" \| "forward" \| "reload", "tab_id"?: string } | { action, url, loaded } |
+| tab_list | {} | { tabs: [{ tab_id, index, active, url, title, status }] } |
+| tab_new | { "url"?: string, "active"?: boolean } | { tab_id, url, loaded, previous_tab_id } |
+| tab_close | { "tab_id": string } | { closed: true, tab_id, next_tab_id? } |
+| tab_switch | { "tab_id": string } | { tab_id, url, title, active: true } |
 
-target is an element reference ("@e12") or a CSS selector. The extension also
-accepts the legacy aliases "ref" and "selector" for target; target takes
-precedence when more than one is present. mode defaults to "interactive" for
-page_snapshot, and clear defaults to true for browser_type. tab_id is optional
-for all four tools; when it is absent the active tab of the last focused window
-is used.
+Defaults: page_snapshot mode is "interactive" and max_nodes is 700 (clamped to
+40 through 3000); browser_type clear is true and blur is false; page_text
+max_chars is 100000; page_html max_chars is 200000; page_find limit is 20 and
+regex is false; browser_press keys is one chord when a string is given;
+browser_scroll pages is 1; browser_eval world is "isolated"; browser_wait
+timeout_ms is 10000; tab_new active is true.
 
-### browser_navigate
+### Navigation and snapshot
+
+browser_navigate
 
 ~~~json
 { "url": "https://github.com/" }
@@ -176,33 +216,56 @@ error page (chrome-error://), the service worker navigates it with
 chrome.tabs.update and retries content-script injection once after the load
 wait. The URL must be http, https or file.
 
-### page_snapshot
+page_snapshot
 
 ~~~json
 { "mode": "interactive", "max_nodes": 700 }
 ~~~
 
-Result: url, title, viewport, mode, node_cap, node_count, element_count, text_count,
-ref_count, truncated, and nodes. Each element node is
+Result: url, title, viewport {width, height, scrollX, scrollY}, mode, node_cap,
+node_count, element_count, text_count, ref_count, truncated, and nodes. Each
+element node is
 {kind:"element", ref:"@e12", tag:"button", role:"button", name:"Submit",
 bbox:{x,y,w,h}, depth, states, attributes?}. Each text node is
 {kind:"text", depth, text}.
 
-mode "interactive" (the default) keeps only actionable elements: buttons, links,
+mode "interactive" (the default) keeps actionable elements: buttons, links,
 form controls, and elements with an interactive role, tabindex or
 contenteditable. Text nodes that surround those elements are kept as context;
-the visible text of the actionable element itself is folded into its name. mode
-"full" returns the complete compact tree.
+the visible text of the actionable element itself is folded into its name.
+mode "full" returns the complete compact tree. The node budget is clamped to
+40 through 3000 nodes; the walk stops at the cap and sets truncated:true.
+Hidden subtrees are skipped.
 
 The refs come from a per-document element map and are stable while the document
 lives: two snapshots in a row return the same @eN for the same element. A ref
-from a previous document is stale and answers NOT_FOUND. The node budget is
-clamped to 40 through 3000 nodes; the walk stops at the cap and sets
-truncated:true. Hidden subtrees are skipped. Roles and names are computed from
-ARIA attributes, labels, alt text and visible text, so the node list is the
-hybrid accessibility tree plus trimmed DOM.
+from a previous document is stale and answers NOT_FOUND.
 
-### browser_click
+### Page content
+
+page_text returns the visible text of the document as innerText (with a
+textContent fallback), newline-normalized. max_chars is an integer from 1
+through 200000 and defaults to 100000; a value outside that range or a
+non-integer is BAD_ARGS. The text is sliced at the limit and truncated is set;
+it is never an error for the document to exceed the limit.
+
+page_html returns documentElement.outerHTML, or the outerHTML of target when one
+is given. max_chars is an integer from 1 through 500000 and defaults to 200000;
+a value outside that range or a non-integer is BAD_ARGS. The HTML is sliced at
+the limit and truncated is set.
+
+page_find searches visible text. With regex:false (the default) query is
+whitespace-collapsed and matched as a case-insensitive substring. With
+regex:true query is compiled as a JavaScript RegExp with the i flag; an invalid
+expression is BAD_ARGS. role, when present, is compared case-insensitively with
+the computed role. limit is an integer from 1 through 100 and defaults to 20.
+The result holds at most one match per element, and refs come from the same
+per-document map as page_snapshot, so a ref can be passed straight to
+browser_click, browser_hover, browser_type and the other target tools.
+
+### Interaction
+
+browser_click
 
 ~~~json
 { "target": "@e12" }
@@ -214,55 +277,132 @@ or a CSS selector:
 { "target": "button[type=submit]" }
 ~~~
 
-The legacy aliases { "ref": "@e12" } and { "selector": "button[type=submit]" }
-are also accepted; target wins when both are present.
+Result: clicked, ref, selector, tag, role, name, bbox, point, events, url. The
+handler scrolls the element into view, checks that the center point hit-tests to
+the element or one of its descendants, focuses it, and then dispatches
+pointerover, pointerenter, pointermove, pointerdown, mousedown, pointerup,
+mouseup and a real element.click(), so native default actions and framework
+handlers run.
 
-Result: clicked, ref, selector, tag, role, name, bbox, point, events, url. The handler
-scrolls the element into view, checks that the center point hit-tests to the
-element or one of its descendants, focuses it, and then dispatches pointerover,
-pointerenter, pointermove, pointerdown, mousedown, pointerup, mouseup and a real
-element.click(), so native default actions and framework handlers run.
-
-### browser_type
+browser_type
 
 ~~~json
 { "target": "@e5", "text": "hello world", "clear": true, "blur": false }
-
-The legacy aliases { "ref": "@e5" } and { "selector": "input[name=q]" } are also
-accepted; target wins when both are present.
 ~~~
 
-Result: typed, ref, selector, tag, role, cleared, events, value (masked for password
-fields), value_length, url. The handler focuses the field, writes through the
-native HTMLInputElement or HTMLTextAreaElement value setter, then dispatches
-beforeinput, an InputEvent with data for input and a change event, so
+Result: typed, ref, selector, tag, role, cleared, events, value (masked for
+password fields), value_length, url. The handler focuses the field, writes
+through the native HTMLInputElement or HTMLTextAreaElement value setter, then
+dispatches beforeinput, an InputEvent with data for input and a change event, so
 framework-controlled inputs such as React, Vue and Angular forms update instead
-of rolling back. Editable regions use execCommand insertText with a textContent
-fallback. clear defaults to true; blur defaults to false.
+of rolling back. Editable regions use insertText with a textContent fallback.
+clear defaults to true; blur defaults to false.
+
+browser_hover dispatches pointerover, pointerenter, pointermove, mouseover,
+mouseenter and mousemove at the element center after scrolling it into view. It
+returns the element ref, tag and accessible text.
+
+browser_press accepts one chord or an array of chords. A chord is a key or a
+modifier prefix plus a key: Control+, Shift+, Alt+ and Meta+ may be combined,
+for example "Control+Shift+KeyK". Named keys are Enter, Tab, Escape, Backspace,
+Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, PageUp, PageDown, Home
+and End. A single printable character, "A", "7" or "+", is also accepted.
+Keydown, keypress for printable keys and keyup are dispatched with the correct
+modifier flags. target is optional and defaults to the focused element, then
+the body. keys in the result echoes the normalized chord strings.
+
+browser_scroll scrolls the window by pages viewport units in the requested
+direction, or scrolls target when it is a scroll container. pages is a number
+from 0 through 50 and defaults to 1; 0 records the current offsets without
+moving. x and y are the resulting scroll offsets.
+
+browser_select sets one or more option values on a select. values must be an
+array of strings; a single-select element requires exactly one value and a
+multiple select accepts several. Every value must match an existing option
+value or the call fails with NOT_FOUND. The handler writes the selected flags
+and fires input followed by change. selected lists the resulting option values
+and value is the select's value.
+
+### Evaluation, waiting and history
+
+browser_eval evaluates expression with chrome.scripting.executeScript in the
+requested world. world "isolated" (the default) runs in the content-script
+world; "main" runs in the page world. The injected function uses indirect eval,
+awaits a returned thenable and returns JSON-serializable data.
+
+~~~json
+{ "expression": "document.title" }
+~~~
+
+Result:
+
+~~~json
+{ "ok": true, "value": "Example Domain" }
+~~~
+
+If page code throws, the tool call itself succeeds and args is
+{ "ok": false, "error": { "name": "TypeError", "message": "..." } }; the
+envelope has no error field. Only tool-level problems such as a restricted page
+or a missing tab set the envelope error. If the result cannot be serialized to
+JSON, args is { "ok": true, "value": null, "value_note": "unserializable" }.
+Top-level await in expression is not supported; use an async IIFE.
+
+browser_wait accepts at least one of selector, text or url_contains. It polls
+every 100 ms. selector is checked with document.querySelector, text is a
+case-insensitive substring of the visible text, and url_contains is checked
+against chrome.tabs. selector and text need the content script; url_contains
+alone can run on a restricted page. timeout_ms is an integer from 100 through
+120000 and defaults to 10000. Success is { matched: true, waited_ms, url }. If
+the condition is not met by the deadline the command fails with TIMEOUT and
+details.waited_ms.
+
+browser_history runs back, forward or reload. It waits for the tab to reach
+status complete and reports the final url and loaded. A back or forward with no
+history entry is NOT_FOUND; a closed tab is BROWSER_GONE.
+
+### Tabs
+
+tab_list returns every tab, ordered by window id then tab index:
+{ tab_id, index, active, url, title, status }. status is the chrome.tabs status
+string ("loading", "complete" or "unloaded").
+
+tab_new creates a tab. url is optional and must be http, https or file when
+present; when it is omitted the browser new-tab page opens. active defaults to
+true. previous_tab_id is the tab that was active before creation, or null. The
+result reports loaded true only when the new document reached status complete
+inside the command budget; a budget expiry is still a success with loaded false
+and the current url.
+
+tab_close requires tab_id. It returns { closed: true, tab_id } and adds
+next_tab_id only when the closed tab was the active tab and a neighbouring tab
+was activated in the same window.
+
+tab_switch requires tab_id, activates the tab, focuses its window best effort
+and returns { tab_id, url, title, active: true }.
 
 ## Error codes
 
 | Code | When this extension emits it | Retryable |
 | --- | --- | --- |
-| BAD_ARGS | Missing tool, unknown tool, missing url, target or text, invalid CSS selector, ref not shaped like @e12, oversized payload. | no |
-| NOT_FOUND | No element matches the selector, ref is unknown or from an old document, the tab does not exist. | yes, after a new snapshot or page change |
-| NOT_INTERACTABLE | Element hidden, disabled, read only, not editable, zero hit area, or covered by another element (details.covering names it). | yes, after scrolling or a new snapshot |
-| TIMEOUT | The content script or the tab did not answer inside meta.timeout_ms plus 1.5 s. | yes |
+| BAD_ARGS | Missing tool, unknown tool, missing url, target, text, keys or values, invalid direction, invalid world, invalid action, invalid CSS selector, ref not shaped like @e12, number out of range, malformed regex. | no |
+| NOT_FOUND | No element matches the selector, ref is unknown or from an old document, the tab does not exist, the select option value does not exist, or browser_history has no history entry. | yes, after a new snapshot, page change or different target |
+| NOT_INTERACTABLE | Element hidden, disabled, read only, not editable, zero hit area, covered by another element (details.covering), or a target outside the viewport. | yes, after scrolling or a new snapshot |
+| TIMEOUT | The content script or the tab did not answer inside meta.timeout_ms plus 1.5 s, or browser_wait reached its deadline (details.waited_ms). | yes |
 | NAVIGATION_LOST | The page navigated or unloaded before the command answered. | yes, re-resolve on the new page |
-| CAPABILITY_UNAVAILABLE | The page cannot be scripted, for example a chrome, edge, about or extension page, or the debugger could not attach. | no until the page or the switch changes |
-| BROWSER_GONE | The tab was closed while the command was running. | no |
+| CAPABILITY_UNAVAILABLE | The page cannot be scripted, for example chrome, edge, about or extension pages, or the debugger channel could not attach because DevTools is open. | no until the page changes or DevTools closes |
+| BROWSER_GONE | The tab was closed while the command was running or before it could report. | no |
 | TRANSPORT_DOWN | The daemon reports this when the extension socket is gone; the extension cannot send it over a closed socket. | yes, after reconnect |
-| INTERNAL | Unexpected bug, native setter failure, click threw. | no |
+| INTERNAL | Unexpected bug, native setter failure, click threw, or chrome.tabs.create returned no tab. | no |
 
 ## Loading unpacked
 
 1. Open chrome://extensions (or edge://extensions, brave://extensions).
 2. Enable Developer mode.
 3. Choose Load unpacked and select this extension directory.
-4. The Corvus icon opens the popup. The dot is gray while disconnected and
-   green while the daemon connection is up. The switch controls the debugger
-   channel; it is off by default and attach failures are shown as a red dot and
-   a message in the popup.
+4. The Corvus icon opens a read-only status card. The dot is gray while
+   disconnected and green while the daemon connection is up. The card shows the
+   assigned browser id, the extension version, the advertised capabilities and a
+   note that the debugger channel is managed automatically; it has no controls.
 
 The extension id is derived from the unpacked directory, so it differs between
 machines and browsers. A stable id requires a manifest key; no key material is
@@ -282,6 +422,26 @@ shipped in this repository yet.
    browser_type through the daemon or its MCP tools. A successful response
    carries the tool result directly in args and has no error field.
 
+Payload checks:
+
+- page_text returns url, title, text and truncated; raise max_chars above the
+  document length and confirm truncated false.
+- page_html with no target returns the whole documentElement; with a target it
+  returns that element's outerHTML.
+- page_find returns refs that page_snapshot also knows about; pass one to
+  browser_click.
+- browser_hover returns hovered true; browser_press "Enter" returns pressed
+  true; browser_scroll returns the new x and y; browser_select returns the
+  selected option values.
+- browser_eval "1+1" returns { ok: true, value: 2 }; browser_eval "throw new
+  Error('boom')" returns { ok: false, error: { name: "Error", message: "boom" }
+  } without an envelope error.
+- browser_wait selector "h1" returns matched true; browser_wait with a missing
+  selector and a short timeout_ms returns TIMEOUT with details.waited_ms.
+- tab_list lists the open tabs with string tab_id values; tab_new opens one and
+  returns its tab_id and previous_tab_id; tab_switch activates it; tab_close
+  closes it and reports next_tab_id when it was active.
+
 Negative checks:
 
 - Click or type an @eN that is not in the current snapshot: NOT_FOUND.
@@ -289,6 +449,9 @@ Negative checks:
   NOT_INTERACTABLE.
 - Type into a div that is not editable: NOT_INTERACTABLE.
 - Send a command with tool "browser_fly": BAD_ARGS.
+- browser_select with a value that no option has: NOT_FOUND.
+- browser_scroll with direction "sideways": BAD_ARGS.
+- browser_history back on a fresh tab: NOT_FOUND.
 - Stop the daemon: the dot turns gray, the watchdog retries every 30 s, and the
   reconnect backoff caps at 8 s. Commands sent while the socket is down never
   reach the extension; the daemon is responsible for answering TRANSPORT_DOWN
@@ -304,12 +467,24 @@ Negative checks:
 - Shadow roots are not pierced; nodes inside open shadow roots are invisible to
   the snapshot.
 - Refs are document scoped. Any navigation invalidates them.
+- page_find reports at most one match per element, not every occurrence of the
+  text inside one element.
+- Interactive snapshots may skip non-actionable ancestors, so depth values can
+  jump where the tree was filtered.
+- browser_eval does not support top-level await in expression; wrap asynchronous
+  work in an async IIFE.
 - The profile token is synthetic because extensions cannot read the profile
   name.
-- The debugger channel is attached and detached by the popup switch and is
-  advertised in capabilities. All four M1 tools currently run on the DOM
-  channel, which is the specified automatic fallback.
+- The debugger channel is managed automatically: it is always advertised in
+  capabilities, attached lazily by the first command that needs CDP and detached
+  after thirty seconds idle, on tab close and on reconnect. The eighteen tools
+  run on the DOM and scripting channels; no command currently issues CDP methods.
+  A tab owned by DevTools answers CAPABILITY_UNAVAILABLE with a reason.
 - webRequest, downloads and unlimitedStorage are declared as required by the
-  architecture but no M1 command uses them yet.
+  architecture but no command uses them yet.
 - Commands are not buffered while the socket is down; nothing can be sent over
   a closed socket.
+- This repository has no DOM test harness and the available branded browser
+  ignores command-line extension loading, so automated checks here are syntax
+  checks plus protocol tests; live checks use a manually loaded unpacked
+  extension.

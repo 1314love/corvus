@@ -6,18 +6,18 @@
  * Responsibilities:
  *  - own the protocol envelope handling described in docs/02-architecture.md section 4;
  *  - create a hello envelope, store the browser id assigned by hello_ack;
- *  - dispatch command envelopes to the four M1 tools and always answer them;
+ *  - dispatch command envelopes to the eighteen M2 tools and always answer them;
  *  - create and supervise the offscreen document that holds the WebSocket;
  *  - run a thirty second alarm watchdog that restarts a dead socket;
- *  - expose the debugger channel switch and the connection state to the popup.
+ *  - expose a read-only connection and capability view to the popup.
  *
  * Plain JavaScript, MV3, no build step, no dependencies.
  */
 
 const PROTOCOL_VERSION = 1;
-const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_TIMEOUT_MS = 60000;
 const MIN_TIMEOUT_MS = 250;
-const MAX_TIMEOUT_MS = 120000;
+const MAX_TIMEOUT_MS = 125000;
 const COMMAND_TIMEOUT_PAD_MS = 1500;
 
 const WS_URL = 'ws://127.0.0.1:7330';
@@ -27,10 +27,12 @@ const ALARM_WATCHDOG = 'corvus.watchdog';
 const WATCHDOG_PERIOD_MINUTES = 0.5;
 const RESPONSE_CACHE_LIMIT = 200;
 const MAX_REFS = 5000;
+const CDP_IDLE_TIMEOUT_MS = 30000;
+const CDP_ATTACH_TIMEOUT_MS = 5000;
+const CDP_PROTOCOL_VERSION = '1.3';
 
 const STORAGE = {
   connection: 'corvus.connection',
-  debugger: 'corvus.debugger',
   profile: 'corvus.profile',
   browserId: 'corvus.browserId',
 };
@@ -48,27 +50,48 @@ const RETRYABLE = {
 };
 
 // Only names the protocol crate understands survive negotiation
-// (crates/corvus-proto/src/handshake.rs, capability::SUPPORTED). DOM is the
-// capability that makes the four M1 tools available.
-const BASE_CAPABILITIES = ['dom', 'scripting'];
+// (crates/corvus-proto/src/handshake.rs, capability::SUPPORTED). The debugger
+// capability is always advertised: the channel is managed automatically and
+// attaches only when a command actually needs it.
+const BASE_CAPABILITIES = ['dom', 'scripting', 'debugger'];
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
-// The frozen M1 tool names. No aliases: the four names are the contract.
-const TOOL_NAMES = ['browser_navigate', 'page_snapshot', 'browser_click', 'browser_type'];
+// The frozen M2 wave 1 tool names. No aliases: these eighteen names are the contract.
+const TOOL_NAMES = [
+  'browser_navigate',
+  'page_snapshot',
+  'browser_click',
+  'browser_type',
+  'page_text',
+  'page_html',
+  'page_find',
+  'browser_hover',
+  'browser_press',
+  'browser_scroll',
+  'browser_select',
+  'browser_eval',
+  'browser_wait',
+  'browser_history',
+  'tab_list',
+  'tab_new',
+  'tab_close',
+  'tab_switch',
+];
 
 const state = {
   status: 'disconnected',
   browserId: null,
   daemonVersion: null,
   limits: null,
-  debuggerEnabled: false,
   lastError: null,
   connectedAt: null,
   profileToken: null,
 };
 
 const responseCache = new Map();
+const debuggerSessions = new Map();
+const debuggerAttachPromises = new Map();
 let bootPromise = null;
 let creationPromise = null;
 
@@ -151,9 +174,7 @@ function detectBrowserName() {
 }
 
 function computeCapabilities() {
-  const capabilities = BASE_CAPABILITIES.slice();
-  if (state.debuggerEnabled) capabilities.push('debugger');
-  return capabilities;
+  return BASE_CAPABILITIES.slice();
 }
 
 // ---------------------------------------------------------------------------
@@ -205,9 +226,7 @@ function fromContentError(error) {
 // ---------------------------------------------------------------------------
 
 async function loadState() {
-  const stored = await chrome.storage.local.get([STORAGE.connection, STORAGE.debugger, STORAGE.browserId, STORAGE.profile]);
-
-  state.debuggerEnabled = stored[STORAGE.debugger] === true;
+  const stored = await chrome.storage.local.get([STORAGE.connection, STORAGE.browserId, STORAGE.profile]);
 
   if (typeof stored[STORAGE.browserId] === 'string' && stored[STORAGE.browserId].trim()) {
     state.browserId = stored[STORAGE.browserId].trim();
@@ -240,7 +259,6 @@ async function persistConnection() {
     status: state.status,
     browserId: state.browserId,
     daemonVersion: state.daemonVersion,
-    debuggerEnabled: state.debuggerEnabled,
     lastError: state.lastError,
     updatedAt: Date.now(),
   };
@@ -271,9 +289,14 @@ function buildUiState() {
     connected: state.status === 'connected',
     browserId: state.browserId,
     daemonVersion: state.daemonVersion,
-    debuggerEnabled: state.debuggerEnabled,
     lastError: state.lastError,
     wsUrl: WS_URL,
+    version: chrome.runtime.getManifest().version,
+    capabilities: computeCapabilities(),
+    debuggerChannel: {
+      managed: true,
+      attached_tabs: Array.from(debuggerSessions.keys()).map((tabId) => tabIdString(tabId)),
+    },
   };
 }
 
@@ -455,6 +478,20 @@ const HANDLERS = {
   page_snapshot: (args, frame) => runInTab('page_snapshot', args, frame),
   browser_click: (args, frame) => runInTab('browser_click', args, frame),
   browser_type: (args, frame) => runInTab('browser_type', args, frame),
+  page_text: (args, frame) => runInTab('page_text', args, frame),
+  page_html: (args, frame) => runInTab('page_html', args, frame),
+  page_find: (args, frame) => runInTab('page_find', args, frame),
+  browser_hover: (args, frame) => runInTab('browser_hover', args, frame),
+  browser_press: (args, frame) => runInTab('browser_press', args, frame),
+  browser_scroll: (args, frame) => runInTab('browser_scroll', args, frame),
+  browser_select: (args, frame) => runInTab('browser_select', args, frame),
+  browser_eval: (args, frame) => evalTool(args, frame),
+  browser_wait: (args, frame) => waitTool(args, frame),
+  browser_history: (args, frame) => historyTool(args, frame),
+  tab_list: () => tabListTool(),
+  tab_new: (args, frame) => tabNewTool(args, frame),
+  tab_close: (args) => tabCloseTool(args),
+  tab_switch: (args) => tabSwitchTool(args),
 };
 
 function idempotencyKeyOf(frame) {
@@ -686,6 +723,509 @@ async function runInTab(tool, args, frame) {
 }
 
 // ---------------------------------------------------------------------------
+// M2 helpers: tab ids, bounded arguments, tab-load watches
+// ---------------------------------------------------------------------------
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, ms));
+  });
+}
+
+function tabIdString(tabId) {
+  return String(tabId);
+}
+
+function requireTabId(args, tool) {
+  const raw = args ? args.tab_id : undefined;
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    throw new ToolError('BAD_ARGS', tool + ' requires a non-empty tab_id argument');
+  }
+}
+
+function actionBudgetMs(frame) {
+  const timeoutMs = clampTimeout(frame && frame.meta ? frame.meta.timeout_ms : undefined);
+  return Math.max(0, Math.min(timeoutMs - 2000, 15000));
+}
+
+function readBoundedInteger(value, fallback, min, max, label) {
+  if (value === undefined || value === null) return fallback;
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric < min || numeric > max) {
+    throw new ToolError('BAD_ARGS', label + ' must be an integer from ' + min + ' to ' + max, { value: value });
+  }
+  return numeric;
+}
+
+function readWaitCondition(args, key) {
+  const value = args ? args[key] : undefined;
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new ToolError('BAD_ARGS', 'args.' + key + ' must be a non-empty string', { key: key });
+  }
+  return key === 'selector' ? value.trim() : value;
+}
+
+function parseNewTabUrl(raw) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new ToolError('BAD_ARGS', 'args.url must be a non-empty string when provided');
+  }
+  let resolved = null;
+  try {
+    resolved = new URL(raw.trim());
+  } catch (error) {
+    throw new ToolError('BAD_ARGS', 'args.url is not a valid absolute URL', { url: raw.slice(0, 200) });
+  }
+  if (!/^(https?|file):$/i.test(resolved.protocol)) {
+    throw new ToolError('BAD_ARGS', 'only http, https and file URLs can be opened in a new tab', { url: resolved.href.slice(0, 200) });
+  }
+  return resolved.href;
+}
+
+function watchTabLoad(tabId, beforeUrl, action, timeoutMs) {
+  let cancelWatch = null;
+  const promise = new Promise((resolve) => {
+    let settled = false;
+    let sawLoading = false;
+    let timeoutTimer = null;
+    let pollTimer = null;
+
+    function cleanup() {
+      try {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+      } catch (error) {
+        // Ignore listener cleanup failures.
+      }
+      if (timeoutTimer !== null) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      if (pollTimer !== null) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function finish(loaded, url) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({ loaded: loaded === true, url: url || null });
+    }
+
+    function onUpdated(updatedTabId, changeInfo, tab) {
+      if (settled || updatedTabId !== tabId) return;
+      if (!changeInfo) return;
+      if (changeInfo.status === 'loading') {
+        sawLoading = true;
+        return;
+      }
+      if (changeInfo.status !== 'complete') return;
+      const url = (tab && tab.url) || changeInfo.url || null;
+      if (action === 'reload') {
+        if (sawLoading || (url && beforeUrl && url !== beforeUrl)) finish(true, url);
+        return;
+      }
+      if (sawLoading || !beforeUrl || (url && url !== beforeUrl)) finish(true, url);
+    }
+
+    cancelWatch = function cancelWatch() {
+      finish(false, beforeUrl);
+    };
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    timeoutTimer = setTimeout(async () => {
+      if (settled) return;
+      let url = beforeUrl;
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        url = tab && tab.url ? tab.url : beforeUrl;
+      } catch (error) {
+        url = beforeUrl;
+      }
+      finish(false, url);
+    }, Math.max(1, timeoutMs));
+
+    // A fast load may finish before the 100 ms probe; the listener is already
+    // attached, so complete events are never missed.
+    pollTimer = setTimeout(() => {
+      if (settled) return;
+      chrome.tabs.get(tabId).then((tab) => {
+        if (settled || !tab) return;
+        if (tab.status === 'loading') {
+          sawLoading = true;
+          return;
+        }
+        if (tab.status !== 'complete') return;
+        if (action === 'reload') {
+          if (sawLoading) finish(true, tab.url || null);
+          return;
+        }
+        if (!beforeUrl || (tab.url && tab.url !== beforeUrl) || sawLoading) finish(true, tab.url || null);
+      }).catch(() => {
+        // The timeout path reports the final state.
+      });
+    }, 100);
+  });
+
+  return {
+    promise: promise,
+    cancel: function cancel() {
+      if (typeof cancelWatch === 'function') cancelWatch();
+    },
+  };
+}
+
+async function historyTool(args, frame) {
+  const rawAction = args && typeof args.action === 'string' ? args.action.trim().toLowerCase() : '';
+  if (rawAction !== 'back' && rawAction !== 'forward' && rawAction !== 'reload') {
+    throw new ToolError('BAD_ARGS', 'args.action must be back, forward or reload', { action: rawAction || null });
+  }
+
+  const tab = await resolveTab(args);
+  if (!tab || typeof tab.id !== 'number') {
+    throw new ToolError('NOT_FOUND', 'no active tab is available');
+  }
+
+  const beforeUrl = tab.url || null;
+  const budget = actionBudgetMs(frame);
+  const watch = budget > 0 ? watchTabLoad(tab.id, beforeUrl, rawAction, budget) : null;
+
+  try {
+    if (rawAction === 'back') {
+      await chrome.tabs.goBack(tab.id);
+    } else if (rawAction === 'forward') {
+      await chrome.tabs.goForward(tab.id);
+    } else {
+      await chrome.tabs.reload(tab.id);
+    }
+  } catch (error) {
+    if (watch) watch.cancel();
+    const message = describeError(error);
+    if (/No tab with id|Invalid tab ID/i.test(message)) {
+      throw new ToolError('BROWSER_GONE', 'the tab was closed before history could change', { reason: 'tab_closed' });
+    }
+    if (/Cannot find|history/i.test(message)) {
+      throw new ToolError('NOT_FOUND', 'no ' + rawAction + ' history entry is available', { action: rawAction });
+    }
+    throw new ToolError('INTERNAL', 'history ' + rawAction + ' failed: ' + message);
+  }
+
+  let outcome = { loaded: false, url: beforeUrl };
+  if (watch) outcome = await watch.promise;
+
+  let current = null;
+  try {
+    current = await chrome.tabs.get(tab.id);
+  } catch (error) {
+    throw new ToolError('BROWSER_GONE', 'the tab was closed while history was changing', { reason: 'tab_closed' });
+  }
+
+  return {
+    action: rawAction,
+    url: (current && current.url) || outcome.url || beforeUrl || '',
+    loaded: outcome.loaded === true,
+  };
+}
+
+async function probeWaitContent(tabId, selector, text) {
+  const message = { type: 'corvus.probe' };
+  if (selector !== null) message.selector = selector;
+  if (text !== null) message.text = text;
+  const reply = await sendContentCommand(tabId, message);
+  if (!reply || typeof reply !== 'object') {
+    throw new ToolError('INTERNAL', 'content script returned an empty wait probe');
+  }
+  if (reply.ok === false) throw fromContentError(reply.error);
+  return reply;
+}
+
+async function waitTool(args, frame) {
+  const selector = readWaitCondition(args, 'selector');
+  const text = readWaitCondition(args, 'text');
+  const urlContains = readWaitCondition(args, 'url_contains');
+  if (selector === null && text === null && urlContains === null) {
+    throw new ToolError('BAD_ARGS', 'browser_wait needs at least one of selector, text or url_contains');
+  }
+
+  const requested = readBoundedInteger(args ? args.timeout_ms : undefined, 10000, 100, 120000, 'args.timeout_ms');
+  const tab = await resolveTab(args);
+  if (!tab || typeof tab.id !== 'number') {
+    throw new ToolError('NOT_FOUND', 'no active tab is available');
+  }
+  if ((selector !== null || text !== null) && isRestrictedUrl(tab.url)) {
+    throw new ToolError('CAPABILITY_UNAVAILABLE', 'this page cannot be scripted: ' + String(tab.url), { url: tab.url, reason: 'restricted_scheme' });
+  }
+
+  const commandTimeout = clampTimeout(frame && frame.meta ? frame.meta.timeout_ms : undefined);
+  const budget = Math.max(100, Math.min(requested, commandTimeout - 500));
+  const startedAt = Date.now();
+
+  while (true) {
+    let current = null;
+    try {
+      current = await chrome.tabs.get(tab.id);
+    } catch (error) {
+      throw new ToolError('BROWSER_GONE', 'the target tab was closed while waiting', { reason: 'tab_closed' });
+    }
+
+    const currentUrl = current.url || '';
+    let matched = true;
+    if (urlContains !== null && currentUrl.indexOf(urlContains) === -1) matched = false;
+
+    if (matched && (selector !== null || text !== null)) {
+      try {
+        const probe = await probeWaitContent(tab.id, selector, text);
+        if (probe.matched !== true) matched = false;
+      } catch (error) {
+        const mapped = error instanceof ToolError ? error : classifyContentFailure(error, current);
+        if (mapped.code === 'BAD_ARGS' || mapped.code === 'CAPABILITY_UNAVAILABLE' || mapped.code === 'BROWSER_GONE' || mapped.code === 'NOT_FOUND') {
+          throw mapped;
+        }
+        matched = false;
+      }
+    }
+
+    if (matched) {
+      return {
+        matched: true,
+        waited_ms: Date.now() - startedAt,
+        url: currentUrl,
+      };
+    }
+
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= budget) {
+      throw new ToolError('TIMEOUT', 'browser_wait timed out after ' + elapsed + ' ms', { waited_ms: elapsed });
+    }
+    await sleep(Math.min(100, Math.max(10, budget - elapsed)));
+  }
+}
+
+// This function is serialised into the page by chrome.scripting.executeScript,
+// so it must be completely self-contained. It runs in the world selected by
+// browser_eval: the page world for main and the extension world for isolated.
+async function corvusEvaluateExpression(expression) {
+  try {
+    let value = (0, eval)(expression);
+    if (value && typeof value.then === 'function') value = await value;
+    let encoded = null;
+    try {
+      encoded = JSON.stringify(value);
+    } catch (error) {
+      return { ok: true, value: null, value_note: 'unserializable' };
+    }
+    if (encoded === undefined) {
+      return { ok: true, value: null, value_note: 'unserializable' };
+    }
+    return { ok: true, value: JSON.parse(encoded) };
+  } catch (error) {
+    const name = error && error.name ? String(error.name) : 'Error';
+    const message = error && error.message ? String(error.message) : String(error);
+    return { ok: false, error: { name: name, message: message } };
+  }
+}
+
+async function evalTool(args, frame) {
+  const expression = args ? args.expression : undefined;
+  if (typeof expression !== 'string' || expression.trim() === '') {
+    throw new ToolError('BAD_ARGS', 'args.expression must be a non-empty string');
+  }
+
+  let world = 'isolated';
+  if (args.world !== undefined && args.world !== null) {
+    if (typeof args.world !== 'string') {
+      throw new ToolError('BAD_ARGS', 'args.world must be "main" or "isolated"');
+    }
+    const requestedWorld = args.world.trim().toLowerCase();
+    if (requestedWorld !== 'main' && requestedWorld !== 'isolated') {
+      throw new ToolError('BAD_ARGS', 'args.world must be "main" or "isolated"', { world: args.world });
+    }
+    world = requestedWorld;
+  }
+
+  const tab = await resolveTab(args);
+  if (!tab || typeof tab.id !== 'number') {
+    throw new ToolError('NOT_FOUND', 'no active tab is available');
+  }
+  if (isRestrictedUrl(tab.url)) {
+    throw new ToolError('CAPABILITY_UNAVAILABLE', 'this page cannot be scripted: ' + String(tab.url), { url: tab.url, reason: 'restricted_scheme' });
+  }
+  if (!chrome.scripting || typeof chrome.scripting.executeScript !== 'function') {
+    throw new ToolError('CAPABILITY_UNAVAILABLE', 'the scripting API is unavailable');
+  }
+
+  let results = null;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: false },
+      world: world === 'main' ? 'MAIN' : 'ISOLATED',
+      func: corvusEvaluateExpression,
+      args: [expression],
+    });
+  } catch (error) {
+    throw classifyInjectionFailure(error);
+  }
+
+  if (!Array.isArray(results) || results.length === 0) {
+    throw new ToolError('INTERNAL', 'browser_eval returned no result');
+  }
+  const frameResult = results[0];
+  if (frameResult && frameResult.error) {
+    throw new ToolError('INTERNAL', 'browser_eval injection failed: ' + String(frameResult.error));
+  }
+  if (!frameResult || frameResult.result === undefined) {
+    throw new ToolError('INTERNAL', 'browser_eval returned no value');
+  }
+  return frameResult.result;
+}
+
+async function tabListTool() {
+  const tabs = await chrome.tabs.query({});
+  const ordered = (tabs || []).slice().sort((left, right) => {
+    if (left.windowId !== right.windowId) return left.windowId - right.windowId;
+    return left.index - right.index;
+  });
+  return {
+    tabs: ordered.map((tab) => ({
+      tab_id: tabIdString(tab.id),
+      index: tab.index,
+      active: tab.active === true,
+      url: tab.url || '',
+      title: tab.title || '',
+      status: tab.status || 'unloaded',
+    })),
+  };
+}
+
+async function tabNewTool(args, frame) {
+  const url = parseNewTabUrl(args ? args.url : undefined);
+  if (args && args.active !== undefined && args.active !== null && typeof args.active !== 'boolean') {
+    throw new ToolError('BAD_ARGS', 'args.active must be a boolean');
+  }
+  const active = !(args && args.active === false);
+
+  let previousTabId = null;
+  try {
+    const current = await resolveTab({});
+    if (current && typeof current.id === 'number') previousTabId = tabIdString(current.id);
+  } catch (error) {
+    previousTabId = null;
+  }
+
+  const createProperties = { active: active };
+  if (url) createProperties.url = url;
+
+  let created = null;
+  try {
+    created = await chrome.tabs.create(createProperties);
+  } catch (error) {
+    throw new ToolError('INTERNAL', 'the tab could not be created: ' + describeError(error));
+  }
+  if (!created || typeof created.id !== 'number') {
+    throw new ToolError('INTERNAL', 'chrome.tabs.create returned no tab id');
+  }
+
+  const budget = actionBudgetMs(frame);
+  let outcome = null;
+  if (budget > 0) {
+    outcome = await waitForNewTabLoad(created.id, url || null, beginNavigationEpoch(created.id), budget);
+  }
+
+  let current = created;
+  try {
+    current = await chrome.tabs.get(created.id);
+  } catch (error) {
+    throw new ToolError('BROWSER_GONE', 'the new tab disappeared before it could be reported', { reason: 'tab_closed' });
+  }
+
+  return {
+    tab_id: tabIdString(created.id),
+    url: (current && current.url) || url || '',
+    loaded: outcome ? outcome.loaded === true : (current && current.status === 'complete'),
+    previous_tab_id: previousTabId,
+  };
+}
+
+async function tabCloseTool(args) {
+  requireTabId(args, 'tab_close');
+  const tab = await resolveTab(args);
+  if (!tab || typeof tab.id !== 'number') {
+    throw new ToolError('NOT_FOUND', 'the target tab does not exist');
+  }
+
+  let neighbour = null;
+  try {
+    const siblings = await chrome.tabs.query({ windowId: tab.windowId });
+    const ordered = (siblings || []).filter((item) => item.id !== tab.id).sort((left, right) => left.index - right.index);
+    const after = ordered.find((item) => item.index > tab.index);
+    if (after) {
+      neighbour = after;
+    } else if (ordered.length > 0) {
+      neighbour = ordered[ordered.length - 1];
+    }
+  } catch (error) {
+    neighbour = null;
+  }
+
+  try {
+    await chrome.tabs.remove(tab.id);
+  } catch (error) {
+    const message = describeError(error);
+    if (/No tab with id|Invalid tab ID/i.test(message)) {
+      throw new ToolError('NOT_FOUND', 'the tab no longer exists', { tab_id: tabIdString(tab.id) });
+    }
+    throw new ToolError('INTERNAL', 'the tab could not be closed: ' + message);
+  }
+
+  const result = { closed: true, tab_id: tabIdString(tab.id) };
+  if (tab.active === true && neighbour) result.next_tab_id = tabIdString(neighbour.id);
+  return result;
+}
+
+async function tabSwitchTool(args) {
+  requireTabId(args, 'tab_switch');
+  const tab = await resolveTab(args);
+  if (!tab || typeof tab.id !== 'number') {
+    throw new ToolError('NOT_FOUND', 'the target tab does not exist');
+  }
+
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+  } catch (error) {
+    const message = describeError(error);
+    if (/No tab with id|Invalid tab ID/i.test(message)) {
+      throw new ToolError('NOT_FOUND', 'the target tab no longer exists', { tab_id: tabIdString(tab.id) });
+    }
+    throw new ToolError('INTERNAL', 'the tab could not be activated: ' + message);
+  }
+
+  try {
+    if (chrome.windows && typeof chrome.windows.update === 'function') {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+  } catch (error) {
+    // Activating the tab is enough; window focus is best effort.
+  }
+
+  let current = tab;
+  try {
+    current = await chrome.tabs.get(tab.id);
+  } catch (error) {
+    throw new ToolError('BROWSER_GONE', 'the tab disappeared after activation', { reason: 'tab_closed' });
+  }
+
+  return {
+    tab_id: tabIdString(current.id),
+    url: current.url || '',
+    title: current.title || '',
+    active: true,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Navigation: issue, wait for the new document, read the final URL
 // ---------------------------------------------------------------------------
 
@@ -712,6 +1252,19 @@ function sameDocumentExceptHash(left, right) {
     return a.origin === b.origin && a.pathname === b.pathname && a.search === b.search;
   } catch (error) {
     return false;
+  }
+}
+
+function urlMatchesTarget(url, target) {
+  if (!target) return true;
+  try {
+    const a = new URL(String(url));
+    const b = new URL(String(target));
+    a.hash = '';
+    b.hash = '';
+    return a.href === b.href;
+  } catch (error) {
+    return String(url) === String(target);
   }
 }
 
@@ -797,6 +1350,81 @@ function waitForDocumentLoad(tabId, beforeUrl, targetUrl, epoch, timeoutMs) {
       }
       const url = tab.url || null;
       if (tab.status === 'complete' && url && (!beforeUrl || url !== beforeUrl)) finish(true, url);
+    }).catch(() => {
+      // The timeout path reports the final state.
+    });
+  });
+}
+
+function waitForNewTabLoad(tabId, targetUrl, epoch, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let sawLoading = false;
+    let timer = null;
+
+    function cleanup() {
+      try {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+      } catch (error) {
+        // Ignore.
+      }
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+
+    function finish(loaded, url) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({ loaded: loaded === true, url: url || null });
+    }
+
+    function targetReached(url) {
+      return targetUrl ? urlMatchesTarget(url, targetUrl) : true;
+    }
+
+    function onUpdated(updatedTabId, changeInfo, tab) {
+      if (settled || updatedTabId !== tabId || !changeInfo) return;
+      if ((navigationEpochs.get(tabId) || 0) !== epoch) {
+        finish(false, tab && tab.url ? tab.url : null);
+        return;
+      }
+      if (changeInfo.status === 'loading') {
+        sawLoading = true;
+        return;
+      }
+      if (changeInfo.status !== 'complete') return;
+      const url = (tab && tab.url) || changeInfo.url || null;
+      // A brand new tab can report a complete about:blank before the requested
+      // document starts loading. Only accept that event if it is the target.
+      if (!sawLoading && !targetReached(url)) return;
+      finish(true, url);
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    timer = setTimeout(async () => {
+      if (settled) return;
+      let url = null;
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        url = tab && tab.url ? tab.url : null;
+      } catch (error) {
+        url = null;
+      }
+      finish(false, url);
+    }, Math.max(1, timeoutMs));
+
+    chrome.tabs.get(tabId).then((tab) => {
+      if (settled || !tab) return;
+      if ((navigationEpochs.get(tabId) || 0) !== epoch) {
+        finish(false, tab.url || null);
+        return;
+      }
+      const url = tab.url || null;
+      if (tab.status === 'complete' && targetReached(url)) finish(true, url);
     }).catch(() => {
       // The timeout path reports the final state.
     });
@@ -893,77 +1521,201 @@ async function navigateTool(args, frame) {
 }
 
 // ---------------------------------------------------------------------------
-// Debugger channel
+// Debugger channel (managed automatically, never by the user)
 // ---------------------------------------------------------------------------
+//
+// The eighteen M2 tools run on the DOM and scripting channels and never attach
+// the debugger. A later CDP-backed handler calls ensureDebuggerChannel() or
+// sendCdpCommand() at the start of its command; that first call attaches
+// lazily. The channel detaches after thirty seconds without a CDP command, when
+// its tab closes, and on every websocket reconnect.
 
-async function attachDebuggerToActiveTab() {
-  const tab = await resolveTab({});
-  if (!tab || typeof tab.id !== 'number') {
-    throw new ToolError('NOT_FOUND', 'no active tab to attach the debugger to');
+function debuggerUnavailable(tabId, message, cause, reason) {
+  const details = { tab_id: tabIdString(tabId), cause: cause };
+  if (reason) details.reason = reason;
+  return new ToolError('CAPABILITY_UNAVAILABLE', message, details);
+}
+
+async function requireDebuggableTab(tabId) {
+  let tab = null;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (error) {
+    throw new ToolError('BROWSER_GONE', 'the tab is no longer available for the debugger channel', { tab_id: tabIdString(tabId) });
   }
   if (isRestrictedUrl(tab.url)) {
-    throw new ToolError('CAPABILITY_UNAVAILABLE', 'this page cannot be debugged: ' + String(tab.url), { url: tab.url });
+    throw new ToolError('CAPABILITY_UNAVAILABLE', 'this page cannot be debugged: ' + String(tab.url), {
+      tab_id: tabIdString(tabId),
+      url: tab.url,
+      cause: 'restricted_page',
+    });
   }
-
-  let targets = [];
-  try {
-    targets = await chrome.debugger.getTargets();
-  } catch (error) {
-    log('debugger.getTargets failed', describeError(error));
-  }
-  const existing = (targets || []).find((target) => target && target.tabId === tab.id && target.attached === true);
-  if (existing) return;
-
-  await chrome.debugger.attach({ tabId: tab.id }, '1.3');
+  return tab;
 }
 
-async function detachDebuggerFromAllTabs() {
-  let targets = [];
-  try {
-    targets = await chrome.debugger.getTargets();
-  } catch (error) {
-    log('debugger.getTargets failed', describeError(error));
-    return;
+function scheduleDebuggerIdleDetach(tabId) {
+  const session = debuggerSessions.get(tabId);
+  if (!session) return;
+  if (session.idleTimer !== null) {
+    clearTimeout(session.idleTimer);
+    session.idleTimer = null;
   }
-  const attached = (targets || []).filter((target) => target && target.attached === true && typeof target.tabId === 'number' && target.tabId >= 0);
-  for (let i = 0; i < attached.length; i += 1) {
-    try {
-      await chrome.debugger.detach({ tabId: attached[i].tabId });
-    } catch (error) {
-      log('debugger.detach failed', describeError(error));
+  const idleFor = Date.now() - session.lastUsedAt;
+  const delay = Math.max(0, CDP_IDLE_TIMEOUT_MS - idleFor) + 25;
+  session.idleTimer = setTimeout(() => {
+    const live = debuggerSessions.get(tabId);
+    if (!live) return;
+    if (Date.now() - live.lastUsedAt < CDP_IDLE_TIMEOUT_MS) {
+      scheduleDebuggerIdleDetach(tabId);
+      return;
     }
+    void detachDebuggerSession(tabId, 'idle_timeout');
+  }, delay);
+}
+
+async function ensureDebuggerChannel(tabId) {
+  const numeric = typeof tabId === 'number' ? tabId : Number(tabId);
+  if (!Number.isInteger(numeric) || numeric < 0) {
+    throw new ToolError('BAD_ARGS', 'the debugger channel needs a valid tab id');
+  }
+
+  const existing = debuggerSessions.get(numeric);
+  if (existing) {
+    existing.lastUsedAt = Date.now();
+    scheduleDebuggerIdleDetach(numeric);
+    return existing;
+  }
+
+  const pending = debuggerAttachPromises.get(numeric);
+  if (pending) return pending;
+
+  const attempt = (async () => {
+    await requireDebuggableTab(numeric);
+
+    // Another debugger (normally DevTools) owns the tab when a target is
+    // already marked attached. Attaching anyway would only reject, so answer
+    // with the same typed failure before touching the tab.
+    let attachedElsewhere = null;
+    try {
+      const targets = await chrome.debugger.getTargets();
+      attachedElsewhere = (targets || []).find((target) => target && target.tabId === numeric && target.attached === true);
+    } catch (error) {
+      log('debugger.getTargets failed', describeError(error));
+    }
+    if (attachedElsewhere) {
+      throw debuggerUnavailable(
+        numeric,
+        'the debugger channel is unavailable because another debugger is already attached to this tab',
+        'debugger_attached_elsewhere',
+        'already attached'
+      );
+    }
+
+    try {
+      await withTimeout(chrome.debugger.attach({ tabId: numeric }, CDP_PROTOCOL_VERSION), CDP_ATTACH_TIMEOUT_MS);
+    } catch (error) {
+      const reason = describeError(error);
+      const devtools = /another debugger|already attached|devtools|cannot attach|not allowed/i.test(reason);
+      throw debuggerUnavailable(
+        numeric,
+        devtools
+          ? 'the debugger channel is unavailable because DevTools or another debugger is attached to this tab'
+          : 'the debugger channel could not attach to this tab',
+        devtools ? 'debugger_attached_elsewhere' : 'attach_refused',
+        reason
+      );
+    }
+
+    const session = { attachedAt: Date.now(), lastUsedAt: Date.now(), idleTimer: null };
+    debuggerSessions.set(numeric, session);
+    scheduleDebuggerIdleDetach(numeric);
+    log('debugger attached', numeric);
+    return session;
+  })();
+
+  debuggerAttachPromises.set(numeric, attempt);
+  try {
+    return await attempt;
+  } finally {
+    debuggerAttachPromises.delete(numeric);
   }
 }
 
-async function setDebuggerEnabled(enabled, source) {
-  const next = enabled === true;
-  const previous = state.debuggerEnabled;
-  state.debuggerEnabled = next;
+function touchDebuggerChannel(tabId) {
+  const numeric = typeof tabId === 'number' ? tabId : Number(tabId);
+  const session = debuggerSessions.get(numeric);
+  if (!session) return false;
+  session.lastUsedAt = Date.now();
+  scheduleDebuggerIdleDetach(numeric);
+  return true;
+}
 
+async function detachDebuggerSession(tabId, reason) {
+  const numeric = typeof tabId === 'number' ? tabId : Number(tabId);
+  const session = debuggerSessions.get(numeric);
+  if (!session) return false;
+  debuggerSessions.delete(numeric);
+  if (session.idleTimer !== null) {
+    clearTimeout(session.idleTimer);
+    session.idleTimer = null;
+  }
   try {
-    await chrome.storage.local.set({ [STORAGE.debugger]: next });
+    await withTimeout(chrome.debugger.detach({ tabId: numeric }), 2000);
   } catch (error) {
-    log('debugger state could not be stored', describeError(error));
+    log('debugger.detach failed', describeError(error));
   }
+  log('debugger detached', numeric, reason || 'explicit');
+  return true;
+}
 
-  if (next) {
-    try {
-      await attachDebuggerToActiveTab();
-      state.lastError = null;
-    } catch (error) {
-      state.lastError = describeError(error);
-      log('debugger attach failed', state.lastError);
+function clearDebuggerSession(tabId) {
+  const numeric = typeof tabId === 'number' ? tabId : Number(tabId);
+  const session = debuggerSessions.get(numeric);
+  if (session && session.idleTimer !== null) clearTimeout(session.idleTimer);
+  debuggerSessions.delete(numeric);
+  debuggerAttachPromises.delete(numeric);
+}
+
+async function detachAllDebuggerSessions(reason) {
+  const ids = Array.from(debuggerSessions.keys());
+  for (let i = 0; i < ids.length; i += 1) {
+    await detachDebuggerSession(ids[i], reason || 'explicit');
+  }
+}
+
+async function sweepDebuggerSessions() {
+  const now = Date.now();
+  const stale = [];
+  debuggerSessions.forEach((session, tabId) => {
+    if (now - session.lastUsedAt >= CDP_IDLE_TIMEOUT_MS) stale.push(tabId);
+  });
+  for (let i = 0; i < stale.length; i += 1) {
+    await detachDebuggerSession(stale[i], 'idle_timeout');
+  }
+}
+
+async function sendCdpCommand(tabId, method, params) {
+  if (typeof method !== 'string' || !method.trim()) {
+    throw new ToolError('BAD_ARGS', 'a CDP method name is required');
+  }
+  if (params !== undefined && params !== null && (typeof params !== 'object' || Array.isArray(params))) {
+    throw new ToolError('BAD_ARGS', 'CDP parameters must be an object');
+  }
+  const numeric = typeof tabId === 'number' ? tabId : Number(tabId);
+  await ensureDebuggerChannel(numeric);
+  touchDebuggerChannel(numeric);
+  try {
+    const value = await chrome.debugger.sendCommand({ tabId: numeric }, method.trim(), params || {});
+    touchDebuggerChannel(numeric);
+    return value === undefined ? null : value;
+  } catch (error) {
+    const reason = describeError(error);
+    if (/not attached|detached|no tab/i.test(reason)) {
+      clearDebuggerSession(numeric);
+      throw debuggerUnavailable(numeric, 'the debugger channel detached before the CDP command completed', 'debugger_detached', reason);
     }
-  } else {
-    await detachDebuggerFromAllTabs();
+    throw new ToolError('INTERNAL', 'the CDP command failed: ' + reason, { tab_id: tabIdString(numeric), method: method.trim() });
   }
-
-  if (previous !== next) {
-    await persistConnection();
-    if (state.status === 'connected') void sendCapabilitiesEvent(source || 'popup');
-  }
-
-  return state.debuggerEnabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -980,6 +1732,7 @@ async function ensureWatchdog() {
 
 async function watchdogTick() {
   try {
+    void sweepDebuggerSessions();
     const exists = await ensureOffscreen();
     if (!exists) {
       updateStatus('disconnected', 'offscreen document unavailable');
@@ -1041,6 +1794,11 @@ function handleOffscreenMessage(message) {
     case 'status':
       updateStatus(message.status, message.lastError ? message.lastError : null);
       return;
+    case 'socket_open':
+      // A fresh websocket, including every reconnect and watchdog restart, is
+      // a new transport generation; no debugger session survives it.
+      void detachAllDebuggerSessions('reconnect');
+      return;
     case 'keepalive':
       return;
     case 'frame':
@@ -1057,10 +1815,6 @@ async function handleUiMessage(message) {
   switch (message.type) {
     case 'corvus.get_state':
       return { ok: true, state: buildUiState() };
-    case 'corvus.set_debugger': {
-      const enabled = await setDebuggerEnabled(message.enabled === true, 'popup');
-      return { ok: true, enabled, state: buildUiState() };
-    }
     case 'corvus.reconnect':
       await sendToOffscreen({ type: 'corvus.connect', reason: 'ui' });
       return { ok: true, state: buildUiState() };
@@ -1106,18 +1860,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.debugger.onDetach.addListener((source, reason) => {
-  if (reason !== 'canceled_by_user') return;
-  if (!state.debuggerEnabled) return;
-  state.debuggerEnabled = false;
-  chrome.storage.local.set({ [STORAGE.debugger]: false }).catch(() => {});
-  void persistConnection();
-  if (state.status === 'connected') void sendCapabilitiesEvent('debugger_detached');
+  const tabId = source && typeof source.tabId === 'number' ? source.tabId : null;
+  if (tabId === null) return;
+  clearDebuggerSession(tabId);
+  log('debugger detached by target', tabId, reason || 'unknown reason');
 });
 
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== 'local' || !changes[STORAGE.debugger]) return;
-  const value = changes[STORAGE.debugger].newValue === true;
-  if (value !== state.debuggerEnabled) void setDebuggerEnabled(value, 'storage');
+chrome.tabs.onRemoved.addListener((tabId) => {
+  // The browser drops the debugger with the tab; ask explicitly and clear the
+  // local session so no timer or pending attach survives the tab.
+  void detachDebuggerSession(tabId, 'tab_closed');
+  clearDebuggerSession(tabId);
 });
 
 chrome.runtime.onInstalled.addListener(() => {

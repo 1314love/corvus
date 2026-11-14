@@ -7,8 +7,8 @@
     :root { color-scheme: light dark; }
     body {
       margin: 0;
-      min-width: 216px;
-      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      min-width: 248px;
+      font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
     }
     main { padding: 12px 14px; display: grid; gap: 10px; }
     .row { display: flex; align-items: center; gap: 8px; }
@@ -21,18 +21,18 @@
       box-shadow: 0 0 0 2px rgba(127, 127, 127, 0.18);
     }
     .dot-on { background: #1a9f52; box-shadow: 0 0 0 2px rgba(26, 159, 82, 0.2); }
-    .dot-off { background: #c8402f; box-shadow: 0 0 0 2px rgba(200, 64, 47, 0.18); }
-    #status-text { color: #6b7280; }
-    .switch-row { justify-content: space-between; }
-    .switch-row > span { user-select: none; }
-    input[type="checkbox"] {
-      width: 32px;
-      height: 18px;
+    .dot-off { background: #8a8f98; box-shadow: 0 0 0 2px rgba(127, 127, 127, 0.18); }
+    #status-text { font-weight: 600; }
+    dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; }
+    dt { color: #6b7280; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .mono { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .note {
       margin: 0;
-      accent-color: #2f6fed;
-      cursor: pointer;
+      padding-top: 8px;
+      color: #6b7280;
+      border-top: 1px solid rgba(127, 127, 127, 0.25);
     }
-    input[type="checkbox"]:disabled { cursor: progress; }
   </style>
 </head>
 <body>
@@ -41,10 +41,15 @@
       <span id="status-dot" class="dot dot-off" role="img" aria-label="Connection status"></span>
       <span id="status-text">Disconnected</span>
     </div>
-    <label class="row switch-row">
-      <span>Debugger channel</span>
-      <input id="debugger-switch" type="checkbox" role="switch" aria-label="Debugger channel">
-    </label>
+    <dl>
+      <dt>Browser ID</dt>
+      <dd id="browser-id" class="mono">not assigned</dd>
+      <dt>Version</dt>
+      <dd id="extension-version">unknown</dd>
+      <dt>Capabilities</dt>
+      <dd id="capabilities">dom, scripting, debugger</dd>
+    </dl>
+    <p id="debugger-note" class="note">The debugger channel is managed automatically by the service worker.</p>
   </main>
   <script src="popup.js"></script>
 </body>

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Corvus M2 Page</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  .row { margin: 8px 0; }
+</style>
+</head>
+<body>
+<main id="main">
+<h1 id="h">Corvus M2</h1>
+<p id="lead">M2 acceptance fixture for the Corvus browser tools.</p>
+
+<h2>Type and click</h2>
+<div class="row">
+  <label for="q">Query</label>
+  <input id="q" name="q" type="text" placeholder="type here">
+  <button id="go">Run</button>
+</div>
+<p id="out">idle</p>
+
+<h2>Hover</h2>
+<div class="row">
+  <button id="hover">Hover me</button>
+  <span id="hovertip">no hover yet</span>
+</div>
+
+<h2>Press</h2>
+<div class="row">
+  <input id="keyinput" type="text" placeholder="press keys here">
+  <p id="presslog">pressed:none</p>
+</div>
+
+<h2>Select</h2>
+<div class="row">
+  <label for="pick">Pick multiple</label>
+  <select id="pick" multiple size="4">
+    <option value="alpha">Alpha</option>
+    <option value="beta">Beta</option>
+    <option value="gamma">Gamma</option>
+    <option value="delta">Delta</option>
+  </select>
+</div>
+<div class="row">
+  <label for="single">Pick one</label>
+  <select id="single">
+    <option value="one">One</option>
+    <option value="two">Two</option>
+    <option value="three">Three</option>
+  </select>
+</div>
+
+<h2>Find and act on the returned ref</h2>
+<div class="row">
+  <button id="findbtn">Find target</button>
+  <p id="findout">not found yet</p>
+</div>
+
+<h2>Wait</h2>
+<p id="wait-status">waiting</p>
+<p id="late" hidden>late arrived</p>
+
+<h2>History</h2>
+<p><a id="next" href="/m2-b">Go to page B</a></p>
+
+<div style="height:1800px"></div>
+<h2 id="sec">Bottom section</h2>
+<p>End of the M2 fixture.</p>
+</main>
+<script>
+  const out = document.getElementById("out");
+  document.getElementById("go").addEventListener("click", () => {
+    out.textContent = "clicked:" + document.getElementById("q").value;
+  });
+
+  document.getElementById("hover").addEventListener("mouseover", () => {
+    document.getElementById("hovertip").textContent = "hover event received";
+  });
+
+  const presslog = document.getElementById("presslog");
+  const seen = [];
+  document.addEventListener("keydown", (event) => {
+    seen.push(event.key);
+    presslog.textContent = "pressed:" + seen.join(",");
+  });
+
+  document.getElementById("findbtn").addEventListener("click", () => {
+    document.getElementById("findout").textContent = "find target clicked";
+  });
+
+  setTimeout(() => {
+    document.getElementById("wait-status").textContent = "late arrived";
+    document.getElementById("late").hidden = false;
+  }, 1200);
+</script>
+</body>
+</html>

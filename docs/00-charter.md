@@ -29,7 +29,7 @@ replay) instead of from interrupting the user.
 ## 2. Product principles (final, 2026-11-14)
 
 1. The browser is an organ of the agent; organs do not request permission on every use.
-2. No pages. Beyond one tiny popup holding a single switch, the extension exposes no interface.
+2. No pages. Beyond one tiny read-only status popup, the extension exposes no interface.
 3. Never drop. Connection is the product's first feature, not an error-handling detail.
 4. Complete tools. Not "enough", but everything an AI can legally do to a browser.
 5. Everything observable. Every command, frame and request is recordable and replayable.
@@ -69,7 +69,7 @@ replay) instead of from interrupting the user.
 | 2026-11-14 | Backend language: Rust | no GC pauses for a latency-critical hub, single-binary distribution, good fit with the CDP/WS ecosystem |
 | 2026-11-14 | Shape: local daemon + extension dialing back | the product must control the browser the user is actually using; pure CDP requires a restart or a separate profile and is therefore excluded |
 | 2026-11-14 | Remove all approvals and pairing | in the hosted-agent model the security boundary belongs to the OS user, not to modal dialogs |
-| 2026-11-14 | Keep one minimal popup with a single debugger switch | the debugger permission shows a persistent browser banner and must be revocable at any moment |
+| 2026-11-14 | Drop the manual debugger switch; attach automatically on demand | the customer cancelled the toggle; the popup is status-only and the debugger channel attaches only while a CDP-backed tool runs |
 | 2026-11-14 | Source available, commercial use forbidden (PolyForm Noncommercial 1.0.0) | share the code, keep commercial rights with the author |
 | 2026-11-14 | Name: Corvus | corvids use tools, remember faces and plan ahead - the metaphor for an agent that scouts, remembers and acts |
 
@@ -78,7 +78,7 @@ replay) instead of from interrupting the user.
 | Risk | Impact | Mitigation |
 |---|---|---|
 | MV3 service worker sleeps after 30s and drops the link | High | offscreen keepalive + alarms watchdog + daemon-side reconnect |
-| debugger banner is persistent and easy to close by accident | Medium | off by default, one-click toggle in the popup, automatic fallback to the DOM channel |
+| debugger banner is persistent and easy to close by accident | Medium | attach only on demand, detach when idle, automatic fallback to the DOM channel |
 | Extension id differs across browsers | Medium | pin the id with a manifest key, distribute through the installer |
 | Recordings grow without bound | Medium | chunking + compression + retention policy; structured events by default, not full frames |
 | MCP client implementations differ | Medium | target the MCP 2025-06-18 spec, provide stdio and HTTP dual stack plus a doctor command |

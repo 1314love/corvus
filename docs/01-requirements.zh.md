@@ -20,7 +20,7 @@
 | 术语 | 含义 |
 |---|---|
 | daemon | corvusd 进程，MCP 服务端与命令路由中心 |
-| extension | 浏览器侧 MV3 扩展，无页面，仅一个开关弹窗 |
+| extension | 浏览器侧 MV3 扩展，无页面，仅一个只读状态弹窗 |
 | transport | daemon 与 extension 之间的通道：WS / Native Messaging / CDP 直连 |
 | session | 一次可录制的操作序列，包含命令、响应、页面快照、网络事件 |
 | site card | 某个域名下被验证过的选择器、流程与坑，写入 SQLite |
@@ -95,7 +95,7 @@
 
 | 编号 | 需求 | 优先级 | 验收 |
 |---|---|---|---|
-| FR-D1 | debugger 通道：可读取 CDP 域能力（DOM、Network、Runtime、Emulation） | P1 | 弹窗开关打开后可用，关闭后退化为纯 DOM 通道 |
+| FR-D1 | debugger 通道：可读取 CDP 域能力（DOM、Network、Runtime、Emulation） | P1 | 始终声明能力，按需挂载；仅当浏览器拒绝挂载时返回 CAPABILITY_UNAVAILABLE |
 | FR-D2 | 设备仿真：视口尺寸、DPR、触摸、UA | P1 | 仿真后页面 matchMedia 结果正确 |
 | FR-D3 | 地理、时区、语言、暗色模式仿真 | P2 | navigator 相关字段同步变化 |
 | FR-D4 | PDF 导出与整页截图分离 | P2 | 导出文件可被 pdf 阅读器打开 |
@@ -137,6 +137,20 @@
 会话记忆：session_start, session_stop, session_replay, session_export, trace_start, trace_stop, site_card_get, site_card_put
 
 系统：browser_list, browser_attach, browser_detach, extension_status, health, doctor, version
+
+### 4.1 M2 第一波需求覆盖
+
+M2 第一波 18 个工具已全部落地。以下需求在该工具面中已有实现路径；只覆盖一部分的已明确标注，未列出的部分仍未完成。
+
+- **FR-P1** —— `page_snapshot` 生成带稳定引用的混合树；`page_find` 返回同一引用空间的引用。
+- **FR-P2** —— `page_text` 与 `page_html` 覆盖文本与 HTML 提取；链接与表单结构提取仍未完成。
+- **FR-P5** —— `browser_wait` 覆盖选择器、文本与 URL 条件并支持超时；元素消失、网络空闲与 JS 条件等待仍未完成。
+- **FR-A1** —— `browser_navigate` 与 `browser_history` 覆盖导航、后退、前进与刷新。
+- **FR-A4** —— `browser_press` 覆盖组合键、命名键与逐键序列。
+- **FR-A5** —— `browser_hover`、`browser_select` 与 `browser_scroll` 覆盖悬停、选择与滚动；拖拽仍未完成。
+- **FR-A7** —— `browser_eval` 覆盖页面世界与隔离世界求值，并返回结构化异常。
+- **FR-A8** —— `page_find` 覆盖文本与角色查找，并匹配表单控件的可访问标签与占位符。
+- **FR-T1** —— `tab_list`、`tab_new`、`tab_close` 与 `tab_switch` 覆盖列出、新建、关闭与切换；复制标签仍未完成。
 
 ## 5. 非功能需求
 

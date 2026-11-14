@@ -99,8 +99,8 @@ impl Limits {
     /// Protocol version 1 defaults.
     pub fn v1() -> Self {
         Self {
-            max_timeout_ms: 120_000,
-            default_timeout_ms: 15_000,
+            max_timeout_ms: 125_000,
+            default_timeout_ms: 60_000,
             max_inflight: 64,
             max_snapshot_nodes: 20_000,
         }
@@ -110,5 +110,19 @@ impl Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self::v1()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Limits;
+
+    #[test]
+    fn limits_v1_matches_the_command_timeout_policy() {
+        let limits = Limits::v1();
+        assert_eq!(limits.max_timeout_ms, 125_000);
+        assert_eq!(limits.default_timeout_ms, 60_000);
+        assert_eq!(limits.max_inflight, 64);
+        assert_eq!(limits.max_snapshot_nodes, 20_000);
     }
 }

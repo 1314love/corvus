@@ -5,17 +5,42 @@
 //   node mcp_assert.mjs protocol <body-file>
 //   node mcp_assert.mjs tools    <body-file>
 //   node mcp_assert.mjs call     <body-file> success [<needle>]
-//   node mcp_assert.mjs call     <body-file> error
+//   node mcp_assert.mjs call     <body-file> error [<ErrorCode>]
 //   node mcp_assert.mjs navigate <body-file> <true|false> <expected-url>
 //   node mcp_assert.mjs snapshot <body-file> <expected-url> [<needle>]
+//   node mcp_assert.mjs result   <body-file> <expected-json> [<needle>]
+//   node mcp_assert.mjs command  <jsonl-file> <tool> <expected-args-json>
+//   node mcp_assert.mjs command-mode <jsonl-file> <tool> <expected-mode>
 //
 // The body may be plain JSON or an SSE stream (event:/data: lines). Prints one
-// or more diagnostic lines and exits 0 on success, 1 on a failed assertion.
+// diagnostic line and exits 0 on success, 1 on a failed assertion.
 
 import { readFileSync } from "node:fs";
 
 const EXPECTED_PROTOCOL = process.env.EXPECTED_PROTOCOL_VERSION ?? "2025-06-18";
-const M1_TOOLS = (process.env.EXPECTED_TOOLS ?? "browser_navigate,page_snapshot,browser_click,browser_type")
+const TOOLS = (
+  process.env.EXPECTED_TOOLS ??
+  [
+    "browser_navigate",
+    "page_snapshot",
+    "browser_click",
+    "browser_type",
+    "page_text",
+    "page_html",
+    "page_find",
+    "browser_hover",
+    "browser_press",
+    "browser_scroll",
+    "browser_select",
+    "browser_eval",
+    "browser_wait",
+    "browser_history",
+    "tab_list",
+    "tab_new",
+    "tab_close",
+    "tab_switch",
+  ].join(",")
+)
   .split(",")
   .map((name) => name.trim())
   .filter(Boolean)
@@ -74,28 +99,106 @@ function loadBody(path) {
   }
 }
 
-const message = mode === "command-mode" ? null : loadBody(file);
+const message = mode === "command-mode" || mode === "command" ? null : loadBody(file);
 const expectation = rest[0];
 const needle = rest[1];
+
+// Returns null when actual contains every field in expected, or a path string.
+function mismatch(actual, expected, path) {
+  if (expected === null) {
+    return actual === null ? null : path + "=" + JSON.stringify(actual) + " expected null";
+  }
+  if (Array.isArray(expected)) {
+    if (!Array.isArray(actual)) return path + " is not an array";
+    if (actual.length !== expected.length) {
+      return path + " length=" + actual.length + " expected " + expected.length;
+    }
+    for (let index = 0; index < expected.length; index += 1) {
+      const problem = mismatch(actual[index], expected[index], path + "[" + index + "]");
+      if (problem) return problem;
+    }
+    return null;
+  }
+  if (typeof expected === "object") {
+    if (!actual || typeof actual !== "object" || Array.isArray(actual)) {
+      return path + " is not an object";
+    }
+    for (const [key, value] of Object.entries(expected)) {
+      if (!(key in actual)) return path + "." + key + " is missing";
+      const problem = mismatch(actual[key], value, path + "." + key);
+      if (problem) return problem;
+    }
+    return null;
+  }
+  return Object.is(actual, expected)
+    ? null
+    : path + "=" + JSON.stringify(actual) + " expected " + JSON.stringify(expected);
+}
+
+function requireObject(source, label) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    fail(label + " has no JSON object body");
+  }
+  return source;
+}
+
+function parseExpectedJson(label, index = 1) {
+  const raw = rest[index];
+  if (!raw) fail("usage: " + label + " <file> <expected-json>");
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    fail(label + " expected JSON is invalid: " + error.message);
+  }
+}
+
+function structuredToolText(source, label) {
+  if (source.error) fail(label + " returned JSON-RPC error " + JSON.stringify(source.error));
+  const result = source.result;
+  if (!result || typeof result !== "object") fail(label + " result missing");
+  if (result.isError === true) fail(label + " reported isError: " + JSON.stringify(result).slice(0, 400));
+  if (!Array.isArray(result.content) || result.content.length === 0) {
+    fail(label + " result has no content array");
+  }
+  const text = result.content[0]?.text;
+  if (typeof text !== "string" || text.length === 0) fail(label + " content[0].text missing");
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    fail(label + " text is not JSON: " + text.slice(0, 300));
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    fail(label + " text is not a JSON object: " + text.slice(0, 300));
+  }
+  return { result, text, parsed };
+}
+
+function loadJsonl(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    fail("cannot read " + path + ": " + error.message);
+  }
+  const envelopes = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      envelopes.push(JSON.parse(line));
+    } catch {
+      // Recorder lines are JSON; skip anything malformed rather than masking a
+      // missing command envelope.
+    }
+  }
+  return envelopes;
+}
 
 if (mode === "command-mode") {
   const [toolName, expectedMode] = rest;
   if (!toolName || !expectedMode) fail("usage: command-mode <jsonl> <tool> <expected-mode>");
-  let raw;
-  try {
-    raw = readFileSync(file, "utf8");
-  } catch (error) {
-    fail("cannot read " + file + ": " + error.message);
-  }
   let found = null;
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let envelope;
-    try {
-      envelope = JSON.parse(line);
-    } catch {
-      continue;
-    }
+  for (const envelope of loadJsonl(file)) {
     if (envelope.kind === "command" && envelope.tool === toolName) found = envelope;
   }
   if (!found) fail("no command envelope for " + toolName + " in " + file);
@@ -103,14 +206,33 @@ if (mode === "command-mode") {
   if (got !== expectedMode) {
     fail(toolName + " args.mode=" + JSON.stringify(got) + " expected " + JSON.stringify(expectedMode));
   }
-  ok(toolName + " default mode=" + JSON.stringify(got));
+  ok(toolName + " args.mode=" + JSON.stringify(got));
+  process.exit(0);
+}
+
+if (mode === "command") {
+  const [toolName] = rest;
+  const expected = parseExpectedJson("command");
+  if (!toolName) fail("usage: command <jsonl> <tool> <expected-args-json>");
+  let found = null;
+  for (const envelope of loadJsonl(file)) {
+    if (envelope.kind === "command" && envelope.tool === toolName) found = envelope;
+  }
+  if (!found) fail("no command envelope for " + toolName + " in " + file);
+  if (typeof found.id !== "string" || found.id.length === 0) fail(toolName + " command has no id");
+  if (typeof found.browser !== "string" || found.browser.length === 0) {
+    fail(toolName + " command has no browser");
+  }
+  const problem = mismatch(found.args, expected, toolName + ".args");
+  if (problem) fail(problem);
+  ok(toolName + " command args match " + JSON.stringify(expected));
   process.exit(0);
 }
 
 if (mode === "health") {
+  requireObject(message, "health");
   if (typeof message.version !== "string" || message.version.length === 0) fail("health.version missing");
-  const protocolOk =
-    message.protocol === 1 || message.protocol === EXPECTED_PROTOCOL;
+  const protocolOk = message.protocol === 1 || message.protocol === EXPECTED_PROTOCOL;
   if (!protocolOk) {
     fail(
       "health.protocol=" +
@@ -120,8 +242,6 @@ if (mode === "health") {
     );
   }
   if (typeof message.ws_addr !== "string" || message.ws_addr.length === 0) fail("health.ws_addr missing");
-  // http_addr is part of the current health document; require it only when
-  // present so older daemons remain testable but a malformed value still fails.
   if (
     typeof message.http_addr !== "undefined" &&
     (typeof message.http_addr !== "string" || message.http_addr.length === 0)
@@ -166,12 +286,12 @@ if (mode === "tools") {
 
   const names = tools.map((tool) => tool?.name).filter((name) => typeof name === "string").sort();
   if (names.length !== tools.length) fail("a tool entry has no string name");
-  const missing = M1_TOOLS.filter((name) => !names.includes(name));
-  const extra = names.filter((name) => !M1_TOOLS.includes(name));
+  const missing = TOOLS.filter((name) => !names.includes(name));
+  const extra = names.filter((name) => !TOOLS.includes(name));
   if (missing.length > 0) fail("missing tools: " + missing.join(", "));
   if (extra.length > 0) fail("unexpected tools: " + extra.join(", "));
-  if (names.length !== M1_TOOLS.length) {
-    fail("expected exactly " + M1_TOOLS.length + " tools, got " + names.length);
+  if (names.length !== TOOLS.length) {
+    fail("expected exactly " + TOOLS.length + " tools, got " + names.length);
   }
 
   const requiredHints = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"];
@@ -195,12 +315,75 @@ if (mode === "tools") {
 
   const shapes = {
     browser_navigate: { required: ["url"], properties: ["url", "tab_id"] },
-    page_snapshot: { required: [], properties: ["tab_id", "mode", "max_nodes"] },
+    page_snapshot: {
+      required: [],
+      properties: ["tab_id", "mode", "max_nodes"],
+      defaults: [["mode", "interactive"]],
+      ranges: [["max_nodes", 40, 3000]],
+      enums: [["mode", ["interactive", "full"]]],
+    },
     browser_click: { required: ["target"], properties: ["target", "tab_id"] },
     browser_type: {
       required: ["target", "text"],
       properties: ["target", "text", "clear", "blur", "tab_id"],
+      defaults: [["clear", true], ["blur", false]],
     },
+    page_text: {
+      required: [],
+      properties: ["tab_id", "max_chars"],
+      defaults: [["max_chars", 100000]],
+      ranges: [["max_chars", 1, 200000]],
+    },
+    page_html: {
+      required: [],
+      properties: ["tab_id", "target", "max_chars"],
+      defaults: [["max_chars", 200000]],
+      ranges: [["max_chars", 1, 500000]],
+    },
+    page_find: {
+      required: ["query"],
+      properties: ["query", "tab_id", "role", "limit", "regex"],
+      defaults: [["limit", 20], ["regex", false]],
+      ranges: [["limit", 1, 100]],
+    },
+    browser_hover: { required: ["target"], properties: ["target", "tab_id"] },
+    browser_press: { required: ["keys"], properties: ["keys", "target", "tab_id"] },
+    browser_scroll: {
+      required: ["direction"],
+      properties: ["direction", "pages", "target", "tab_id"],
+      defaults: [["pages", 1]],
+      ranges: [["pages", 0, 50]],
+      enums: [["direction", ["up", "down", "left", "right"]]],
+    },
+    browser_select: {
+      required: ["target", "values"],
+      properties: ["target", "values", "tab_id"],
+    },
+    browser_eval: {
+      required: ["expression"],
+      properties: ["expression", "world", "tab_id"],
+      defaults: [["world", "isolated"]],
+      enums: [["world", ["main", "isolated"]]],
+    },
+    browser_wait: {
+      required: [],
+      properties: ["tab_id", "selector", "text", "url_contains", "timeout_ms"],
+      defaults: [["timeout_ms", 10000]],
+      ranges: [["timeout_ms", 100, 120000]],
+    },
+    browser_history: {
+      required: ["action"],
+      properties: ["action", "tab_id"],
+      enums: [["action", ["back", "forward", "reload"]]],
+    },
+    tab_list: { required: [], properties: [] },
+    tab_new: {
+      required: [],
+      properties: ["url", "active"],
+      defaults: [["active", true]],
+    },
+    tab_close: { required: ["tab_id"], properties: ["tab_id"] },
+    tab_switch: { required: ["tab_id"], properties: ["tab_id"] },
   };
   const problems = [];
   for (const tool of tools) {
@@ -216,18 +399,24 @@ if (mode === "tools") {
     for (const name of shape.required) {
       if (!required.includes(name)) problems.push(tool.name + " missing required " + name);
     }
-    if (tool.name === "page_snapshot") {
-      const mode = properties.mode;
-      if (!mode || mode.default !== "interactive") {
-        problems.push("page_snapshot mode default must be interactive");
+    for (const [name, expectedDefault] of shape.defaults ?? []) {
+      if (!properties[name] || properties[name].default !== expectedDefault) {
+        problems.push(
+          tool.name + "." + name + " default must be " + JSON.stringify(expectedDefault),
+        );
       }
-      const values = Array.isArray(mode?.enum) ? mode.enum : [];
-      for (const value of ["interactive", "full"]) {
-        if (!values.includes(value)) problems.push("page_snapshot mode enum missing " + value);
+    }
+    for (const [name, minimum, maximum] of shape.ranges ?? []) {
+      const field = properties[name];
+      if (!field || field.minimum !== minimum || field.maximum !== maximum) {
+        problems.push(tool.name + "." + name + " range must be " + minimum + ".." + maximum);
       }
-      const maxNodes = properties.max_nodes;
-      if (!maxNodes || maxNodes.minimum !== 40 || maxNodes.maximum !== 3000) {
-        problems.push("page_snapshot max_nodes must be 40..3000");
+    }
+    for (const [name, values] of shape.enums ?? []) {
+      const field = properties[name];
+      const actual = Array.isArray(field?.enum) ? field.enum : [];
+      for (const value of values) {
+        if (!actual.includes(value)) problems.push(tool.name + "." + name + " enum missing " + value);
       }
     }
   }
@@ -251,7 +440,7 @@ if (mode === "tools") {
       )
       .join(" "),
   );
-  ok("input schemas match the frozen M1 argument shapes");
+  ok("input schemas match the frozen 18-tool argument shapes");
   process.exit(0);
 }
 
@@ -299,32 +488,10 @@ if (mode === "call") {
       ok("structured error isError code=" + code);
       process.exit(0);
     }
-    fail("unknown tool call was not a structured error: " + JSON.stringify(message).slice(0, 300));
+    fail("tool call was not a structured error: " + JSON.stringify(message).slice(0, 300));
   }
 
   fail("unknown call expectation " + JSON.stringify(expectation) + " (use success or error)");
-}
-
-function structuredToolText(source, label) {
-  if (source.error) fail(label + " returned JSON-RPC error " + JSON.stringify(source.error));
-  const result = source.result;
-  if (!result || typeof result !== "object") fail(label + " result missing");
-  if (result.isError === true) fail(label + " reported isError: " + JSON.stringify(result).slice(0, 400));
-  if (!Array.isArray(result.content) || result.content.length === 0) {
-    fail(label + " result has no content array");
-  }
-  const text = result.content[0]?.text;
-  if (typeof text !== "string" || text.length === 0) fail(label + " content[0].text missing");
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    fail(label + " text is not JSON: " + text.slice(0, 300));
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    fail(label + " text is not a JSON object: " + text.slice(0, 300));
-  }
-  return { result, text, parsed };
 }
 
 if (mode === "navigate") {
@@ -373,4 +540,20 @@ if (mode === "snapshot") {
   process.exit(0);
 }
 
-fail("unknown mode " + JSON.stringify(mode) + " (use protocol, tools, call, navigate or snapshot)");
+if (mode === "result") {
+  const expected = parseExpectedJson("result", 0);
+  const { text, parsed } = structuredToolText(message, "tool result");
+  const problem = mismatch(parsed, expected, "result");
+  if (problem) fail(problem + " (raw " + text.slice(0, 300) + ")");
+  if (needle && !text.includes(needle)) {
+    fail("result text does not contain " + JSON.stringify(needle) + ": " + text.slice(0, 400));
+  }
+  ok(
+    "isError=false result matches " +
+      JSON.stringify(expected) +
+      (needle ? " needle=" + JSON.stringify(needle) : ""),
+  );
+  process.exit(0);
+}
+
+fail("unknown mode " + JSON.stringify(mode) + " (use protocol, tools, call, navigate, snapshot, result, command or command-mode)");

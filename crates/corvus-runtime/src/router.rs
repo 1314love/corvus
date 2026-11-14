@@ -84,8 +84,8 @@ pub struct RouterConfig {
 impl Default for RouterConfig {
     fn default() -> Self {
         Self {
-            default_timeout_ms: 15_000,
-            max_timeout_ms: 120_000,
+            default_timeout_ms: 60_000,
+            max_timeout_ms: 125_000,
             idempotency_capacity: 4_096,
         }
     }
@@ -208,20 +208,22 @@ impl Router {
                 .with_details(json!({ "tool": request.tool, "known": spec::names() }))
         })?;
         let connection = self.resolve_browser(request.browser.as_deref())?;
-        if !connection.supports(spec.capability) {
-            return Err(ErrorBody::new(
-                ErrorCode::CapabilityUnavailable,
-                format!(
-                    "browser {} does not offer the {} capability",
-                    connection.id(),
-                    spec.capability
-                ),
-            )
-            .with_details(json!({
-                "browser": connection.id(),
-                "required": spec.capability,
-                "available": connection.capabilities(),
-            })));
+        if let Some(required) = spec.capability {
+            if !connection.supports(required) {
+                return Err(ErrorBody::new(
+                    ErrorCode::CapabilityUnavailable,
+                    format!(
+                        "browser {} does not offer the {} capability",
+                        connection.id(),
+                        required
+                    ),
+                )
+                .with_details(json!({
+                    "browser": connection.id(),
+                    "required": required,
+                    "available": connection.capabilities(),
+                })));
+            }
         }
         match request.idempotency_key.clone() {
             None => self.execute(connection, spec, &request).await,
@@ -348,7 +350,7 @@ impl Router {
             ));
         }
 
-        let timeout_ms = self.timeout_for(request.timeout_ms);
+        let timeout_ms = self.timeout_for(request.timeout_ms, spec, &request.args);
         let mut meta = Meta::new().with_timeout_ms(timeout_ms);
         if let Some(key) = &request.idempotency_key {
             meta = meta.with_idempotency_key(key.clone());
@@ -408,9 +410,9 @@ impl Router {
         }
     }
 
-    fn timeout_for(&self, requested: Option<u64>) -> u64 {
+    fn timeout_for(&self, requested: Option<u64>, spec: &ToolSpec, args: &Value) -> u64 {
         requested
-            .unwrap_or(self.config.default_timeout_ms)
+            .unwrap_or_else(|| spec.timeout_ms(args, self.config.default_timeout_ms))
             .clamp(1, self.config.max_timeout_ms)
     }
 
@@ -529,10 +531,16 @@ mod tests {
                 idempotency_capacity: 8,
             },
         );
-        assert_eq!(router.timeout_for(None), 1_000);
-        assert_eq!(router.timeout_for(Some(60_000)), 5_000);
-        assert_eq!(router.timeout_for(Some(0)), 1);
+        let click = spec::lookup("browser_click").expect("click spec");
+        let eval = spec::lookup("browser_eval").expect("eval spec");
+        assert_eq!(router.timeout_for(None, click, &json!({})), 1_000);
+        assert_eq!(router.timeout_for(Some(60_000), click, &json!({})), 5_000);
+        assert_eq!(router.timeout_for(Some(0), click, &json!({})), 1);
+        assert_eq!(router.timeout_for(None, eval, &json!({})), 5_000);
         assert_eq!(router.config().idempotency_capacity, 8);
+        let defaults = RouterConfig::default();
+        assert_eq!(defaults.default_timeout_ms, 60_000);
+        assert_eq!(defaults.max_timeout_ms, 125_000);
     }
 
     #[tokio::test]

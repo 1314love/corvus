@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-Status: design draft, M0. Audience: engineers.
+Status: M1 implemented; M2 in progress. Audience: engineers.
 
 ## 1. Constraints that shape the design
 
@@ -77,7 +77,7 @@ Rules:
 - Transports: stdio (default for IDE clients) and streamable-http on 127.0.0.1:7331/mcp (default for DSH and web clients).
 - Tool naming: <domain>_<verb>, stable forever; aliases never removed, only deprecated.
 - Every tool declares annotations: readOnlyHint, destructiveHint, idempotentHint, openWorldHint.
-- Long outputs are paginated: first response returns a summary plus a cursor; the agent pulls the rest.
+- Long outputs are capped per call: `max_chars` truncates long strings and sets `truncated: true`; M2 wave 1 has no cursor pagination.
 - Resource: corvus://session/<id>/step/<n> returns the recorded page snapshot of that step, so agents can inspect history without re-running.
 - Prompts: none in M1 (agents should use tools), revisited in M3.
 
@@ -98,6 +98,45 @@ Result:
 
 The extension waits for the new document before answering, so a `page_snapshot` issued after `browser_navigate` reflects the new page. The wait budget is `max(0, min(meta.timeout_ms - 2000, 15000))` milliseconds. When the budget expires the call is still a success with `loaded: false` and the current `url`; it never becomes `TIMEOUT`. The daemon forwards this result unchanged.
 
+### 5.2 M2 wave 1 tool surface
+
+The frozen M2 wave 1 surface has 18 tools. `browser_navigate`, `page_snapshot`, `browser_click` and `browser_type` keep their M1 behaviour; the other 14 are added in this wave. Each result below is the JSON object inside a successful MCP tool result; failures use the taxonomy in section 8 and set `isError`.
+
+Common conventions:
+
+- `tab_id` is optional on page and action tools; when omitted the tool acts on the active tab. `tab_close` and `tab_switch` require the target tab explicitly.
+- `target` accepts an `@eN` reference or a CSS selector. References are allocated per document, and `page_snapshot` and `page_find` share one reference space, so either can feed `browser_click`, `browser_type`, `browser_hover`, `browser_press`, `browser_scroll` or `browser_select`.
+- `max_chars` caps truncate the returned string and set `truncated: true`; they never turn a successful call into an error.
+
+| Tool | Arguments (required unless marked ?) | Result |
+|---|---|---|
+| `browser_navigate` | `url`; `tab_id?` | `navigated`, `loaded`, `url`, `previous`, `same_document`, `started_at` |
+| `page_snapshot` | `tab_id?`; `mode?` (`interactive` default or `full`); `max_nodes?` 40..3000 | `url`, `title`, `viewport`, `mode`, `node_cap`, `node_count`, `element_count`, `text_count`, `ref_count`, `truncated`, `nodes[]` |
+| `browser_click` | `target`; `tab_id?` | `clicked`, `ref`, `selector`, `tag`, `role`, `name`, `bbox`, `point`, `events[]`, `url` |
+| `browser_type` | `target`; `text`; `clear?` default true; `blur?` default false; `tab_id?` | `typed`, `ref`, `selector`, `tag`, `role`, `cleared`, `events[]`, `value_length`, `url`, `value` (passwords return `masked` instead) |
+| `page_text` | `tab_id?`; `max_chars?` 1..200000 default 100000 | `url`, `title`, `text`, `truncated` |
+| `page_html` | `tab_id?`; `target?` default whole document; `max_chars?` 1..500000 default 200000 | `url`, `html`, `truncated` |
+| `page_find` | `query`; `tab_id?`; `role?`; `limit?` 1..100 default 20; `regex?` default false | `url`, `count`, `matches[]` with `ref`, `tag`, `role`, `text` |
+| `browser_hover` | `target`; `tab_id?` | `hovered: true`, `url`, `target` with `ref?`, `tag`, `text?` |
+| `browser_press` | `keys` string or string[]; `target?`; `tab_id?` | `pressed: true`, `keys[]`, `url` |
+| `browser_scroll` | `direction` (`up`, `down`, `left`, `right`); `pages?` 0..50 default 1; `target?`; `tab_id?` | `scrolled: true`, `x`, `y`, `url` |
+| `browser_select` | `target`; `values[]`; `tab_id?` | `selected[]`, `value`, `url` |
+| `browser_eval` | `expression`; `world?` (`main` or `isolated` default); `tab_id?` | `ok: true`, `value`; or `ok: false`, `error` with `name`, `message` |
+| `browser_wait` | `tab_id?`; at least one of `selector?`, `text?`, `url_contains?`; `timeout_ms?` 100..120000 default 10000 | `matched: true`, `waited_ms`, `url` |
+| `browser_history` | `action` (`back`, `forward`, `reload`); `tab_id?` | `action`, `url`, `loaded` |
+| `tab_list` | none | `tabs[]` with `tab_id`, `index`, `active`, `url`, `title`, `status` |
+| `tab_new` | `url?`; `active?` default true | `tab_id`, `url`, `loaded`, `previous_tab_id` |
+| `tab_close` | `tab_id` | `closed: true`, `tab_id`, `next_tab_id?` |
+| `tab_switch` | `tab_id` | `tab_id`, `url`, `title`, `active: true` |
+
+Notes:
+
+- `browser_press` accepts Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, PageUp, PageDown, Home, End, single character keys, and the Control+, Shift+, Alt+ and Meta+ modifiers (for example `Control+Shift+KeyK`).
+- `browser_select` writes every value in `values`; a `<select multiple>` accepts more than one.
+- `browser_eval` runs in the isolated world by default and in the page world on request. A page exception is a successful tool call with `{ "ok": false, "error": { "name", "message" } }`; only tool-level failures set `isError`. Values that cannot be serialised to JSON return `null` with `"value_note": "unserializable"`.
+- `browser_wait` needs at least one condition; a timeout is `TIMEOUT` with `details.waited_ms`. When an error carries `details`, the MCP tool result text appends them as compact JSON (for example `TIMEOUT: wait timed out after 100 ms {"waited_ms":4321}`); error results do not carry `structuredContent`.
+- `tab_close` returns `next_tab_id` when closing the active tab activates a neighbour.
+
 ## 6. Extension design
 
 Three contexts, no pages:
@@ -106,7 +145,7 @@ Three contexts, no pages:
 2. **content script**: DOM snapshot, click/type synthesis, waits, mutation observers.
 3. **offscreen document**: WebSocket owner (SW cannot hold a socket reliably), keepalive, reconnect loop.
 
-The popup exists only to toggle the debugger channel. It is a 40-line page with one switch and one status dot.
+The popup is status-only: one connection dot and one status line, with no controls. The debugger capability is advertised unconditionally and attached on demand when a CDP-backed tool needs it; a refused attach is the only reason the channel becomes unavailable.
 
 Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate retry on network-online, alarm every 30s as a floor, and a daemon-push "resume" message when the daemon restarts.
 
@@ -114,7 +153,7 @@ Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate r
 
     extension states: IDLE -> CONNECTING -> READY -> DEGRADED -> IDLE
 
-- DEGRADED means: attached but missing capabilities (e.g. debugger channel off). Tools that need the missing capability return CAPABILITY_UNAVAILABLE instead of hanging.
+- DEGRADED means: attached but a capability is unavailable (e.g. the browser refused the debugger attach). Tools that need the missing capability return CAPABILITY_UNAVAILABLE instead of hanging.
 - Every command has a deadline; on expiry the daemon cancels at the extension and returns TIMEOUT with a replayable id.
 - The router keeps a per-browser serial queue for actions that must not interleave (click/type) and a parallel pool for read-only perception.
 - Daemon restart does not lose sessions: session state is in SQLite, and the extension resumes by replaying unacknowledged commands.
@@ -128,7 +167,7 @@ Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate r
 | NOT_INTERACTABLE | element covered/disabled/offscreen | yes, after scroll |
 | TIMEOUT | deadline exceeded | yes |
 | NAVIGATION_LOST | page navigated mid-command | yes, re-resolve |
-| CAPABILITY_UNAVAILABLE | e.g. debugger off, permission missing | no, until toggled |
+| CAPABILITY_UNAVAILABLE | debugger attach refused by the browser, or the page cannot be scripted | no, until the page or permission changes |
 | BROWSER_GONE | tab/browser closed | no |
 | TRANSPORT_DOWN | extension disconnected | yes, after reconnect |
 | INTERNAL | bug; carries trace id | no |
@@ -163,11 +202,13 @@ Blobs (screenshots, response bodies) live beside the DB under ~/.corvus/blobs/<y
 
     [tools]
     paginate_over_bytes = 65536
-    default_timeout_ms = 15000
+    default_timeout_ms = 60000
 
     [memory]
     enabled = true
     export_format = "jsonl"
+
+Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capped at 125000 ms, `browser_eval` gets 30000 ms, and every other tool gets the 60000 ms default; the router clamps every deadline to the 125000 ms ceiling.
 
 ## 11. Build and CI
 

@@ -4,8 +4,8 @@
  * Corvus content script.
  *
  * Runs in the top frame of every http, https and file page. Receives command
- * messages from the service worker, executes one of the four browser tools and
- * always answers exactly once with {ok:true, result} or {ok:false, error}.
+ * messages from the service worker, executes one of the browser tools it owns
+ * and always answers exactly once with {ok:true, result} or {ok:false, error}.
  *
  * Uses no dynamic code, no inline scripts and no external resources.
  */
@@ -24,8 +24,15 @@
   const MAX_SELECTOR = 512;
   const MAX_INPUT = 10000;
   const MAX_REFS = 5000;
-  const MAX_TIMEOUT_MS = 120000;
-  const DEFAULT_TIMEOUT_MS = 10000;
+  const MAX_PAGE_TEXT = 200000;
+  const DEFAULT_PAGE_TEXT = 100000;
+  const MAX_PAGE_HTML = 500000;
+  const DEFAULT_PAGE_HTML = 200000;
+  const MAX_FIND_LIMIT = 100;
+  const DEFAULT_FIND_LIMIT = 20;
+  const MAX_SCROLL_PAGES = 50;
+  const MAX_TIMEOUT_MS = 125000;
+  const DEFAULT_TIMEOUT_MS = 60000;
   const REF_PATTERN = /^@?e(\d+)$/i;
   const NAVIGABLE_PATTERN = /^(https?|file):/i;
 
@@ -46,6 +53,13 @@
     page_snapshot: 'page_snapshot',
     browser_click: 'click',
     browser_type: 'type',
+    page_text: 'page_text',
+    page_html: 'page_html',
+    page_find: 'page_find',
+    browser_hover: 'hover',
+    browser_press: 'press',
+    browser_scroll: 'scroll',
+    browser_select: 'select',
   };
 
   const SKIP_TAGS = {
@@ -163,6 +177,32 @@
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric <= 0) return DEFAULT_TIMEOUT_MS;
     return Math.min(MAX_TIMEOUT_MS, Math.max(250, Math.round(numeric)));
+  }
+
+  function clampMaxChars(value, fallback, limit) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.min(limit, Math.max(1, Math.floor(numeric)));
+  }
+
+  function readIntegerRange(value, fallback, min, max, label) {
+    if (value === undefined || value === null) return fallback;
+    const numeric = Number(value);
+    if (!Number.isInteger(numeric) || numeric < min || numeric > max) {
+      throw badArgs(label + ' must be an integer from ' + min + ' to ' + max, { value: value });
+    }
+    return numeric;
+  }
+
+  function visibleBodyText() {
+    const root = document.body || document.documentElement;
+    if (!root) return '';
+    try {
+      if (typeof root.innerText === 'string') return root.innerText;
+    } catch (error) {
+      // Fall through to textContent.
+    }
+    return root.textContent || '';
   }
 
   function nextFrame() {
@@ -565,6 +605,565 @@
   }
 
   // -------------------------------------------------------------------------
+  // Page text, HTML and find
+  // -------------------------------------------------------------------------
+
+  function pageText(args) {
+    const maxChars = readIntegerRange(args.max_chars, DEFAULT_PAGE_TEXT, 1, MAX_PAGE_TEXT, 'args.max_chars');
+    const full = String(visibleBodyText()).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const truncated = full.length > maxChars;
+    return {
+      url: location.href,
+      title: document.title,
+      text: truncated ? full.slice(0, maxChars) : full,
+      truncated: truncated,
+    };
+  }
+
+  function pageHtml(args) {
+    const maxChars = readIntegerRange(args.max_chars, DEFAULT_PAGE_HTML, 1, MAX_PAGE_HTML, 'args.max_chars');
+    let element = document.documentElement;
+    if (args.target !== undefined && args.target !== null) {
+      element = resolveTarget(args, 'page_html').element;
+    }
+    const full = element && typeof element.outerHTML === 'string' ? element.outerHTML : '';
+    const truncated = full.length > maxChars;
+    return {
+      url: location.href,
+      html: truncated ? full.slice(0, maxChars) : full,
+      truncated: truncated,
+    };
+  }
+
+  function findMatcher(query, regex) {
+    if (regex === true) {
+      try {
+        const compiled = new RegExp(query, 'i');
+        return function matchRegex(value) {
+          return compiled.test(value);
+        };
+      } catch (error) {
+        throw badArgs('args.query is not a valid regular expression: ' + String(error && error.message ? error.message : error), {
+          query: truncate(query, 120),
+        });
+      }
+    }
+    const needle = collapse(query).toLowerCase();
+    if (!needle) throw badArgs('args.query must contain searchable text');
+    return function matchLiteral(value) {
+      return String(value).toLowerCase().indexOf(needle) !== -1;
+    };
+  }
+
+  function closestFindCandidate(element) {
+    if (!element || element.nodeType !== 1) return null;
+    let candidate = element;
+    try {
+      const actionable = element.closest('a[href],button,input,select,textarea,summary,[role],[contenteditable],[tabindex]');
+      if (actionable) candidate = actionable;
+    } catch (error) {
+      candidate = element;
+    }
+    if (!candidate || candidate.nodeType !== 1 || !candidate.isConnected) return null;
+    return candidate;
+  }
+
+  function pageFind(args) {
+    const rawQuery = args && typeof args.query === 'string' ? args.query : '';
+    if (!rawQuery.trim()) throw badArgs('args.query must be a non-empty string');
+    if (args.regex !== undefined && args.regex !== null && typeof args.regex !== 'boolean') {
+      throw badArgs('args.regex must be a boolean', { regex: args.regex });
+    }
+    let roleFilter = '';
+    if (args.role !== undefined && args.role !== null) {
+      if (typeof args.role !== 'string' || !args.role.trim()) {
+        throw badArgs('args.role must be a non-empty string when provided');
+      }
+      roleFilter = args.role.trim().toLowerCase();
+    }
+    const limit = readIntegerRange(args.limit, DEFAULT_FIND_LIMIT, 1, MAX_FIND_LIMIT, 'args.limit');
+    const matcher = findMatcher(rawQuery, args.regex === true);
+    const matches = [];
+    const seen = new Set();
+
+    function pushMatch(candidate, text) {
+      if (matches.length >= limit) return;
+      if (!candidate || candidate.nodeType !== 1 || !candidate.isConnected) return;
+      if (!isRendered(candidate)) return;
+      const role = roleOf(candidate).toLowerCase();
+      if (roleFilter && role !== roleFilter) return;
+      if (seen.has(candidate)) return;
+      seen.add(candidate);
+      const match = {
+        ref: refFor(candidate),
+        tag: candidate.tagName.toLowerCase(),
+        role: roleOf(candidate) || null,
+        text: truncate(collapse(text), MAX_TEXT),
+      };
+      matches.push(match);
+    }
+
+    function scanText(node) {
+      if (matches.length >= limit || !node) return;
+      if (node.nodeType === 3) {
+        const text = collapse(node.nodeValue);
+        if (text && matcher(text)) {
+          pushMatch(closestFindCandidate(node.parentElement), text);
+        }
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      if (SKIP_TAGS[node.tagName] === true) return;
+      if (!isRendered(node)) return;
+      const children = node.childNodes;
+      for (let i = 0; i < children.length; i += 1) {
+        if (matches.length >= limit) return;
+        scanText(children[i]);
+      }
+    }
+
+    scanText(document.body || document.documentElement);
+
+    // Controls expose their text through value and accessible name, not only
+    // through text nodes, so run a bounded second pass over form controls.
+    if (matches.length < limit) {
+      let controls = [];
+      try {
+        controls = document.querySelectorAll('input, textarea, select, button, a[href], [role], [contenteditable], [tabindex]');
+      } catch (error) {
+        controls = [];
+      }
+      const controlLimit = Math.min(controls.length, 2000);
+      for (let i = 0; i < controlLimit && matches.length < limit; i += 1) {
+        const control = controls[i];
+        if (!isRendered(control)) continue;
+        const pieces = [accessibleName(control)];
+        if (control.value !== undefined && control.value !== null) pieces.push(String(control.value));
+        if (control.placeholder) pieces.push(String(control.placeholder));
+        const haystack = collapse(pieces.join(' '));
+        if (haystack && matcher(haystack)) pushMatch(closestFindCandidate(control), haystack);
+      }
+    }
+
+    return {
+      url: location.href,
+      count: matches.length,
+      matches: matches,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Hover
+  // -------------------------------------------------------------------------
+
+  function hoverElement(args) {
+    const target = resolveTarget(args, 'hover');
+    const element = target.element;
+    assertInteractable(element, 'hover');
+    scrollIntoView(element);
+
+    const rect = element.getBoundingClientRect();
+    const point = hitTest(element, rect, 'hover');
+    const fired = [];
+    if (dispatchPointer(element, 'pointerover', point)) fired.push('pointerover');
+    if (dispatchPointer(element, 'pointerenter', point)) fired.push('pointerenter');
+    if (dispatchPointer(element, 'pointermove', point)) fired.push('pointermove');
+    if (dispatchMouse(element, 'mouseover', point)) fired.push('mouseover');
+    if (dispatchMouse(element, 'mouseenter', point)) fired.push('mouseenter');
+    if (dispatchMouse(element, 'mousemove', point)) fired.push('mousemove');
+
+    const targetInfo = {
+      ref: elementToRef.get(element) || refFor(element),
+      tag: element.tagName.toLowerCase(),
+    };
+    const text = truncate(accessibleName(element), MAX_NAME);
+    if (text) targetInfo.text = text;
+
+    return {
+      hovered: true,
+      url: location.href,
+      target: targetInfo,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Press
+  // -------------------------------------------------------------------------
+
+  const NAMED_KEYS = {
+    enter: { key: 'Enter', code: 'Enter', keyCode: 13, printable: true, char: '\r' },
+    tab: { key: 'Tab', code: 'Tab', keyCode: 9, printable: false },
+    escape: { key: 'Escape', code: 'Escape', keyCode: 27, printable: false },
+    backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8, printable: false },
+    delete: { key: 'Delete', code: 'Delete', keyCode: 46, printable: false },
+    space: { key: ' ', code: 'Space', keyCode: 32, printable: true, char: ' ' },
+    arrowup: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38, printable: false },
+    arrowdown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, printable: false },
+    arrowleft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, printable: false },
+    arrowright: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, printable: false },
+    pageup: { key: 'PageUp', code: 'PageUp', keyCode: 33, printable: false },
+    pagedown: { key: 'PageDown', code: 'PageDown', keyCode: 34, printable: false },
+    home: { key: 'Home', code: 'Home', keyCode: 36, printable: false },
+    end: { key: 'End', code: 'End', keyCode: 35, printable: false },
+  };
+
+  const MODIFIER_KEYS = {
+    control: { name: 'Control', key: 'Control', code: 'ControlLeft', keyCode: 17, prop: 'ctrlKey' },
+    shift: { name: 'Shift', key: 'Shift', code: 'ShiftLeft', keyCode: 16, prop: 'shiftKey' },
+    alt: { name: 'Alt', key: 'Alt', code: 'AltLeft', keyCode: 18, prop: 'altKey' },
+    meta: { name: 'Meta', key: 'Meta', code: 'MetaLeft', keyCode: 91, prop: 'metaKey' },
+  };
+
+  const SHIFTED_DIGITS = {
+    '1': '!', '2': '@', '3': '#', '4': '$', '5': '%', '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
+  };
+
+  function modifierFor(token) {
+    return MODIFIER_KEYS[String(token).trim().toLowerCase()] || null;
+  }
+
+  function keyForToken(token, shift) {
+    const text = String(token).trim();
+    const named = NAMED_KEYS[text.toLowerCase()];
+    if (named) {
+      return {
+        key: named.key,
+        code: named.code,
+        keyCode: named.keyCode,
+        printable: named.printable,
+        char: named.char,
+      };
+    }
+    const modifier = modifierFor(text);
+    if (modifier) {
+      return { key: modifier.key, code: modifier.code, keyCode: modifier.keyCode, printable: false };
+    }
+    const keyCodeMatch = /^Key([A-Za-z])$/i.exec(text);
+    if (keyCodeMatch) {
+      const letter = keyCodeMatch[1].toUpperCase();
+      return {
+        key: shift ? letter : letter.toLowerCase(),
+        code: 'Key' + letter,
+        keyCode: letter.charCodeAt(0),
+        printable: true,
+        char: shift ? letter : letter.toLowerCase(),
+      };
+    }
+    const digitMatch = /^Digit([0-9])$/i.exec(text);
+    if (digitMatch) {
+      const digit = digitMatch[1];
+      return {
+        key: shift && SHIFTED_DIGITS[digit] ? SHIFTED_DIGITS[digit] : digit,
+        code: 'Digit' + digit,
+        keyCode: digit.charCodeAt(0),
+        printable: true,
+        char: shift && SHIFTED_DIGITS[digit] ? SHIFTED_DIGITS[digit] : digit,
+      };
+    }
+    const characters = Array.from(text);
+    if (characters.length === 1) {
+      const character = characters[0];
+      const upper = character.toUpperCase();
+      let code = '';
+      if (/^[A-Za-z]$/.test(character)) code = 'Key' + upper;
+      else if (/^[0-9]$/.test(character)) code = 'Digit' + character;
+      return {
+        key: shift ? upper : character,
+        code: code,
+        keyCode: upper.charCodeAt(0),
+        printable: true,
+        char: shift ? upper : character,
+      };
+    }
+    throw badArgs('unsupported key name: ' + truncate(text, 40), { key: truncate(text, 40) });
+  }
+
+  function parseKeyChord(raw) {
+    if (typeof raw !== 'string' || !raw.trim()) {
+      throw badArgs('keys entries must be non-empty strings');
+    }
+    const text = raw.trim();
+    let parts = null;
+    if (text === '+') {
+      parts = ['+'];
+    } else if (text.length > 2 && text.slice(-2) === '++') {
+      parts = text.slice(0, -2).split('+').concat('+');
+    } else {
+      parts = text.split('+');
+    }
+    if (parts.some((part) => part.trim() === '')) {
+      throw badArgs('invalid key chord: ' + truncate(text, 60), { key: truncate(text, 60) });
+    }
+    const keyToken = parts.pop();
+    const modifiers = [];
+    let shift = false;
+    for (let i = 0; i < parts.length; i += 1) {
+      const modifier = modifierFor(parts[i]);
+      if (!modifier) {
+        throw badArgs('unsupported modifier: ' + truncate(parts[i], 40), { key: truncate(text, 60) });
+      }
+      if (!modifiers.some((item) => item.prop === modifier.prop)) modifiers.push(modifier);
+      if (modifier.prop === 'shiftKey') shift = true;
+    }
+    return { text: text, modifiers: modifiers, key: keyForToken(keyToken, shift) };
+  }
+
+  function keyboardFlags(modifiers) {
+    const flags = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false };
+    for (let i = 0; i < modifiers.length; i += 1) flags[modifiers[i].prop] = true;
+    return flags;
+  }
+
+  function emitKeyboardEvent(target, type, keyDefinition, flags, charCode) {
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      key: keyDefinition.key,
+      code: keyDefinition.code || '',
+      location: 0,
+      ctrlKey: flags.ctrlKey === true,
+      shiftKey: flags.shiftKey === true,
+      altKey: flags.altKey === true,
+      metaKey: flags.metaKey === true,
+      repeat: false,
+      isComposing: false,
+      charCode: charCode || 0,
+    };
+    let event = null;
+    try {
+      event = new KeyboardEvent(type, init);
+    } catch (error) {
+      try {
+        event = new Event(type, { bubbles: true, cancelable: true, composed: true });
+      } catch (inner) {
+        return false;
+      }
+    }
+    try {
+      Object.defineProperty(event, 'keyCode', { configurable: true, get: function getKeyCode() { return keyDefinition.keyCode; } });
+      Object.defineProperty(event, 'which', { configurable: true, get: function getWhich() { return type === 'keypress' ? (charCode || 0) : keyDefinition.keyCode; } });
+    } catch (error) {
+      // Legacy fields are best effort.
+    }
+    try {
+      target.dispatchEvent(event);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function pressKeys(args) {
+    const raw = args.keys;
+    let entries = null;
+    if (typeof raw === 'string') {
+      entries = [raw];
+    } else if (Array.isArray(raw)) {
+      entries = raw.slice();
+    } else {
+      throw badArgs('args.keys must be a string or an array of strings');
+    }
+    if (entries.length === 0) throw badArgs('args.keys must contain at least one key');
+    const chords = entries.map(parseKeyChord);
+
+    let target = null;
+    if (args.target !== undefined && args.target !== null) {
+      target = resolveTarget(args, 'press').element;
+      assertInteractable(target, 'press');
+      scrollIntoView(target);
+      focusElement(target);
+    } else {
+      target = document.activeElement;
+      if (!target || target === document.documentElement) target = document.body || document.documentElement;
+    }
+    if (!target) throw new ToolError('NOT_INTERACTABLE', 'no element can receive key events', { action: 'press' });
+
+    for (let i = 0; i < chords.length; i += 1) {
+      const chord = chords[i];
+      const activeFlags = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false };
+      for (let m = 0; m < chord.modifiers.length; m += 1) {
+        const modifier = chord.modifiers[m];
+        activeFlags[modifier.prop] = true;
+        emitKeyboardEvent(target, 'keydown', modifier, activeFlags, 0);
+      }
+      const flags = keyboardFlags(chord.modifiers);
+      emitKeyboardEvent(target, 'keydown', chord.key, flags, 0);
+      if (chord.key.printable) {
+        const charCode = chord.key.char !== undefined ? chord.key.char.charCodeAt(0) : chord.key.keyCode;
+        emitKeyboardEvent(target, 'keypress', chord.key, flags, charCode);
+      }
+      emitKeyboardEvent(target, 'keyup', chord.key, flags, 0);
+      for (let m = chord.modifiers.length - 1; m >= 0; m -= 1) {
+        const modifier = chord.modifiers[m];
+        emitKeyboardEvent(target, 'keyup', modifier, activeFlags, 0);
+        activeFlags[modifier.prop] = false;
+      }
+    }
+
+    return {
+      pressed: true,
+      keys: chords.map((chord) => chord.text),
+      url: location.href,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Scroll
+  // -------------------------------------------------------------------------
+
+  function scrollPage(args) {
+    const rawDirection = args && typeof args.direction === 'string' ? args.direction.trim().toLowerCase() : '';
+    if (rawDirection !== 'up' && rawDirection !== 'down' && rawDirection !== 'left' && rawDirection !== 'right') {
+      throw badArgs('args.direction must be up, down, left or right', { direction: truncate(String(args && args.direction), 40) });
+    }
+    let pages = 1;
+    if (args.pages !== undefined && args.pages !== null) {
+      if (typeof args.pages !== 'number') {
+        throw badArgs('args.pages must be a number', { pages: args.pages });
+      }
+      pages = args.pages;
+      if (!Number.isFinite(pages) || pages < 0 || pages > MAX_SCROLL_PAGES) {
+        throw badArgs('args.pages must be a number from 0 to ' + MAX_SCROLL_PAGES, { pages: args.pages });
+      }
+    }
+
+    let element = null;
+    if (args.target !== undefined && args.target !== null) {
+      element = resolveTarget(args, 'scroll').element;
+      if (!isRendered(element)) {
+        throw notInteractable('the scroll target is not visible', { action: 'scroll', element: describeElement(element) });
+      }
+    }
+
+    let deltaX = 0;
+    let deltaY = 0;
+    const windowTarget = !element || element === document.body || element === document.documentElement;
+    const unitY = windowTarget ? window.innerHeight : element.clientHeight;
+    const unitX = windowTarget ? window.innerWidth : element.clientWidth;
+    if (rawDirection === 'up') deltaY = -Math.round(unitY * pages);
+    if (rawDirection === 'down') deltaY = Math.round(unitY * pages);
+    if (rawDirection === 'left') deltaX = -Math.round(unitX * pages);
+    if (rawDirection === 'right') deltaX = Math.round(unitX * pages);
+
+    if (windowTarget) {
+      try {
+        window.scrollBy({ left: deltaX, top: deltaY, behavior: 'instant' });
+      } catch (error) {
+        window.scrollTo(window.scrollX + deltaX, window.scrollY + deltaY);
+      }
+      return {
+        scrolled: true,
+        x: Math.round(window.scrollX),
+        y: Math.round(window.scrollY),
+        url: location.href,
+      };
+    }
+
+    try {
+      element.scrollBy({ left: deltaX, top: deltaY, behavior: 'instant' });
+    } catch (error) {
+      element.scrollLeft += deltaX;
+      element.scrollTop += deltaY;
+    }
+    return {
+      scrolled: true,
+      x: Math.round(element.scrollLeft),
+      y: Math.round(element.scrollTop),
+      url: location.href,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Select
+  // -------------------------------------------------------------------------
+
+  function fireSelectEvent(element, type) {
+    try {
+      element.dispatchEvent(new Event(type, { bubbles: true, composed: true }));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function selectOptions(args) {
+    const target = resolveTarget(args, 'select');
+    const element = target.element;
+    if (!element || element.tagName !== 'SELECT') {
+      throw badArgs('browser_select target must be a <select> element', { action: 'select', element: describeElement(element) });
+    }
+    assertInteractable(element, 'select');
+
+    if (!Array.isArray(args.values)) {
+      throw badArgs('args.values must be an array of option values');
+    }
+    if (args.values.some((value) => typeof value !== 'string')) {
+      throw badArgs('every entry of args.values must be a string');
+    }
+    const values = args.values.slice();
+    if (values.length === 0) throw badArgs('args.values must contain at least one option value');
+    if (element.multiple !== true && values.length !== 1) {
+      throw badArgs('a single-select element needs exactly one value', { count: values.length });
+    }
+
+    const options = Array.prototype.slice.call(element.options);
+    for (let i = 0; i < values.length; i += 1) {
+      if (!options.some((option) => option.value === values[i])) {
+        throw notFound('no option has the requested value', { value: values[i] });
+      }
+    }
+
+    if (element.multiple === true) {
+      for (let i = 0; i < options.length; i += 1) {
+        options[i].selected = values.indexOf(options[i].value) !== -1;
+      }
+    } else {
+      let chosen = null;
+      for (let i = 0; i < options.length; i += 1) {
+        if (!chosen && options[i].value === values[0]) chosen = options[i];
+        options[i].selected = options[i] === chosen;
+      }
+    }
+
+    fireSelectEvent(element, 'input');
+    fireSelectEvent(element, 'change');
+
+    const selected = element.selectedOptions
+      ? Array.prototype.slice.call(element.selectedOptions).map((option) => String(option.value))
+      : options.filter((option) => option.selected).map((option) => String(option.value));
+    return {
+      selected: selected,
+      value: String(element.value === undefined || element.value === null ? '' : element.value),
+      url: location.href,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Wait probe
+  // -------------------------------------------------------------------------
+
+  function waitProbe(message) {
+    const selector = typeof message.selector === 'string' && message.selector.trim() ? message.selector.trim() : '';
+    const text = typeof message.text === 'string' && message.text.trim() ? message.text : '';
+    if (!selector && !text) throw badArgs('wait probe needs a selector or text');
+
+    let matched = true;
+    if (selector) {
+      try {
+        matched = document.querySelector(selector) !== null;
+      } catch (error) {
+        throw badArgs('invalid CSS selector: ' + String(error && error.message ? error.message : error), { selector: truncate(selector, 80) });
+      }
+    }
+    if (matched && text) {
+      matched = visibleBodyText().toLowerCase().indexOf(text.toLowerCase()) !== -1;
+    }
+    return { ok: true, matched: matched, url: location.href };
+  }
+
+  // -------------------------------------------------------------------------
   // Target resolution
   // -------------------------------------------------------------------------
 
@@ -842,6 +1441,12 @@
     if (typeof args.text !== 'string') throw badArgs('args.text must be a string', { action: 'type' });
     const text = args.text;
     if (text.length > MAX_INPUT) throw badArgs('args.text exceeds ' + MAX_INPUT + ' characters', { action: 'type', length: text.length });
+    if (args.clear !== undefined && typeof args.clear !== 'boolean') {
+      throw badArgs('args.clear must be a boolean', { action: 'type' });
+    }
+    if (args.blur !== undefined && typeof args.blur !== 'boolean') {
+      throw badArgs('args.blur must be a boolean', { action: 'type' });
+    }
 
     const clear = args.clear !== false;
     assertInteractable(element, 'type');
@@ -969,9 +1574,24 @@
         return navigate(args);
       case 'page_snapshot':
         return snapshot(args);
-      case 'click':
+      case 'page_text':
+        return pageText(args);
+      case 'page_html':
+        return pageHtml(args);
+      case 'page_find':
+        return pageFind(args);
+      case 'click': {
         const target = resolveTarget(args, 'click');
         return clickElement(target.element, 'click', target.selector);
+      }
+      case 'hover':
+        return hoverElement(args);
+      case 'press':
+        return pressKeys(args);
+      case 'scroll':
+        return scrollPage(args);
+      case 'select':
+        return selectOptions(args);
       case 'type':
         return typeInto(args);
       default:
@@ -998,6 +1618,15 @@
 
     if (message.type === 'corvus.ping') {
       sendResponse({ ok: true, pong: true, url: location.href, version: CONTENT_VERSION });
+      return false;
+    }
+
+    if (message.type === 'corvus.probe') {
+      try {
+        sendResponse(waitProbe(message));
+      } catch (error) {
+        sendResponse({ ok: false, error: toPayload(error) });
+      }
       return false;
     }
 

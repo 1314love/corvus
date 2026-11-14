@@ -159,6 +159,9 @@
       lastFrameAt = now();
       lastPingAt = 0;
       reportStatus('connected', null);
+      // A new socket generation invalidates every debugger session held by the
+      // service worker; tell it to detach before any command runs on it.
+      post({ type: 'socket_open', at: now() });
       startTimers();
       void sendHello();
     });
@@ -242,7 +245,7 @@
         args: {
           profile: 'default',
           version: manifest.version,
-          capabilities: ['dom', 'scripting'],
+          capabilities: ['dom', 'scripting', 'debugger'],
         },
       };
       log('service worker did not answer; sending a minimal hello');

@@ -24,7 +24,7 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 | Principle | What it means in the product |
 |---|---|
 | No friction | zero approval dialogs, zero pairing steps, zero setup wizards |
-| No surface | no side panel, no settings page; one popup switch for the debugger channel |
+| No surface | no side panel, no settings page; only a read-only status popup showing connection state, browser id, version and capabilities |
 | No dropout | connection is a first-class subsystem: multi-transport, watchdog, resume across restarts |
 | No ceiling | every operation the browser can perform becomes a tool, not a curated subset |
 | No blind spots | every command, snapshot and request is recorded and replayable |
@@ -38,14 +38,14 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
                                                      WS  /  Native Messaging / CDP
                                                                              |
                                                +-----------------------------+----+
-                                               |  Corvus extension (MV3, no UI)   |
+                                               |  Corvus extension (MV3, popup)   |
                                                +-----------------------------+----+
                                                                              |
                                                        Edge / Chrome / Firefox / ...
 
 - **corvusd** - the daemon: MCP server, transport hub, command router, session recorder, site memory.
 - **corvus** - the CLI: doctor, serve, attach, session replay, bench.
-- **extension** - MV3, zero pages. Its popup holds exactly one switch: the debugger-grade control channel.
+- **extension** - MV3, no UI pages beyond the status popup. The popup is a read-only status card (connection, browser id, version, capabilities); the debugger channel is advertised up front and attached automatically when a command needs it.
 
 ### Feature surface (target)
 
@@ -57,8 +57,7 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 
 ### Status
 
-Design phase. v0.1 targets: single-browser full tool surface, MCP over stdio and HTTP, recording and replay.
-See [docs/03-roadmap.md](docs/03-roadmap.md).
+M1 is implemented end to end: the daemon, the extension and the MCP server expose the four core tools on three-platform CI. M2 wave 1 ships 18 tools end to end, adding text and HTML extraction, find, hover, press, scroll, select, JavaScript evaluation, waits, history and tab management. See [docs/03-roadmap.md](docs/03-roadmap.md) and [docs/02-architecture.md](docs/02-architecture.md).
 
 ### Development
 
@@ -98,7 +97,7 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 | 理念 | 在产品里的含义 |
 |---|---|
 | 零摩擦 | 没有审批弹窗、没有配对步骤、没有安装向导 |
-| 零界面 | 没有侧边栏、没有设置页；只有一个开关的极小弹窗，用于调试通道 |
+| 零界面 | 没有侧边栏、没有设置页；只有一个只读状态弹窗，展示连接状态、浏览器 ID、版本与能力 |
 | 永不掉线 | 连接是一等子系统：多传输、看门狗、重启后自动恢复 |
 | 能力不设上限 | 浏览器能做的每一件事都成为工具，而不是精选子集 |
 | 全可观测 | 每条命令、每次快照、每个请求都可记录、可回放 |
@@ -112,14 +111,14 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
                                                       WS / Native Messaging / CDP
                                                                                |
                                                  +-----------------------------+----+
-                                                 |   Corvus 扩展（MV3，无界面）      |
+                                                 |   Corvus 扩展（MV3，弹窗）      |
                                                  +-----------------------------+----+
                                                                                |
                                                          Edge / Chrome / Firefox / ...
 
 - **corvusd**：守护进程。MCP 服务端、传输中枢、命令路由、会话录制、站点记忆。
 - **corvus**：命令行。doctor、serve、attach、会话回放、bench。
-- **扩展**：MV3、零页面。弹窗里只有一个开关：debugger 级控制通道。
+- **扩展**：MV3，除状态弹窗外没有其他界面。弹窗只读展示连接状态、浏览器 ID、版本与能力；debugger 通道始终声明，命令需要时自动挂载。
 
 ### 能力面（目标）
 
@@ -131,8 +130,7 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 
 ### 状态
 
-设计阶段。v0.1 目标：单浏览器全工具面、stdio 与 HTTP 双栈 MCP、录制与回放。见
-[docs/03-roadmap.zh.md](docs/03-roadmap.zh.md)。
+M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的 CI 上提供四个核心工具。M2 第一波已端到端落地，工具面扩到 18 个：新增文本与 HTML 提取、查找、悬停、按键、滚动、下拉选择、JS 求值、等待、前进后退与标签管理。见 [docs/03-roadmap.zh.md](docs/03-roadmap.zh.md) 与 [docs/02-architecture.zh.md](docs/02-architecture.zh.md)。
 
 ### 开发
 
@@ -142,7 +140,7 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 
 - [立项书](docs/00-charter.zh.md) —— 为什么做、范围、里程碑、决策记录
 - [需求规格](docs/01-requirements.zh.md) —— 功能与非功能需求
-- [架构](docs/02-architecture.md) —— 组件、协议、数据模型
+- [架构](docs/02-architecture.zh.md) —— 组件、协议、数据模型
 - [路线图](docs/03-roadmap.zh.md) —— 里程碑与验收任务
 - [语言政策](docs/LANGUAGE.md) —— 双语版本如何维护
 

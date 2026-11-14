@@ -2,8 +2,8 @@
 
 A small Rust test double for the Corvus browser extension. It connects to
 `ws://127.0.0.1:7330`, performs the hello handshake from
-`docs/02-architecture.md` section 4, answers command envelopes with canned
-responses, and records every received envelope to a JSONL file.
+`docs/02-architecture.md` section 4, answers command envelopes with stateful
+or canned responses, and records every received envelope to a JSONL file.
 
 It is standalone on purpose: `Cargo.toml` carries an empty `[workspace]`
 table so this crate never joins the repository workspace.
@@ -19,12 +19,12 @@ Binary: `tests/mock-extension/target/debug/mock-extension.exe` (Windows) or
 
 ## Run against a local daemon
 
+With no answer flags the mock answers all 18 frozen tools from its own state:
+
 ```bash
 tests/mock-extension/target/debug/mock-extension.exe \
   --url ws://127.0.0.1:7330 \
   --browser-id mock:default \
-  --answer-tool browser_navigate,page_snapshot,browser_click,browser_type \
-  --answer-json '{"url":"https://example.test/","title":"Mock page","nodes":[]}' \
   --out ./.tmp/mock-envelopes.jsonl
 ```
 
@@ -47,8 +47,8 @@ after N command envelopes, or `--idle-timeout-ms <ms>` as a watchdog.
 | `--capabilities` | comma separated capability list |
 | `--capabilities-json` | raw JSON for `args.capabilities` (overrides above) |
 | `--answer-tool` | tools to answer: comma separated, `*` for all (default `*`) |
-| `--answer-json` | raw tool result returned as the response `args` |
-| `--answer-map` | JSON object mapping tool names to raw results; overrides `--answer-json` |
+| `--answer-json` | optional raw result returned for every tool selected by `--answer-tool` |
+| `--answer-map` | JSON object mapping tool names to raw results; highest precedence |
 | `--fail-tool` | tools to answer with a structured error |
 | `--fail-code` | ErrorCode for `--fail-tool` (default `NOT_FOUND`) |
 | `--fail-message` | error message for `--fail-tool` |
@@ -59,6 +59,11 @@ after N command envelopes, or `--idle-timeout-ms <ms>` as a watchdog.
 | `--exit-after` | exit after N command envelopes |
 | `--ignore-others` | do not answer commands outside the configured tools |
 | `--quiet` | suppress per-envelope output |
+
+Precedence for a command is: `--fail-tool`, then a matching `--answer-map`
+entry (or its `*` fallback), then `--answer-json` when provided and the tool
+matches `--answer-tool`, then the built-in stateful answer. When
+`--answer-json` is omitted, known tools use the stateful answers.
 
 ## Wire assumptions
 
@@ -72,10 +77,35 @@ The mock matches the protocol v1 contract in `docs/02-architecture.md` section 4
 - A failed command response sets `args` to `null` and adds a top-level
   `error: {"code":"<ErrorCode>","message":"...","retryable":<bool>}`.
 
-## Per-tool and stateful answers
+## Stateful answers
 
-`--answer-map` gives each tool its own canned result. The mock records the final
-URL from a successful `browser_navigate` answer and expands it in later answers:
+The mock keeps one tab, `tab-1`, at `about:blank`, with `next_tab=2`.
+`browser_navigate` updates the tab URL and history; `tab_new` creates
+`tab-2`, `tab-3` and so on. The active tab is tracked, and every answer that
+takes a `tab_id` resolves it against the same state, so tab tests do not need
+canned data.
+
+Representative stateful results:
+
+- `page_snapshot` returns `@e1` on a text input and `@e2` on a button.
+- `page_find` returns one match with a ref from the same document ref space.
+- `browser_type` returns `value:"hello corvus"`, `value_length:12`, and the
+  event list.
+- `browser_click` returns `clicked:true` with the pointer/mouse sequence.
+- `browser_eval` returns `{"ok":true,"value":2}` for a simple expression,
+  `{"ok":false,"error":{...}}` for a page throw, and
+  `{"ok":true,"value":null,"value_note":"unserializable"}` for a cyclic value.
+- `browser_wait` matches on a selector, text or URL. The selector `#never`
+  always times out, which is used for the TIMEOUT conformance case.
+- `browser_history` moves through the tab's recorded history.
+- `tab_list`, `tab_new`, `tab_switch` and `tab_close` mutate the same tab
+  list; unknown tab ids return NOT_FOUND.
+
+## Canned answers and placeholders
+
+`--answer-map` gives individual tools their own canned result and takes
+precedence over stateful answers. The mock records the final URL from a
+successful `browser_navigate` answer and expands it in later answers:
 
 ```bash
 tests/mock-extension/target/debug/mock-extension.exe \
@@ -92,8 +122,21 @@ run assert that a snapshot issued immediately after navigate reflects the new
 document, and that a `loaded:false` navigate answer is still a successful tool
 call.
 
-If the daemon contract changes, adjust `response_envelope` and `error_object`
-in `src/main.rs`, plus the matching assertions in
+To force a single tool to a canned result while other tools remain stateful:
+
+```bash
+tests/mock-extension/target/debug/mock-extension.exe \
+  --answer-tool browser_navigate \
+  --answer-json '{"navigated":true,"loaded":false,"url":"http://127.0.0.1:8808/slow"}' \
+  --out ./.tmp/mock-envelopes.jsonl
+```
+
+Every received envelope is appended as one JSON object per line, in arrival
+order. The recorder opens the file in append mode and flushes each line, so it
+is safe to read while the mock is running.
+
+If the daemon contract changes, adjust `response_envelope`, `stateful_answer`
+and `error_object_full` in `src/main.rs`, plus the matching assertions in
 `tests/conformance/mcp_assert.mjs`.
 
 Exit codes: 0 clean shutdown, 1 error, 2 handshake timeout, 3 idle timeout.
