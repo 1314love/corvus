@@ -60,7 +60,7 @@ One envelope for all transports. Versioned, forward compatible.
       "browser": "edge:default",
       "session": "s-...",
       "tool": "browser_click",
-      "args": { "selector": "@e12" },
+      "args": { "target": "@e12" },
       "meta": { "timeout_ms": 5000, "idempotency_key": "...", "trace_id": "..." }
     }
 
@@ -80,6 +80,23 @@ Rules:
 - Long outputs are paginated: first response returns a summary plus a cursor; the agent pulls the rest.
 - Resource: corvus://session/<id>/step/<n> returns the recorded page snapshot of that step, so agents can inspect history without re-running.
 - Prompts: none in M1 (agents should use tools), revisited in M3.
+
+### 5.1 browser_navigate payload
+
+Request: `{ "url": "<absolute http, https or file URL>", "tab_id": "<optional tab id>" }`.
+
+Result:
+
+| field | type | meaning |
+|---|---|---|
+| navigated | boolean | true when the navigation was issued |
+| loaded | boolean | true when the new document reached readyState complete (or fired load) within the wait budget; false when the budget expired |
+| url | string | final URL after redirects |
+| previous | string or null | URL of the document before the navigation |
+| same_document | boolean | true when only the URL fragment changed, so no document load was needed |
+| started_at | number | Unix time in milliseconds when the navigation started |
+
+The extension waits for the new document before answering, so a `page_snapshot` issued after `browser_navigate` reflects the new page. The wait budget is `max(0, min(meta.timeout_ms - 2000, 15000))` milliseconds. When the budget expires the call is still a success with `loaded: false` and the current `url`; it never becomes `TIMEOUT`. The daemon forwards this result unchanged.
 
 ## 6. Extension design
 

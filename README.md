@@ -60,6 +60,11 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 Design phase. v0.1 targets: single-browser full tool surface, MCP over stdio and HTTP, recording and replay.
 See [docs/03-roadmap.md](docs/03-roadmap.md).
 
+### Development
+
+`scripts/dev-setup.sh` checks the Rust toolchain and offline dependencies; `scripts/build.sh` builds release
+binaries into `dist/` with checksums. Process, review gates and release cadence: [docs/PROCESS.md](docs/PROCESS.md).
+
 ### Docs
 
 - [Charter](docs/00-charter.md) - why this exists, scope, milestones, decisions
@@ -128,6 +133,10 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 
 设计阶段。v0.1 目标：单浏览器全工具面、stdio 与 HTTP 双栈 MCP、录制与回放。见
 [docs/03-roadmap.zh.md](docs/03-roadmap.zh.md)。
+
+### 开发
+
+`scripts/dev-setup.sh` 检查 Rust 工具链与离线依赖；`scripts/build.sh` 构建发布二进制到 `dist/` 并生成校验和。开发流程、评审门禁与发布节奏见 [docs/PROCESS.md](docs/PROCESS.zh.md)。
 
 ### 文档
 

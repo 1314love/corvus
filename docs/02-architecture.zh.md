@@ -60,7 +60,7 @@
       "browser": "edge:default",
       "session": "s-...",
       "tool": "browser_click",
-      "args": { "selector": "@e12" },
+      "args": { "target": "@e12" },
       "meta": { "timeout_ms": 5000, "idempotency_key": "...", "trace_id": "..." }
     }
 
@@ -80,6 +80,23 @@
 - 长输出分页：首次返回摘要加游标，代理按需拉取后续内容。
 - Resource：corvus://session/<id>/step/<n> 返回该步骤记录下来的页面快照，代理无需重跑即可查看历史。
 - Prompt：M1 不提供（代理应当直接用工具），M3 再评估。
+
+### 5.1 browser_navigate 载荷
+
+请求：`{ "url": "<绝对 http、https 或 file URL>", "tab_id": "<可选标签页 id>" }`。
+
+结果：
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| navigated | boolean | 导航已发起时为 true |
+| loaded | boolean | 新文档在等待预算内到达 readyState complete（或触发 load 事件）时为 true；预算耗尽时为 false |
+| url | string | 重定向后的最终 URL |
+| previous | string 或 null | 导航前文档的 URL |
+| same_document | boolean | 仅 URL 片段发生变化、不需要加载新文档时为 true |
+| started_at | number | 导航开始时的 Unix 毫秒时间戳 |
+
+扩展会等新文档就绪后才应答，因此 `browser_navigate` 之后的 `page_snapshot` 反映的是新页面。等待预算为 `max(0, min(meta.timeout_ms - 2000, 15000))` 毫秒；预算耗尽时调用仍然成功，返回 `loaded: false` 和当前 `url`，绝不会变成 `TIMEOUT`。守护进程原样转发该结果。
 
 ## 6. 扩展设计
 

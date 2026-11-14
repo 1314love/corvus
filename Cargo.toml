@@ -2,6 +2,9 @@
 resolver = "2"
 members = [
   "crates/corvus-proto",
+  "crates/corvus-transport",
+  "crates/corvus-runtime",
+  "crates/corvus-mcp",
   "crates/corvusd",
   "crates/corvus",
 ]
@@ -15,11 +18,18 @@ rust-version = "1.82"
 
 [workspace.dependencies]
 corvus-proto = { path = "crates/corvus-proto" }
+corvus-transport = { path = "crates/corvus-transport" }
+corvus-runtime = { path = "crates/corvus-runtime" }
+corvus-mcp = { path = "crates/corvus-mcp" }
+corvusd = { path = "crates/corvusd" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time", "io-std", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+axum = { version = "0.8", features = ["ws"] }
+futures = "0.3"
+tokio-tungstenite = "0.29"

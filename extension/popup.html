@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Corvus</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      min-width: 216px;
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { padding: 12px 14px; display: grid; gap: 10px; }
+    .row { display: flex; align-items: center; gap: 8px; }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: none;
+      background: #8a8f98;
+      box-shadow: 0 0 0 2px rgba(127, 127, 127, 0.18);
+    }
+    .dot-on { background: #1a9f52; box-shadow: 0 0 0 2px rgba(26, 159, 82, 0.2); }
+    .dot-off { background: #c8402f; box-shadow: 0 0 0 2px rgba(200, 64, 47, 0.18); }
+    #status-text { color: #6b7280; }
+    .switch-row { justify-content: space-between; }
+    .switch-row > span { user-select: none; }
+    input[type="checkbox"] {
+      width: 32px;
+      height: 18px;
+      margin: 0;
+      accent-color: #2f6fed;
+      cursor: pointer;
+    }
+    input[type="checkbox"]:disabled { cursor: progress; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="row">
+      <span id="status-dot" class="dot dot-off" role="img" aria-label="Connection status"></span>
+      <span id="status-text">Disconnected</span>
+    </div>
+    <label class="row switch-row">
+      <span>Debugger channel</span>
+      <input id="debugger-switch" type="checkbox" role="switch" aria-label="Debugger channel">
+    </label>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
