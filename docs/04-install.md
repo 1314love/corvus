@@ -26,7 +26,7 @@ client, and covers upgrade and uninstall. The service binds only to `127.0.0.1`.
 - nssm 2.24 or later. The installer looks on `PATH`, in the install directory, in the Chocolatey bin
   directory, in `C:\Program Files\nssm`, and at `-NssmPath`.
 - A release bundle in `dist/` containing `corvusd.exe`, `corvus.exe` and `extension/`.
-- Chrome or Edge (Chromium 120+) for the extension.
+- Chrome, Edge or Brave (Chromium 120+) for the extension.
 - A Rust toolchain only when building the bundle from source.
 
 ## Build the release bundle
@@ -133,7 +133,7 @@ build adds compile time.
 
 | Time | Step | Command or action | Success signal |
 |---|---|---|---|
-| 0:00 | Check prerequisites | Windows 10/11, elevated PowerShell, nssm, Chrome or Edge (Chromium 120+) | `nssm version` prints a version |
+| 0:00 | Check prerequisites | Windows 10/11, elevated PowerShell, nssm, Chrome, Edge or Brave (Chromium 120+) | `nssm version` prints a version |
 | 0:30 | Build or locate the bundle | `bash scripts/package.sh` (skip if `dist/` exists) | `dist/corvusd.exe` and `dist/corvus.exe` exist |
 | 1:30 | Install the service | `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1` | installer ends with `service is running` |
 | 2:30 | Load the extension | Load unpacked: `%USERPROFILE%\.corvus\extension` | popup dot is green |

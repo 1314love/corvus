@@ -41,7 +41,7 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
                                                |  Corvus extension (MV3, popup)   |
                                                +-----------------------------+----+
                                                                              |
-                                                       Edge / Chrome (one extension per connected browser)
+                                                       Edge / Chrome / Brave (one extension per connected browser)
 
 - **corvusd** - the daemon: MCP server, transport hub, command router, session recorder, site memory.
 - **corvus** - the CLI: doctor, serve, attach, session replay, bench.
@@ -76,7 +76,7 @@ binaries into `dist/` with checksums. Process, review gates and release cadence:
 removes it. Build the release bundle with `scripts/package.sh`; install, extension load and the five-minute
 walkthrough are in [docs/04-install.md](docs/04-install.md).
 
-Supported browsers: Edge and Chrome (Chromium 120+). Firefox is not supported.
+Supported browsers: Edge, Chrome and Brave (Chromium 120+). Firefox is not supported.
 
 ### Docs
 
@@ -128,7 +128,7 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
                                                  |   Corvus 扩展（MV3，弹窗）      |
                                                  +-----------------------------+----+
                                                                                |
-                                                         Edge / Chrome (one extension per connected browser)
+                                                         Edge / Chrome / Brave (one extension per connected browser)
 
 - **corvusd**：守护进程。MCP 服务端、传输中枢、命令路由、会话录制、站点记忆。
 - **corvus**：命令行。doctor、serve、attach、会话回放、bench。
@@ -161,7 +161,7 @@ M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的
 `scripts/install-windows.ps1` 把守护进程注册为 Windows 服务，`scripts/uninstall-windows.ps1` 负责卸载。
 用 `scripts/package.sh` 构建发布包；完整安装、扩展加载与五分钟流程见 [docs/04-install.zh.md](docs/04-install.zh.md)。
 
-支持的浏览器：Edge 与 Chrome（Chromium 120+）。暂不支持 Firefox。
+支持的浏览器：Edge、Chrome 与 Brave（Chromium 120+）。暂不支持 Firefox。
 
 ### 文档
 
