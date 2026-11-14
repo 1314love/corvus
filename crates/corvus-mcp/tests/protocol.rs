@@ -93,7 +93,7 @@ async fn initialize_echoes_an_older_supported_revision() {
 }
 
 #[tokio::test]
-async fn tools_list_exposes_eighteen_fully_annotated_tools() {
+async fn tools_list_exposes_twenty_six_fully_annotated_tools() {
     let server = server(Ok(json!({})));
     let answer = call(
         &server,
@@ -105,7 +105,7 @@ async fn tools_list_exposes_eighteen_fully_annotated_tools() {
         .and_then(|result| result.get("tools"))
         .and_then(Value::as_array)
         .expect("tools array");
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 26);
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
@@ -130,7 +130,15 @@ async fn tools_list_exposes_eighteen_fully_annotated_tools() {
             "tab_list",
             "tab_new",
             "tab_close",
-            "tab_switch"
+            "tab_switch",
+            "browser_list",
+            "net_capture",
+            "net_log",
+            "net_clear",
+            "net_intercept",
+            "download_list",
+            "download_wait",
+            "upload_file"
         ]
     );
     for tool in tools {

@@ -77,7 +77,7 @@ Rules:
 - Transports: stdio (default for IDE clients) and streamable-http on 127.0.0.1:7331/mcp (default for DSH and web clients).
 - Tool naming: <domain>_<verb>, stable forever; aliases never removed, only deprecated.
 - Every tool declares annotations: readOnlyHint, destructiveHint, idempotentHint, openWorldHint.
-- Long outputs are capped per call: `max_chars` truncates long strings and sets `truncated: true`; M2 wave 1 has no cursor pagination.
+- Long outputs are capped per call: `max_chars` truncates long strings and sets `truncated: true`; M2 has no cursor pagination.
 - Resource: corvus://session/<id>/step/<n> returns the recorded page snapshot of that step, so agents can inspect history without re-running.
 - Prompts: none in M1 (agents should use tools), revisited in M3.
 
@@ -137,6 +137,45 @@ Notes:
 - `browser_history` moves exactly one entry per `back` or `forward` through CDP `Page.getNavigationHistory` and `Page.navigateToHistoryEntry`, waits for the document to load, and returns the final `url`; an out-of-range entry is `NOT_FOUND`.
 - `browser_wait` needs at least one condition; a timeout is `TIMEOUT` with `details.waited_ms`. When an error carries `details`, the MCP tool result text appends them as compact JSON (for example `TIMEOUT: wait timed out after 100 ms {"waited_ms":4321}`); error results do not carry `structuredContent`.
 - `tab_close` returns `next_tab_id` when closing the active tab activates a neighbour.
+
+### 5.3 M2 wave 2 tool surface
+
+M2 wave 2 adds eight tools for a total of 26. The successful results below are the JSON object inside an MCP tool result; failures use the taxonomy in section 8 and set `isError`.
+
+Common routing and timeouts:
+
+- Every browser-facing tool accepts an optional `browser_id` string, including all 18 tools in section 5.2; `browser_list` is the exception because it operates on the set of browsers. When `browser_id` is omitted and exactly one browser is connected, that browser is selected; when none is connected the call fails with `TRANSPORT_DOWN`; when two or more are connected it fails with `BAD_ARGS` and `details` `{"reason":"multiple_browsers","browser_ids":[...]}`. A present but unknown id fails with `TRANSPORT_DOWN` and `details` `{"browser_id":"..."}`. The existing 18 tools keep their other arguments, behaviour and result shapes unchanged.
+- `browser_list` takes no arguments and returns every connected browser sorted by `connected_at_ms` ascending; it is served from the live transport registry without an extension roundtrip.
+- All eight new tools use a 60000 ms `meta.timeout_ms` by default; `download_wait` uses `min(args.timeout_ms + 5000, 125000)` instead. The nine error codes in section 8 are unchanged.
+
+| Tool | Arguments (required unless marked ?) | Result |
+|---|---|---|
+| `browser_list` | none | `browsers[]` with `browser_id`, `profile`, `version`, `capabilities[]`, `connected_at_ms`, sorted by `connected_at_ms` ascending |
+| `net_capture` | `action` (`start`, `stop` or `status`); `tab_id?`; `browser_id?` | start: `capturing: true`, `tab_id`, `started_at`, `capacity: 2000`; stop: `capturing: false`, `tab_id`, `entries`; status: `capturing`, `tab_id`, `started_at?`, `entries` |
+| `net_log` | `tab_id?`; `browser_id?`; `since_seq?` default 0; `limit?` 1..1000 default 100; `url_contains?`; `method?`; `resource_type?`; `status_min?`; `status_max?`; `include_headers?` default false | `entries[]` with `seq`, `ts`, `tab_id`, `request_id`, `method`, `url`, `status` (number or null), `mime` (string or null), `resource_type`, `from_cache`, `duration_ms` (number or null), `error` (string or null), `intercepted` (`{action, rule_id}` or null), optional `request_headers` and `response_headers`; `next_seq`; `capturing` |
+| `net_clear` | `tab_id?`; `browser_id?` | `cleared` |
+| `net_intercept` | `action` (`set` or `clear`); `browser_id?`; `tab_id?`; `rules?` 1..50 | `ok: true`, `scope` (`tab` or `browser`), `tab_id?`, `rules[]` with `id`, `action`, `url_regex`, optional `method`, `resource_type`; `applied` |
+| `download_list` | `browser_id?`; `limit?` 1..200 default 50 | `downloads[]` with `id`, `filename`, `url`, `state`, `bytes_received`, `total_bytes`, `danger`, `exists`, `started_at`, optional `tab_id`; newest first |
+| `download_wait` | `browser_id?`; `id?`; `timeout_ms?` 100..120000 default 30000 | `id`, `state`, `filename`, `url`, `bytes_received`, `total_bytes` |
+| `upload_file` | `target`; `files[]` 1..10 absolute paths; `browser_id?`; `tab_id?` | `uploaded: true`, `files[]`, `target` with optional `ref`, `tag`, `text`; `input` with optional `accept`, `multiple` |
+
+Capture lifecycle:
+
+- `net_capture` is opt-in per tab; omitted `tab_id` means the active tab. `start` attaches the debugger when needed and enables the CDP Network domain; the buffer is a per-tab ring of 2000 entries. An attach refusal is `CAPABILITY_UNAVAILABLE` with `details` `{"tab_id":"...","cause":"..."}`. Capture survives navigation in the same tab and ends silently when the tab closes.
+- `net_log` reads captured data. Omitted `tab_id` reads every captured tab of the selected browser. Entries are sorted by `seq` ascending; filters run before `limit`, and `limit` runs after filtering. `next_seq` is the last returned `seq`, or `since_seq` when the result is empty. Headers are present only when `include_headers` is true. `net_clear` clears one tab, or every captured tab when `tab_id` is omitted.
+
+Interception:
+
+- `net_intercept` with `set` replaces the rule set for its scope; `clear` removes it. A rule needs a unique `id` (1..64), a required `url_regex` compiled as a JavaScript `RegExp`, and an `action` of `block`, `mock` or `continue`; `method` and `resource_type` narrow the match. An invalid regex is `BAD_ARGS` with `details` `{"rule_id":"..."}`. `mock` accepts `status` 100..599 (default 200), `headers` and `body_base64` (at most 1 MiB decoded); these three fields are invalid on other actions.
+- Rules are evaluated in array order and the first match wins. A tab-scoped set also starts capture on that tab; a browser-scoped set (no `tab_id`) applies to any capturing tab. `block` calls CDP `Fetch.failRequest` with `BlockedByClient`; `mock` calls `Fetch.fulfillRequest` with the status, headers and base64 body (when a body is present and no content type is given, `text/plain; charset=utf-8`); `continue` calls `Fetch.continueRequest`. Every paused request is continued even when a CDP call fails, and that failure returns `isError`.
+
+Downloads and uploads:
+
+- `download_list` returns tracked downloads newest first. It exposes metadata and does not return a local filesystem path.
+- `download_wait` resolves when the selected download reaches `complete` or `interrupted`. Its `id` is a string: a non-negative decimal string selects that download; any other string is `BAD_ARGS` with `details` `{"id":"..."}`; a JSON number for `id` is rejected at the schema layer as `BAD_ARGS`.
+- An unknown decimal `id` never returns `NOT_FOUND`; it ends as `TIMEOUT` with `details` `{"waited_ms":...,"id":"..."}` (without `id`, the details carry only `waited_ms`). Without `id`, `download_wait` selects the newest download that is new or started within the 5000 ms before the call, never an older one; an already-complete candidate returns immediately.
+- `upload_file` resolves `target` (an `@eN` reference from that tab's latest snapshot or a CSS selector) through CDP and calls `DOM.setFileInputFiles`, so hidden file inputs work; it then dispatches `input` and `change` events. It pre-checks every local path before setting the files and returns `BAD_ARGS` with `details` `{"path":"..."}` for a missing or unreadable file.
+- The browser may refuse file-URL access when the extension has no file access. A target that is not an `input[type=file]` returns `BAD_ARGS` with `details` `{"reason":"not_a_file_input","tag":"...","input_type":"..."}`.
 
 ## 6. Extension design
 
@@ -209,7 +248,7 @@ Blobs (screenshots, response bodies) live beside the DB under ~/.corvus/blobs/<y
     enabled = true
     export_format = "jsonl"
 
-Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capped at 125000 ms, `browser_eval` gets 30000 ms, and every other tool gets the 60000 ms default; the router clamps every deadline to the 125000 ms ceiling.
+Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capped at 125000 ms, `browser_eval` gets 30000 ms, `download_wait` gets `args.timeout_ms + 5000` ms capped at 125000 ms, and every other tool gets the 60000 ms default; the router clamps every deadline to the 125000 ms ceiling.
 
 ## 11. Build and CI
 

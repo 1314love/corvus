@@ -6,6 +6,7 @@
 //   node mcp_assert.mjs tools    <body-file>
 //   node mcp_assert.mjs call     <body-file> success [<needle>]
 //   node mcp_assert.mjs call     <body-file> error [<ErrorCode>]
+//   node mcp_assert.mjs error-detail <body-file> <ErrorCode> [<needle>...]
 //   node mcp_assert.mjs navigate <body-file> <true|false> <expected-url>
 //   node mcp_assert.mjs snapshot <body-file> <expected-url> [<needle>]
 //   node mcp_assert.mjs result   <body-file> <expected-json> [<needle>]
@@ -40,6 +41,14 @@ const TOOLS = (
     "tab_new",
     "tab_close",
     "tab_switch",
+    "browser_list",
+    "net_capture",
+    "net_log",
+    "net_clear",
+    "net_intercept",
+    "download_list",
+    "download_wait",
+    "upload_file",
   ].join(",")
 )
   .split(",")
@@ -410,6 +419,51 @@ if (mode === "tools") {
     },
     tab_close: { required: ["tab_id"], properties: ["tab_id"] },
     tab_switch: { required: ["tab_id"], properties: ["tab_id"] },
+    browser_list: { required: [], properties: [] },
+    net_capture: {
+      required: ["action"],
+      properties: ["action", "tab_id"],
+      enums: [["action", ["start", "stop", "status"]]],
+    },
+    net_log: {
+      required: [],
+      properties: [
+        "tab_id",
+        "since_seq",
+        "limit",
+        "url_contains",
+        "method",
+        "resource_type",
+        "status_min",
+        "status_max",
+        "include_headers",
+      ],
+      defaults: [["since_seq", 0], ["limit", 100], ["include_headers", false]],
+      ranges: [["limit", 1, 1000]],
+    },
+    net_clear: { required: [], properties: ["tab_id"] },
+    net_intercept: {
+      required: ["action"],
+      properties: ["action", "tab_id", "rules"],
+      enums: [["action", ["set", "clear"]]],
+    },
+    download_list: {
+      required: [],
+      properties: ["limit"],
+      defaults: [["limit", 50]],
+      ranges: [["limit", 1, 200]],
+    },
+    download_wait: {
+      required: [],
+      properties: ["id", "timeout_ms"],
+      defaults: [["timeout_ms", 30000]],
+      ranges: [["timeout_ms", 100, 120000]],
+    },
+    upload_file: {
+      required: ["target", "files"],
+      properties: ["target", "files"],
+      arrays: [["files", 1, 10]],
+    },
   };
   const problems = [];
   for (const tool of tools) {
@@ -419,6 +473,10 @@ if (mode === "tools") {
     const properties =
       schema.properties && typeof schema.properties === "object" ? schema.properties : {};
     const required = Array.isArray(schema.required) ? schema.required : [];
+    const browserId = properties.browser_id;
+    if (!browserId || browserId.type !== "string") {
+      problems.push(tool.name + " missing optional browser_id string");
+    }
     for (const name of shape.properties) {
       if (!(name in properties)) problems.push(tool.name + " missing property " + name);
     }
@@ -445,6 +503,14 @@ if (mode === "tools") {
         if (!actual.includes(value)) problems.push(tool.name + "." + name + " enum missing " + value);
       }
     }
+    for (const [name, minimum, maximum] of shape.arrays ?? []) {
+      const field = properties[name];
+      if (!field || field.type !== "array") {
+        problems.push(tool.name + "." + name + " must be an array");
+      } else if (field.minItems !== minimum || field.maxItems !== maximum) {
+        problems.push(tool.name + "." + name + " items must be " + minimum + ".." + maximum);
+      }
+    }
   }
   if (problems.length > 0) fail("schema shape problems: " + problems.join("; "));
 
@@ -466,7 +532,7 @@ if (mode === "tools") {
       )
       .join(" "),
   );
-  ok("input schemas match the frozen 18-tool argument shapes");
+  ok("input schemas match the frozen 26-tool argument shapes and declare browser_id");
   process.exit(0);
 }
 
@@ -566,6 +632,33 @@ if (mode === "snapshot") {
   process.exit(0);
 }
 
+if (mode === "error-detail") {
+  const code = rest[0];
+  const needles = rest.slice(1);
+  if (!code) fail("usage: error-detail <body-file> <ErrorCode> [<needle>...]");
+  if (message.error) fail("expected a structured tool error, got JSON-RPC error " + JSON.stringify(message.error));
+  const result = message.result;
+  if (!result || result.isError !== true) {
+    fail("tool call did not report isError: " + JSON.stringify(result).slice(0, 300));
+  }
+  if (!Array.isArray(result.content) || result.content.length === 0) {
+    fail("isError result has no content array");
+  }
+  const text = result.content
+    .map((item) => (typeof item?.text === "string" ? item.text : ""))
+    .join("\n");
+  if (!text.includes(code)) {
+    fail("error text does not contain " + JSON.stringify(code) + ": " + text.slice(0, 400));
+  }
+  for (const needle of needles) {
+    if (!text.includes(needle)) {
+      fail("error text does not contain " + JSON.stringify(needle) + ": " + text.slice(0, 400));
+    }
+  }
+  ok("isError=true code=" + code + (needles.length ? " needles=" + JSON.stringify(needles) : ""));
+  process.exit(0);
+}
+
 if (mode === "result") {
   const expected = parseExpectedJson("result", 0);
   const { text, parsed } = structuredToolText(message, "tool result");
@@ -582,4 +675,4 @@ if (mode === "result") {
   process.exit(0);
 }
 
-fail("unknown mode " + JSON.stringify(mode) + " (use protocol, tools, call, navigate, snapshot, result, command or command-mode)");
+fail("unknown mode " + JSON.stringify(mode) + " (use protocol, tools, call, error-detail, navigate, snapshot, result, command or command-mode)");

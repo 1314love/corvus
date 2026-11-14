@@ -7,10 +7,11 @@
 # A stateful mock extension is started when available so positive tool calls
 # exercise the complete daemon -> extension -> daemon path.
 #
-# Coverage: all 18 tools with at least one happy call and one negative per
-# family, navigation loaded/url and immediate-snapshot checks, default argument
-# normalization in recorded envelopes, and a loaded=false navigate that must
-# still be a successful tool call.
+# Coverage: all 26 tools with at least one happy call and one negative per
+# family, browser_id routing (one browser, two browsers, ambiguous, unknown),
+# network capture/log/intercept, downloads, uploads, navigation loaded/url and
+# immediate-snapshot checks, default argument normalization in recorded
+# envelopes, and a loaded=false navigate that must still succeed.
 #
 # Usage:
 #   tests/conformance/run.sh [--no-mock] [--keep-tmp]
@@ -22,7 +23,7 @@
 #   CORVUS_WS_URL      default ws://127.0.0.1:7330
 #   CARGO              cargo binary (default: cargo, then the known Windows path)
 #   EXPECTED_PROTOCOL_VERSION  default 2025-06-18
-#   EXPECTED_TOOLS     comma separated, default the 18 M2 tools
+#   EXPECTED_TOOLS     comma separated, default the 26 M2 tools
 #   KEEP_TMP=1         keep logs even on success
 #
 # Exit codes: 0 all checks passed (skips allowed), 1 one or more checks failed.
@@ -34,7 +35,7 @@ MCP_URL=${CORVUS_MCP_URL:-http://127.0.0.1:7331/mcp}
 WS_URL=${CORVUS_WS_URL:-ws://127.0.0.1:7330}
 HEALTH_URL=${CORVUS_HEALTH_URL:-${MCP_URL%/mcp}/health}
 EXPECTED_PROTOCOL_VERSION=${EXPECTED_PROTOCOL_VERSION:-2025-06-18}
-EXPECTED_TOOLS=${EXPECTED_TOOLS:-browser_navigate,page_snapshot,browser_click,browser_type,page_text,page_html,page_find,browser_hover,browser_press,browser_scroll,browser_select,browser_eval,browser_wait,browser_history,tab_list,tab_new,tab_close,tab_switch}
+EXPECTED_TOOLS=${EXPECTED_TOOLS:-browser_navigate,page_snapshot,browser_click,browser_type,page_text,page_html,page_find,browser_hover,browser_press,browser_scroll,browser_select,browser_eval,browser_wait,browser_history,tab_list,tab_new,tab_close,tab_switch,browser_list,net_capture,net_log,net_clear,net_intercept,download_list,download_wait,upload_file}
 export EXPECTED_PROTOCOL_VERSION EXPECTED_TOOLS
 
 USE_MOCK=1
@@ -71,6 +72,7 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/corvus-conformance.XXXXXX") || {
 }
 DAEMON_PID=""
 MOCK_PID=""
+MOCK_B_PID=""
 FAILED=0
 PASSED=0
 SKIPPED=0
@@ -102,6 +104,7 @@ stop_pid() {
 cleanup() {
   local code=$?
   trap - EXIT INT TERM
+  stop_pid "$MOCK_B_PID"
   stop_pid "$MOCK_PID"
   stop_pid "$DAEMON_PID"
   if [ "$FAILED" -gt 0 ] || [ "$KEEP_TMP" = "1" ]; then
@@ -283,11 +286,41 @@ start_mock() { # log out browser-id extra args...
   return 1
 }
 
+start_mock_b() { # log out browser-id extra args...
+  local log="$1" out="$2" browser="$3"
+  shift 3
+  "$MOCK_BIN" --url "$WS_URL" --browser-id "$browser" --out "$out" "$@" >"$log" 2>&1 &
+  MOCK_B_PID=$!
+  local i
+  for i in $(seq 1 100); do
+    if grep -q '^READY ' "$log" 2>/dev/null; then
+      return 0
+    fi
+    if ! kill -0 "$MOCK_B_PID" 2>/dev/null; then
+      return 1
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
 wait_for_no_browsers() {
   local i
   for i in $(seq 1 50); do
     curl -s -o "$TMP/health-wait.json" --max-time 2 "$HEALTH_URL" 2>/dev/null || true
     if node -e 'const fs=require("fs"); try { const h=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.exit(Array.isArray(h.browsers)&&h.browsers.length===0?0:1); } catch { process.exit(1); }' "$TMP/health-wait.json" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_for_browser_count() { # expected-count
+  local expected="$1" i
+  for i in $(seq 1 50); do
+    curl -s -o "$TMP/health-wait.json" --max-time 2 "$HEALTH_URL" 2>/dev/null || true
+    if node -e 'const fs=require("fs"); try { const h=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.exit(Array.isArray(h.browsers)&&h.browsers.length===Number(process.argv[2])?0:1); } catch { process.exit(1); }' "$TMP/health-wait.json" "$expected" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.1
@@ -398,13 +431,28 @@ expect_tool_error() { # label tool arguments-json error-code prefix
   fi
 }
 
-expect_command_any() { # label tool expected-args-json
-  local label="$1" tool="$2" expected="$3"
+expect_command_any() { # label tool expected-args-json [jsonl-file]
+  local label="$1" tool="$2" expected="$3" file="${4:-$TMP/mock-envelopes.jsonl}"
   local detail=""
-  if detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" command-any "$TMP/mock-envelopes.jsonl" "$tool" "$expected" 2>&1); then
+  if detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" command-any "$file" "$tool" "$expected" 2>&1); then
     record PASS "$label" "$detail"
   else
     record FAIL "$label" "$detail"
+  fi
+}
+
+expect_error_detail() { # label tool arguments-json error-code prefix needle...
+  local label="$1" tool="$2" arguments="$3" code="$4" prefix="$5"
+  shift 5
+  CALL_ID=$((CALL_ID + 1))
+  local payload status detail
+  payload=$(printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":%s}}' \
+    "$CALL_ID" "$tool" "$arguments")
+  status=$(mcp_post "$payload" "$TMP/$prefix.json" "$TMP/$prefix.headers" "$SESSION")
+  if [ "$status" = "200" ] && detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" error-detail "$TMP/$prefix.json" "$code" "$@" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "HTTP $status ${detail:-$(head -c 200 "$TMP/$prefix.json" 2>/dev/null)}"
   fi
 }
 
@@ -436,7 +484,7 @@ if [ "$LIST_STATUS" != "200" ]; then
 else
   if OUT=$(node "$ROOT/tests/conformance/mcp_assert.mjs" tools "$TMP/tools.json" 2>&1); then
     NAME_LINE=$(printf '%s\n' "$OUT" | sed -n '1p')
-    record PASS "tools/list exactly 18 M2 tools" "$NAME_LINE"
+    record PASS "tools/list exactly 26 M2 tools" "$NAME_LINE"
     record PASS "tools/list annotation hints" "$(printf '%s\n' "$OUT" | sed -n '2p')"
     record PASS "tools/list input schema shapes" "$(printf '%s\n' "$OUT" | sed -n '3p')"
   else
@@ -460,6 +508,55 @@ else
   else
     record FAIL "tools/call page_snapshot (no extension path)" "$OUT"
   fi
+fi
+
+# --- M2b browser registry and routing ---------------------------------------
+
+if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ]; then
+  expect_result "browser_list shows one browser" browser_list '{}' \
+    '{"browsers":[{"browser_id":"mock:conformance","profile":"default","version":"0.1.0","capabilities":["dom","scripting"]}]}' "browser-list-one"
+else
+  record SKIP "browser_list shows one browser" "no mock extension"
+fi
+
+MOCK_B_READY=0
+if [ "$USE_MOCK" = "1" ] && [ -n "$MOCK_BIN" ]; then
+  if start_mock_b "$TMP/mock-b.log" "$TMP/mock-b-envelopes.jsonl" "mock:b" --exit-after 100; then
+    MOCK_B_READY=1
+    record PASS "second mock extension handshake" "$(grep -m1 '^READY ' "$TMP/mock-b.log")"
+  else
+    record FAIL "second mock extension handshake" "see $TMP/mock-b.log"
+  fi
+else
+  record SKIP "second mock extension handshake" "no mock extension"
+fi
+
+if [ "$MOCK_B_READY" = "1" ]; then
+  expect_result "browser_list shows two browsers" browser_list '{}' \
+    '{"browsers":[{"browser_id":"mock:conformance"},{"browser_id":"mock:b"}]}' "browser-list-two"
+  expect_error_detail "omitted browser_id with two browsers is BAD_ARGS" page_text '{}' \
+    BAD_ARGS "route-ambiguous" "multiple_browsers" "mock:conformance" "mock:b"
+  expect_result "browser_id routes page_text to mock-b" page_text '{"browser_id":"mock:b"}' \
+    '{"url":"about:blank","truncated":false}' "route-b"
+  expect_command_any "routed page_text reaches mock-b" page_text '{}' "$TMP/mock-b-envelopes.jsonl"
+  expect_error_detail "unknown browser_id is TRANSPORT_DOWN" page_text '{"browser_id":"mock-missing"}' \
+    TRANSPORT_DOWN "route-unknown" "mock-missing"
+  stop_pid "$MOCK_B_PID"
+  MOCK_B_PID=""
+  if wait_for_browser_count 1; then
+    record PASS "second mock extension unregisters" "registry back to one browser"
+  else
+    record FAIL "second mock extension unregisters" "registry did not return to one browser"
+  fi
+else
+  record SKIP "browser_list shows two browsers" "second mock extension unavailable"
+  record SKIP "omitted browser_id with two browsers is BAD_ARGS" "second mock extension unavailable"
+  record SKIP "browser_id routes page_text to mock-b" "second mock extension unavailable"
+  record SKIP "routed page_text reaches mock-b" "second mock extension unavailable"
+  record SKIP "unknown browser_id is TRANSPORT_DOWN" "second mock extension unavailable"
+  stop_pid "$MOCK_B_PID"
+  MOCK_B_PID=""
+  wait_for_browser_count 1 >/dev/null 2>&1 || true
 fi
 
 if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ]; then
@@ -519,6 +616,42 @@ if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ]; then
     '{"closed":true,"tab_id":"tab-2"}' "tab-close"
   expect_result "tab_list returns to one tab" tab_list '{}' \
     '{"tabs":[{"tab_id":"tab-1","active":true,"url":"'$PAGE_A'"}]}' "tab-list-3"
+  expect_result "net_capture starts capture" net_capture '{"action":"start"}' \
+    '{"capturing":true,"tab_id":"tab-1","capacity":2000}' "net-capture-start"
+  expect_result "net_capture status reports entries" net_capture '{"action":"status"}' \
+    '{"capturing":true,"tab_id":"tab-1","entries":4}' "net-capture-status"
+  expect_result "net_log filters by url substring" net_log '{"url_contains":"/api/","limit":10}' \
+    '{"entries":[{"seq":1,"url":"http://127.0.0.1:8808/api/slow","status":200,"mime":"application/json","duration_ms":612},{"seq":2,"url":"http://127.0.0.1:8808/api/json","status":200,"mime":"application/json","duration_ms":14},{"seq":4,"url":"http://127.0.0.1:8808/api/json","method":"POST","status":201,"mime":"application/json","duration_ms":9}],"next_seq":4,"capturing":true}' "net-log-url"
+  expect_result "net_log filters by method" net_log '{"method":"POST"}' \
+    '{"entries":[{"seq":4,"method":"POST","url":"http://127.0.0.1:8808/api/json"}],"next_seq":4}' "net-log-method"
+  expect_result "net_log includes headers on request" net_log '{"url_contains":"/api/slow","include_headers":true}' \
+    '{"entries":[{"seq":1,"request_headers":{"accept":"application/json"},"response_headers":{"content-type":"application/json"}}],"next_seq":1}' "net-log-headers"
+  expect_result "net_clear reports cleared entries" net_clear '{}' \
+    '{"cleared":4}' "net-clear"
+  expect_result "net_log is empty after clear" net_log '{}' \
+    '{"entries":[],"next_seq":0,"capturing":true}' "net-log-empty"
+  expect_result "net_capture stops capture" net_capture '{"action":"stop"}' \
+    '{"capturing":false,"tab_id":"tab-1","entries":0}' "net-capture-stop"
+  expect_result "net_intercept set applies browser rules" net_intercept '{"action":"set","rules":[{"id":"1","action":"block","url_regex":"/api/blob"}]}' \
+    '{"ok":true,"scope":"browser","rules":[{"id":"1","action":"block","url_regex":"/api/blob"}],"applied":true}' "intercept-set"
+  expect_result "net_intercept clear removes rules" net_intercept '{"action":"clear"}' \
+    '{"ok":true,"scope":"browser","rules":[],"applied":true}' "intercept-clear"
+  expect_error_detail "net_intercept rejects invalid regex" net_intercept '{"action":"set","rules":[{"id":"7","action":"block","url_regex":"["}]}' \
+    BAD_ARGS "intercept-bad-regex" "7"
+  expect_result "download_list reports newest first" download_list '{}' \
+    '{"downloads":[{"id":2,"filename":"corvus-report.txt","state":"complete","bytes_received":24,"total_bytes":24,"danger":"safe","exists":true},{"id":1,"filename":"corvus-notes.txt","state":"complete","bytes_received":32,"total_bytes":32,"danger":"safe","exists":true}]}' "download-list"
+  expect_result "download_list honours limit" download_list '{"limit":1}' \
+    '{"downloads":[{"id":2,"filename":"corvus-report.txt"}]}' "download-list-limit"
+  expect_result "download_wait by id" download_wait '{"id":"1"}' \
+    '{"id":1,"state":"complete","filename":"corvus-notes.txt","url":"http://127.0.0.1:8808/download/notes.txt","bytes_received":32,"total_bytes":32}' "download-wait-id"
+  expect_result "download_wait newest without id" download_wait '{}' \
+    '{"id":2,"state":"complete","filename":"corvus-report.txt"}' "download-wait-latest"
+  expect_result "upload_file reports target and input" upload_file '{"target":"@e1","files":["C:/Windows/win.ini"]}' \
+    '{"uploaded":true,"files":["C:/Windows/win.ini"],"target":{"ref":"@e1","tag":"input","text":""},"input":{"accept":".txt","multiple":false}}' "upload-file"
+  expect_error_detail "upload_file rejects non-file target" upload_file '{"target":"#not-file","files":["C:/Windows/win.ini"]}' \
+    BAD_ARGS "upload-not-file" "not_a_file_input"
+  expect_error_detail "upload_file rejects missing path" upload_file '{"target":"@e1","files":["C:/missing/corvus.txt"]}' \
+    BAD_ARGS "upload-missing" "C:/missing/corvus.txt"
   expect_result "browser_type captures text" browser_type '{"target":"@e1","text":"hello corvus"}' \
     '{"typed":true,"ref":"@e1","value":"hello corvus","value_length":12,"url":"'$PAGE_A'"}' "type-m2"
   expect_result "browser_click dispatches pointer events" browser_click '{"target":"@e2"}' \
@@ -578,10 +711,22 @@ expect_bad_args "tab_new rejects active yes" '{"jsonrpc":"2.0","id":22,"method":
 expect_bad_args "tab_close rejects missing tab_id" '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"tab_close","arguments":{}}}' "bad-tab-close"
 expect_bad_args "tab_switch rejects missing tab_id" '{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"tab_switch","arguments":{}}}' "bad-tab-switch"
 expect_bad_args "tab_switch rejects numeric tab_id" '{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"tab_switch","arguments":{"tab_id":999}}}' "bad-tab-switch-numeric"
+expect_bad_args "page_text rejects numeric browser_id" '{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"page_text","arguments":{"browser_id":5}}}' "bad-browser-id"
+expect_bad_args "net_capture rejects unknown action" '{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"net_capture","arguments":{"action":"reload"}}}' "bad-net-capture"
+expect_bad_args "net_log rejects limit 0" '{"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"net_log","arguments":{"limit":0}}}' "bad-net-log"
+expect_bad_args "net_intercept set requires rules" '{"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"net_intercept","arguments":{"action":"set"}}}' "bad-intercept"
+expect_bad_args "download_list rejects limit 201" '{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"download_list","arguments":{"limit":201}}}' "bad-download-list"
+expect_bad_args "download_wait rejects timeout 99" '{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"download_wait","arguments":{"timeout_ms":99}}}' "bad-download-wait"
+expect_error_detail "download_wait rejects non-decimal id" download_wait '{"id":"no-such-download"}' \
+  BAD_ARGS "download-bad-id" "no-such-download"
+expect_error_detail "download_wait times out for unknown decimal id" download_wait '{"id":"999999999","timeout_ms":100}' \
+  TIMEOUT "download-unknown-id" "999999999"
+expect_bad_args "upload_file requires target" '{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"upload_file","arguments":{"files":["C:/Windows/win.ini"]}}}' "bad-upload-target"
+expect_bad_args "upload_file requires files" '{"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"upload_file","arguments":{"target":"@e1","files":[]}}}' "bad-upload-files"
 
 if [ -f "$TMP/mock-envelopes.jsonl" ]; then
   RECORDED=$(wc -l < "$TMP/mock-envelopes.jsonl" | tr -d ' ')
-  if [ "$RECORDED" -ge 18 ]; then
+  if [ "$RECORDED" -ge 26 ]; then
     record PASS "envelope recording" "$RECORDED received envelopes in mock-envelopes.jsonl"
   else
     record FAIL "envelope recording" "only $RECORDED envelopes in mock-envelopes.jsonl"

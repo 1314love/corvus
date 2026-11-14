@@ -52,17 +52,35 @@ impl Default for DaemonConfig {
 /// Executes MCP tool calls by routing them to the browser.
 pub struct RouterBackend {
     router: Arc<Router>,
+    registry: Arc<Registry>,
 }
 
 impl RouterBackend {
-    /// Build a backend around a router.
-    pub fn new(router: Arc<Router>) -> Self {
-        Self { router }
+    /// Build a backend around a router and the live browser registry.
+    pub fn new(router: Arc<Router>, registry: Arc<Registry>) -> Self {
+        Self { router, registry }
     }
 }
 
 impl ToolBackend for RouterBackend {
     fn call(&self, call: ToolCall) -> BackendFuture {
+        if call.name == "browser_list" {
+            let browsers: Vec<Value> = self
+                .registry
+                .snapshot()
+                .into_iter()
+                .map(|info| {
+                    json!({
+                        "browser_id": info.id,
+                        "profile": info.profile,
+                        "version": info.version,
+                        "capabilities": info.capabilities,
+                        "connected_at_ms": info.connected_at_ms,
+                    })
+                })
+                .collect();
+            return Box::pin(async move { Ok(json!({ "browsers": browsers })) });
+        }
         let router = Arc::clone(&self.router);
         Box::pin(async move {
             let trace_id = ids::next_id("trace");
@@ -104,7 +122,10 @@ impl Daemon {
             shutdown_receiver.clone(),
         );
 
-        let backend: Arc<dyn ToolBackend> = Arc::new(RouterBackend::new(Arc::clone(&router)));
+        let backend: Arc<dyn ToolBackend> = Arc::new(RouterBackend::new(
+            Arc::clone(&router),
+            Arc::clone(&registry),
+        ));
         let http_addr_slot = Arc::new(std::sync::OnceLock::<SocketAddr>::new());
         let health_registry = Arc::clone(&registry);
         let health_http_addr = Arc::clone(&http_addr_slot);

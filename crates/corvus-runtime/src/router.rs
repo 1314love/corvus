@@ -202,12 +202,14 @@ impl Router {
     }
 
     /// Route one command and wait for the browser answer.
-    pub async fn dispatch(&self, request: CommandRequest) -> CommandResult {
+    pub async fn dispatch(&self, mut request: CommandRequest) -> CommandResult {
         let spec = spec::lookup(&request.tool).ok_or_else(|| {
             ErrorBody::new(ErrorCode::BadArgs, format!("unknown tool {}", request.tool))
                 .with_details(json!({ "tool": request.tool, "known": spec::names() }))
         })?;
-        let connection = self.resolve_browser(request.browser.as_deref())?;
+        let argument_browser = take_browser_id(&mut request.args);
+        let browser = request.browser.take().or(argument_browser);
+        let connection = self.resolve_browser(browser.as_deref())?;
         if let Some(required) = spec.capability {
             if !connection.supports(required) {
                 return Err(ErrorBody::new(
@@ -242,7 +244,7 @@ impl Router {
                     ErrorCode::TransportDown,
                     format!("browser {id} is not connected"),
                 )
-                .with_details(json!({ "browser": id, "connected": self.registry_ids() }))
+                .with_details(json!({ "browser_id": id }))
             })?;
             if !connection.is_alive() {
                 return Err(ErrorBody::new(
@@ -260,10 +262,13 @@ impl Router {
             )),
             1 => self.resolve_browser(connected.first().map(String::as_str)),
             _ => Err(ErrorBody::new(
-                ErrorCode::TransportDown,
-                "several browsers are connected; name the one to use",
+                ErrorCode::BadArgs,
+                "several browsers are connected; pass browser_id to choose one",
             )
-            .with_details(json!({ "connected": connected }))),
+            .with_details(json!({
+                "reason": "multiple_browsers",
+                "browser_ids": connected,
+            }))),
         }
     }
 
@@ -480,6 +485,11 @@ impl Router {
             tracing::debug!(error = %error, "could not deliver the cancel event");
         }
     }
+}
+
+fn take_browser_id(args: &mut Value) -> Option<String> {
+    let value = args.as_object_mut()?.remove("browser_id")?;
+    value.as_str().map(str::to_string)
 }
 
 fn cacheable(result: &CommandResult) -> bool {

@@ -1226,6 +1226,90 @@
     throw badArgs('args.target is required; args.ref and args.selector are accepted aliases', { action: action });
   }
 
+  // Returns a selector that resolves back to this exact element. A unique id
+  // is the shortest form; otherwise a tag and nth-of-type chain is built.
+  function escapeCssIdentifier(value) {
+    if (typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function') return CSS.escape(String(value));
+    return String(value);
+  }
+
+  function cssSelectorFor(element) {
+    if (!element || element.nodeType !== 1) return null;
+    const doc = element.ownerDocument || document;
+
+    function isUnique(selector) {
+      try {
+        const matches = doc.querySelectorAll(selector);
+        return matches.length === 1 && matches[0] === element;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    if (element.id) {
+      const idSelector = '#' + escapeCssIdentifier(element.id);
+      if (isUnique(idSelector)) return idSelector;
+    }
+
+    const parts = [];
+    let node = element;
+    while (node && node.nodeType === 1) {
+      let part = node.tagName ? node.tagName.toLowerCase() : '';
+      if (!part) return null;
+      const parent = node.parentElement;
+      if (parent) {
+        let index = 1;
+        let sibling = node;
+        while ((sibling = sibling.previousElementSibling)) {
+          if (sibling.tagName === node.tagName) index += 1;
+        }
+        let sameTagCount = 0;
+        const children = parent.children;
+        for (let i = 0; i < children.length; i += 1) {
+          if (children[i].tagName === node.tagName) sameTagCount += 1;
+        }
+        if (sameTagCount > 1) part += ':nth-of-type(' + index + ')';
+      }
+      parts.unshift(part);
+      if (node === doc.documentElement) break;
+      node = parent;
+    }
+
+    const selector = parts.join(' > ');
+    if (!selector) return null;
+    return isUnique(selector) ? selector : null;
+  }
+
+  // Internal helper for upload_file. Hidden file inputs are valid targets, so
+  // this intentionally does not run the visibility checks used by click/type.
+  function uploadTarget(message) {
+    const target = message && typeof message.target === 'string' ? message.target.trim() : '';
+    if (!target) throw badArgs('args.target is required; use an @eN reference or a CSS selector');
+    const resolved = resolveTarget({ target: target }, 'upload_file');
+    const element = resolved.element;
+    const tag = element.tagName ? element.tagName.toLowerCase() : '';
+    const inputType = tag === 'input' && typeof element.type === 'string' ? element.type.toLowerCase() : '';
+    if (tag !== 'input' || inputType !== 'file') {
+      throw badArgs('the target is not a file input', { reason: 'not_a_file_input', tag: tag, input_type: inputType || null });
+    }
+    const selector = cssSelectorFor(element);
+    if (!selector) throw notFound('the file input has no stable selector', { tag: 'input' });
+    let text = '';
+    try {
+      text = truncate(collapse(accessibleName(element) || ''), MAX_NAME);
+    } catch (error) {
+      text = '';
+    }
+    return {
+      selector: selector,
+      ref: resolved.ref || null,
+      tag: 'input',
+      text: text,
+      accept: typeof element.accept === 'string' && element.accept ? element.accept : null,
+      multiple: element.multiple === true,
+    };
+  }
+
   function assertInteractable(element, action) {
     if (!isRendered(element)) {
       throw notInteractable('the element is not visible', { action: action, element: describeElement(element) });
@@ -1633,6 +1717,15 @@
     if (message.type === 'corvus.probe') {
       try {
         sendResponse(waitProbe(message));
+      } catch (error) {
+        sendResponse({ ok: false, error: toPayload(error) });
+      }
+      return false;
+    }
+
+    if (message.type === 'corvus.upload_target') {
+      try {
+        sendResponse({ ok: true, result: uploadTarget(message) });
       } catch (error) {
         sendResponse({ ok: false, error: toPayload(error) });
       }

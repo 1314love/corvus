@@ -186,6 +186,12 @@ struct MockState {
     next_tab: u64,
     last_navigate_url: Option<String>,
     last_navigate_title: Option<String>,
+    net_entries: Vec<Value>,
+    capturing: bool,
+    capture_tab: Option<String>,
+    capture_started_at: Option<u64>,
+    intercept_rules: Option<Vec<Value>>,
+    downloads: Vec<Value>,
 }
 
 impl Default for MockState {
@@ -196,6 +202,12 @@ impl Default for MockState {
             next_tab: 2,
             last_navigate_url: None,
             last_navigate_title: None,
+            net_entries: Vec::new(),
+            capturing: false,
+            capture_tab: None,
+            capture_started_at: None,
+            intercept_rules: None,
+            downloads: Vec::new(),
         }
     }
 }
@@ -686,6 +698,13 @@ fn stateful_answer(tool: &str, args: &Value, state: &mut MockState) -> Option<Mo
         "tab_new" => tab_new_answer(args, state),
         "tab_close" => tab_close_answer(args, state),
         "tab_switch" => tab_switch_answer(args, state),
+        "net_capture" => net_capture_answer(args, state),
+        "net_log" => net_log_answer(args, state),
+        "net_clear" => net_clear_answer(args, state),
+        "net_intercept" => net_intercept_answer(args, state),
+        "download_list" => download_list_answer(args, state),
+        "download_wait" => download_wait_answer(args, state),
+        "upload_file" => upload_file_answer(args, state),
         _ => return None,
     };
     Some(outcome)
@@ -1132,6 +1151,460 @@ fn tab_switch_answer(args: &Value, state: &mut MockState) -> MockResult<Value> {
         "url": tab.url.clone(),
         "title": tab.title.clone(),
         "active": true,
+    }))
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn seed_net_entries(tab_id: &str) -> Vec<Value> {
+    vec![
+        json!({
+            "seq": 1,
+            "ts": 1763139600100u64,
+            "tab_id": tab_id,
+            "request_id": "req-1",
+            "method": "GET",
+            "url": "http://127.0.0.1:8808/api/slow",
+            "status": 200,
+            "mime": "application/json",
+            "resource_type": "XHR",
+            "from_cache": false,
+            "duration_ms": 612,
+            "error": null,
+            "intercepted": null,
+            "request_headers": {"accept": "application/json"},
+            "response_headers": {"content-type": "application/json"}
+        }),
+        json!({
+            "seq": 2,
+            "ts": 1763139600200u64,
+            "tab_id": tab_id,
+            "request_id": "req-2",
+            "method": "GET",
+            "url": "http://127.0.0.1:8808/api/json",
+            "status": 200,
+            "mime": "application/json",
+            "resource_type": "Fetch",
+            "from_cache": false,
+            "duration_ms": 14,
+            "error": null,
+            "intercepted": null,
+            "request_headers": {"accept": "application/json"},
+            "response_headers": {"content-type": "application/json"}
+        }),
+        json!({
+            "seq": 3,
+            "ts": 1763139600300u64,
+            "tab_id": tab_id,
+            "request_id": "req-3",
+            "method": "GET",
+            "url": "https://cdn.example.test/app.js",
+            "status": 404,
+            "mime": "text/javascript",
+            "resource_type": "Script",
+            "from_cache": false,
+            "duration_ms": 37,
+            "error": null,
+            "intercepted": null,
+            "request_headers": {"accept": "*/*"},
+            "response_headers": {"content-type": "text/javascript"}
+        }),
+        json!({
+            "seq": 4,
+            "ts": 1763139600400u64,
+            "tab_id": tab_id,
+            "request_id": "req-4",
+            "method": "POST",
+            "url": "http://127.0.0.1:8808/api/json",
+            "status": 201,
+            "mime": "application/json",
+            "resource_type": "Fetch",
+            "from_cache": false,
+            "duration_ms": 9,
+            "error": null,
+            "intercepted": null,
+            "request_headers": {"content-type": "application/json"},
+            "response_headers": {"content-type": "application/json"}
+        }),
+    ]
+}
+
+fn ensure_downloads(state: &mut MockState) {
+    if !state.downloads.is_empty() {
+        return;
+    }
+    state.downloads = vec![
+        json!({
+            "id": 2,
+            "filename": "corvus-report.txt",
+            "url": "http://127.0.0.1:8808/download/report.txt",
+            "state": "complete",
+            "bytes_received": 24,
+            "total_bytes": 24,
+            "danger": "safe",
+            "exists": true,
+            "started_at": 1763139602000u64,
+            "tab_id": "tab-1"
+        }),
+        json!({
+            "id": 1,
+            "filename": "corvus-notes.txt",
+            "url": "http://127.0.0.1:8808/download/notes.txt",
+            "state": "complete",
+            "bytes_received": 32,
+            "total_bytes": 32,
+            "danger": "safe",
+            "exists": true,
+            "started_at": 1763139601000u64,
+            "tab_id": "tab-1"
+        }),
+    ];
+}
+
+fn net_capture_answer(args: &Value, state: &mut MockState) -> MockResult<Value> {
+    let action = require_string(args, "action")?;
+    let index = resolve_tab(args, state)?;
+    let tab_id = state.tabs[index].id.clone();
+    match action.as_str() {
+        "start" => {
+            let same_tab = state.capture_tab.as_deref() == Some(tab_id.as_str());
+            state.capturing = true;
+            state.capture_tab = Some(tab_id.clone());
+            if !same_tab || state.net_entries.is_empty() {
+                state.net_entries = seed_net_entries(&tab_id);
+            }
+            if state.capture_started_at.is_none() {
+                state.capture_started_at = Some(now_millis());
+            }
+            Ok(json!({
+                "capturing": true,
+                "tab_id": tab_id,
+                "started_at": state.capture_started_at,
+                "capacity": 2000,
+            }))
+        }
+        "stop" => {
+            state.capturing = false;
+            Ok(json!({
+                "capturing": false,
+                "tab_id": tab_id,
+                "entries": state.net_entries.len(),
+            }))
+        }
+        "status" => {
+            let mut body = json!({
+                "capturing": state.capturing,
+                "tab_id": tab_id,
+                "entries": state.net_entries.len(),
+            });
+            if let (Some(started_at), Some(object)) =
+                (state.capture_started_at, body.as_object_mut())
+            {
+                object.insert("started_at".to_string(), json!(started_at));
+            }
+            Ok(body)
+        }
+        _ => Err(MockError::new(
+            "BAD_ARGS",
+            "mock net_capture action is not supported",
+        )),
+    }
+}
+
+fn net_log_answer(args: &Value, state: &mut MockState) -> MockResult<Value> {
+    let since_seq = optional_integer(args, "since_seq", 0)?;
+    let limit = optional_integer(args, "limit", 100)? as usize;
+    let include_headers = optional_bool(args, "include_headers", false)?;
+    let tab_filter = optional_string(args, "tab_id");
+    let url_contains = optional_string(args, "url_contains");
+    let method = optional_string(args, "method");
+    let resource_type = optional_string(args, "resource_type");
+    let status_min = optional_integer(args, "status_min", 0)?;
+    let status_max = optional_integer(args, "status_max", u64::MAX)?;
+
+    let mut entries: Vec<Value> = state
+        .net_entries
+        .iter()
+        .filter(|entry| entry.get("seq").and_then(Value::as_u64).unwrap_or(0) > since_seq)
+        .filter(|entry| {
+            tab_filter
+                .as_deref()
+                .is_none_or(|tab| entry.get("tab_id").and_then(Value::as_str) == Some(tab))
+        })
+        .filter(|entry| {
+            url_contains.as_deref().is_none_or(|needle| {
+                entry
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|url| url.contains(needle))
+            })
+        })
+        .filter(|entry| {
+            method
+                .as_deref()
+                .is_none_or(|value| entry.get("method").and_then(Value::as_str) == Some(value))
+        })
+        .filter(|entry| {
+            resource_type.as_deref().is_none_or(|value| {
+                entry.get("resource_type").and_then(Value::as_str) == Some(value)
+            })
+        })
+        .filter(|entry| {
+            entry
+                .get("status")
+                .and_then(Value::as_u64)
+                .is_none_or(|status| status >= status_min && status <= status_max)
+        })
+        .cloned()
+        .collect();
+    entries.sort_by_key(|entry| entry.get("seq").and_then(Value::as_u64).unwrap_or(0));
+    entries.truncate(limit);
+    if !include_headers {
+        for entry in &mut entries {
+            if let Some(object) = entry.as_object_mut() {
+                object.remove("request_headers");
+                object.remove("response_headers");
+            }
+        }
+    }
+    let next_seq = entries
+        .last()
+        .and_then(|entry| entry.get("seq").and_then(Value::as_u64))
+        .unwrap_or(since_seq);
+    Ok(json!({
+        "entries": entries,
+        "next_seq": next_seq,
+        "capturing": state.capturing,
+    }))
+}
+
+fn net_clear_answer(_args: &Value, state: &mut MockState) -> MockResult<Value> {
+    let cleared = state.net_entries.len();
+    state.net_entries.clear();
+    Ok(json!({"cleared": cleared}))
+}
+
+fn valid_regex(pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return false;
+    }
+    let mut escaped = false;
+    let mut class_depth = 0i32;
+    let mut paren_depth = 0i32;
+    for ch in pattern.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '[' => class_depth += 1,
+            ']' => {
+                if class_depth == 0 {
+                    return false;
+                }
+                class_depth -= 1;
+            }
+            '(' => {
+                if class_depth == 0 {
+                    paren_depth += 1;
+                }
+            }
+            ')' if class_depth == 0 && paren_depth == 0 => return false,
+            ')' if class_depth == 0 => paren_depth -= 1,
+            ')' => {}
+            _ => {}
+        }
+    }
+    !escaped && class_depth == 0 && paren_depth == 0
+}
+
+fn net_intercept_answer(args: &Value, state: &mut MockState) -> MockResult<Value> {
+    let action = require_string(args, "action")?;
+    let tab_id = optional_string(args, "tab_id");
+    if action == "clear" {
+        state.intercept_rules = None;
+        let mut body = json!({
+            "ok": true,
+            "scope": if tab_id.is_some() { "tab" } else { "browser" },
+            "rules": [],
+            "applied": true,
+        });
+        if let (Some(tab_id), Some(object)) = (tab_id, body.as_object_mut()) {
+            object.insert("tab_id".to_string(), json!(tab_id));
+        }
+        return Ok(body);
+    }
+    if action != "set" {
+        return Err(MockError::new(
+            "BAD_ARGS",
+            "mock net_intercept action is not supported",
+        ));
+    }
+    let rules = args
+        .get("rules")
+        .and_then(Value::as_array)
+        .ok_or_else(|| MockError::new("BAD_ARGS", "mock net_intercept requires rules"))?;
+    if rules.is_empty() || rules.len() > 50 {
+        return Err(MockError::new(
+            "BAD_ARGS",
+            "mock net_intercept rule count is out of range",
+        ));
+    }
+    let mut ids = std::collections::HashSet::new();
+    for rule in rules {
+        let id = rule
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && id.len() <= 64)
+            .ok_or_else(|| {
+                MockError::new("BAD_ARGS", "mock net_intercept rule needs a string id")
+            })?;
+        if !ids.insert(id.to_string()) {
+            return Err(
+                MockError::new("BAD_ARGS", "mock net_intercept rule ids must be unique")
+                    .with_details(json!({"rule_id": id})),
+            );
+        }
+        let pattern = rule
+            .get("url_regex")
+            .and_then(Value::as_str)
+            .ok_or_else(|| MockError::new("BAD_ARGS", "mock net_intercept rule needs url_regex"))?;
+        if !valid_regex(pattern) {
+            return Err(MockError::new(
+                "BAD_ARGS",
+                "mock net_intercept rule has an invalid url_regex",
+            )
+            .with_details(json!({"rule_id": id})));
+        }
+    }
+    state.intercept_rules = Some(rules.clone());
+    if let Some(tab_id) = &tab_id {
+        state.capturing = true;
+        state.capture_tab = Some(tab_id.clone());
+        if state.capture_started_at.is_none() {
+            state.capture_started_at = Some(now_millis());
+        }
+    }
+    let mut body = json!({
+        "ok": true,
+        "scope": if tab_id.is_some() { "tab" } else { "browser" },
+        "rules": rules,
+        "applied": true,
+    });
+    if let (Some(tab_id), Some(object)) = (tab_id, body.as_object_mut()) {
+        object.insert("tab_id".to_string(), json!(tab_id));
+    }
+    Ok(body)
+}
+
+fn download_list_answer(args: &Value, state: &mut MockState) -> MockResult<Value> {
+    ensure_downloads(state);
+    let limit = optional_integer(args, "limit", 50)? as usize;
+    let mut downloads = state.downloads.clone();
+    downloads.sort_by_key(|download| {
+        std::cmp::Reverse(
+            download
+                .get("started_at")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        )
+    });
+    downloads.truncate(limit);
+    Ok(json!({"downloads": downloads}))
+}
+
+fn download_wait_answer(args: &Value, state: &mut MockState) -> MockResult<Value> {
+    ensure_downloads(state);
+    let selected = if let Some(id) = optional_string(args, "id") {
+        let wanted = id.parse::<u64>().map_err(|_| {
+            MockError::new(
+                "BAD_ARGS",
+                format!("download id {id} must be a decimal string"),
+            )
+            .with_details(json!({"id": id.clone()}))
+        })?;
+        state
+            .downloads
+            .iter()
+            .find(|download| download.get("id").and_then(Value::as_u64) == Some(wanted))
+            .cloned()
+            .ok_or_else(|| {
+                MockError::new(
+                    "TIMEOUT",
+                    format!("download {id} did not finish within the wait budget"),
+                )
+                .with_details(json!({"waited_ms": 0, "id": id.clone()}))
+            })?
+    } else {
+        state
+            .downloads
+            .iter()
+            .max_by_key(|download| {
+                download
+                    .get("started_at")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            })
+            .cloned()
+            .ok_or_else(|| MockError::new("NOT_FOUND", "no downloads"))?
+    };
+    Ok(json!({
+        "id": selected.get("id").cloned().unwrap_or(Value::Null),
+        "state": selected.get("state").cloned().unwrap_or(Value::Null),
+        "filename": selected.get("filename").cloned().unwrap_or(Value::Null),
+        "url": selected.get("url").cloned().unwrap_or(Value::Null),
+        "bytes_received": selected.get("bytes_received").cloned().unwrap_or(Value::Null),
+        "total_bytes": selected.get("total_bytes").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+fn upload_file_answer(args: &Value, state: &mut MockState) -> MockResult<Value> {
+    let target = require_string(args, "target")?;
+    let files = args
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| MockError::new("BAD_ARGS", "mock upload_file requires files"))?;
+    if files.is_empty() || files.len() > 10 {
+        return Err(MockError::new(
+            "BAD_ARGS",
+            "mock upload_file file count is out of range",
+        ));
+    }
+    let mut paths = Vec::new();
+    for value in files {
+        let path = value
+            .as_str()
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| MockError::new("BAD_ARGS", "mock upload_file paths must be strings"))?;
+        paths.push(path.to_string());
+    }
+    if target.contains("not-file") {
+        return Err(MockError::new("BAD_ARGS", "target is not a file input")
+            .with_details(json!({"reason": "not_a_file_input"})));
+    }
+    for path in &paths {
+        if path.to_ascii_lowercase().contains("missing") {
+            return Err(MockError::new("BAD_ARGS", "upload path does not exist")
+                .with_details(json!({"path": path})));
+        }
+    }
+    let tab = &state.tabs[state.active_index()];
+    Ok(json!({
+        "uploaded": true,
+        "files": paths,
+        "target": {
+            "ref": if target.starts_with('@') { json!(target) } else { Value::Null },
+            "tag": "input",
+            "text": "",
+        },
+        "input": {"accept": ".txt", "multiple": false},
+        "tab_id": tab.id,
     }))
 }
 

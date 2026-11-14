@@ -15,6 +15,16 @@ pub const WAIT_GRACE_MS: u64 = 5_000;
 pub const WAIT_CEILING_MS: u64 = 125_000;
 /// Default budget for browser_eval.
 pub const EVAL_TIMEOUT_MS: u64 = 30_000;
+/// Default wait budget for download_wait.
+pub const DOWNLOAD_WAIT_DEFAULT_MS: u64 = 30_000;
+/// Smallest download wait budget a caller may request.
+pub const DOWNLOAD_WAIT_MIN_MS: u64 = 100;
+/// Largest download wait budget a caller may request.
+pub const DOWNLOAD_WAIT_MAX_MS: u64 = 120_000;
+/// Extra budget on top of the download wait so the daemon outlives it.
+pub const DOWNLOAD_WAIT_GRACE_MS: u64 = 5_000;
+/// Hard ceiling for the download_wait command timeout.
+pub const DOWNLOAD_WAIT_CEILING_MS: u64 = 125_000;
 
 /// One tool the router knows how to forward to a browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +42,7 @@ pub struct ToolSpec {
 }
 
 /// Every tool exposed in this version.
-pub const TOOLS: [ToolSpec; 18] = [
+pub const TOOLS: [ToolSpec; 26] = [
     ToolSpec {
         name: "browser_navigate",
         serial: true,
@@ -141,6 +151,54 @@ pub const TOOLS: [ToolSpec; 18] = [
         capability: None,
         default_timeout_ms: None,
     },
+    ToolSpec {
+        name: "browser_list",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "net_capture",
+        serial: true,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "net_log",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "net_clear",
+        serial: true,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "net_intercept",
+        serial: true,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "download_list",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "download_wait",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "upload_file",
+        serial: true,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
 ];
 
 impl ToolSpec {
@@ -156,6 +214,16 @@ impl ToolSpec {
                 .unwrap_or(WAIT_DEFAULT_MS)
                 .clamp(WAIT_MIN_MS, WAIT_MAX_MS);
             return requested.saturating_add(WAIT_GRACE_MS).min(WAIT_CEILING_MS);
+        }
+        if self.name == "download_wait" {
+            let requested = arguments
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(DOWNLOAD_WAIT_DEFAULT_MS)
+                .clamp(DOWNLOAD_WAIT_MIN_MS, DOWNLOAD_WAIT_MAX_MS);
+            return requested
+                .saturating_add(DOWNLOAD_WAIT_GRACE_MS)
+                .min(DOWNLOAD_WAIT_CEILING_MS);
         }
         self.default_timeout_ms.unwrap_or(default_timeout_ms)
     }
@@ -178,7 +246,7 @@ mod tests {
 
     #[test]
     fn tool_table_is_lookup_able() {
-        assert_eq!(names().len(), 18);
+        assert_eq!(names().len(), 26);
         for spec in TOOLS {
             assert_eq!(lookup(spec.name).map(|found| found.name), Some(spec.name));
         }
@@ -189,7 +257,9 @@ mod tests {
     fn capabilities_match_the_tool_family() {
         for spec in TOOLS {
             match spec.name {
-                "tab_list" | "tab_new" | "tab_close" | "tab_switch" => {
+                "tab_list" | "tab_new" | "tab_close" | "tab_switch" | "browser_list"
+                | "net_capture" | "net_log" | "net_clear" | "net_intercept" | "download_list"
+                | "download_wait" | "upload_file" => {
                     assert_eq!(spec.capability, None, "{} needs no DOM", spec.name);
                 }
                 _ => assert_eq!(
@@ -223,6 +293,14 @@ mod tests {
             ("tab_new", true),
             ("tab_close", true),
             ("tab_switch", true),
+            ("browser_list", false),
+            ("net_capture", true),
+            ("net_log", false),
+            ("net_clear", true),
+            ("net_intercept", true),
+            ("download_list", false),
+            ("download_wait", false),
+            ("upload_file", true),
         ] {
             let spec = lookup(name).expect("known tool");
             assert_eq!(spec.serial, serial, "wrong serial flag for {name}");
@@ -245,5 +323,21 @@ mod tests {
             wait.timeout_ms(&json!({ "timeout_ms": 100 }), 60_000),
             5_100
         );
+        let capture = lookup("net_capture").expect("capture");
+        assert_eq!(capture.timeout_ms(&json!({}), 5_000), 60_000);
+        let downloads = lookup("download_list").expect("downloads");
+        assert_eq!(downloads.timeout_ms(&json!({}), 5_000), 60_000);
+        let download_wait = lookup("download_wait").expect("download_wait");
+        assert_eq!(download_wait.timeout_ms(&json!({}), 60_000), 35_000);
+        assert_eq!(
+            download_wait.timeout_ms(&json!({ "timeout_ms": 120_000 }), 60_000),
+            125_000
+        );
+        assert_eq!(
+            download_wait.timeout_ms(&json!({ "timeout_ms": 100 }), 60_000),
+            5_100
+        );
+        let browser_list = lookup("browser_list").expect("browser_list");
+        assert_eq!(browser_list.timeout_ms(&json!({}), 5_000), 60_000);
     }
 }

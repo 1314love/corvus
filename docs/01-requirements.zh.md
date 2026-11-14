@@ -152,6 +152,18 @@ M2 第一波 18 个工具已全部落地。以下需求在该工具面中已有�
 - **FR-A8** —— `page_find` 覆盖文本与角色查找，并匹配表单控件的可访问标签与占位符。
 - **FR-T1** —— `tab_list`、`tab_new`、`tab_close` 与 `tab_switch` 覆盖列出、新建、关闭与切换；复制标签仍未完成。
 
+### 4.2 M2 第二波需求覆盖
+
+M2 第二波新增 8 个工具，工具面达到 26 个。以下需求在该工具面中已有实现路径；只覆盖一部分的已明确标注，未列出的部分仍未完成。
+
+- **FR-C5** —— `browser_list` 返回实时浏览器集合，每个面向浏览器的工具都接受 `browser_id`，把一次命令路由到一个已连接浏览器。未给出 id 且连接多个浏览器时返回 `BAD_ARGS`，`details.reason` 为 `multiple_browsers`；没有浏览器或 id 未知时返回 `TRANSPORT_DOWN`。按浏览器禁用/启用（FR-C6）仍未完成。
+- **FR-N1** —— `net_capture` 与 `net_log` 覆盖请求方法、URL、状态、MIME、资源类型、缓存标记、耗时、错误与可选请求/响应头，数据来自每标签 2000 条的环形缓冲；响应 body 仍未完成。
+- **FR-N2** —— `net_intercept` 覆盖 URL 正则规则与 block、mock、continue 三种动作；mock 可设置状态、头与 base64 body，按数组顺序首个匹配生效。请求 body 改写仍未完成。
+- **FR-N3** —— `block` 动作覆盖请求阻断；限速与离线仿真仍未完成。
+- **FR-A6** —— `download_list` 与 `download_wait` 覆盖下载跟踪与完成等待；`upload_file` 覆盖经 CDP 的文件 input 上传，隐藏 input 也可用。拖拽路径上传与返回本地下载路径仍未完成。
+
+M3 仍未完成：会话录制与回放（FR-O1、FR-O2）、导出（FR-O3）、站点记忆（FR-O4）、指标与可观测性（FR-O5）。按请求等待与网络空闲等待（FR-N4、FR-P5）以及存储与身份族（FR-S1–FR-S4）也仍未完成。
+
 ## 5. 非功能需求
 
 | 编号 | 类别 | 要求 |

@@ -175,6 +175,24 @@ impl Registry {
         infos
     }
 
+    /// Every connected browser, oldest connection first.
+    ///
+    /// Ties are broken by browser identifier so the order is stable.
+    pub fn snapshot(&self) -> Vec<BrowserInfo> {
+        let entries = self
+            .entries
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut infos: Vec<BrowserInfo> =
+            entries.values().map(|entry| entry.info().clone()).collect();
+        infos.sort_by(|left, right| {
+            left.connected_at_ms
+                .cmp(&right.connected_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        infos
+    }
+
     /// Number of connected browsers.
     pub fn len(&self) -> usize {
         let entries = self
@@ -239,6 +257,21 @@ mod tests {
         assert!(!registry.remove("edge:default", "conn-1"));
         assert!(registry.remove("edge:default", "conn-2"));
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn snapshot_orders_browsers_by_connection_time() {
+        let registry = Registry::new();
+        let (second, _second_receiver) = connection("edge:second", "conn-2");
+        let (first, _first_receiver) = connection("edge:first", "conn-1");
+        registry.register(second);
+        registry.register(first);
+        let infos = registry.snapshot();
+        assert_eq!(infos.len(), 2);
+        assert!(infos.windows(2).all(|pair| {
+            pair[0].connected_at_ms < pair[1].connected_at_ms
+                || (pair[0].connected_at_ms == pair[1].connected_at_ms && pair[0].id <= pair[1].id)
+        }));
     }
 
     #[test]

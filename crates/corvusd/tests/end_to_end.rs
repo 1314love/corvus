@@ -305,6 +305,17 @@ async fn a_call_without_a_browser_reports_transport_down() {
         text.starts_with("TRANSPORT_DOWN: "),
         "unexpected text: {text}"
     );
+
+    let list = tools_call(&daemon, "browser_list", json!({})).await;
+    assert!(!is_error(&list), "browser_list works without a browser");
+    assert_eq!(
+        payload(&list)
+            .get("browsers")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+
     daemon.shutdown().await;
 }
 
@@ -544,7 +555,17 @@ async fn answer_all_tools(
     tokio::task::JoinHandle<()>,
     std::sync::Arc<std::sync::Mutex<Vec<SeenCommand>>>,
 ) {
-    let socket = handshake(daemon.ws_addr(), "edge:default").await;
+    answer_named(daemon, "edge:default").await
+}
+
+async fn answer_named(
+    daemon: &Daemon,
+    browser: &str,
+) -> (
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::Mutex<Vec<SeenCommand>>>,
+) {
+    let socket = handshake(daemon.ws_addr(), browser).await;
     let (mut sink, mut stream) = socket.split();
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorder = std::sync::Arc::clone(&seen);
@@ -574,7 +595,7 @@ async fn answer_all_tools(
             .expect("the response reaches the daemon");
         }
     });
-    wait_for_browser(daemon, "edge:default").await;
+    wait_for_browser(daemon, browser).await;
     (responder, seen)
 }
 
@@ -676,6 +697,94 @@ fn canned_result(tool: &str, args: &Value) -> Value {
             "title": "Example",
             "active": true,
         }),
+        "net_capture" => {
+            let tab_id = args.get("tab_id").cloned().unwrap_or_else(|| json!("1"));
+            match args.get("action").and_then(Value::as_str) {
+                Some("start") => json!({
+                    "capturing": true,
+                    "tab_id": tab_id,
+                    "started_at": 1_700_000_000_000u64,
+                    "capacity": 2000,
+                }),
+                Some("stop") => json!({
+                    "capturing": false,
+                    "tab_id": tab_id,
+                    "entries": 3,
+                }),
+                _ => json!({
+                    "capturing": true,
+                    "tab_id": tab_id,
+                    "started_at": 1_700_000_000_000u64,
+                    "entries": 3,
+                }),
+            }
+        }
+        "net_log" => json!({
+            "entries": [{
+                "seq": 7,
+                "ts": 1_700_000_000_123u64,
+                "tab_id": "1",
+                "request_id": "req-1",
+                "method": "GET",
+                "url": "https://example.test/api/items",
+                "status": 200,
+                "mime": "application/json",
+                "resource_type": "xhr",
+                "from_cache": false,
+                "duration_ms": 12,
+                "error": null,
+                "intercepted": null,
+                "request_headers": { "accept": "application/json" },
+                "response_headers": { "content-type": "application/json" },
+            }],
+            "next_seq": 7,
+            "capturing": true,
+        }),
+        "net_clear" => json!({ "cleared": 4 }),
+        "net_intercept" => {
+            let tab_id = args.get("tab_id").cloned();
+            let mut result = json!({
+                "ok": true,
+                "scope": if tab_id.is_some() { "tab" } else { "browser" },
+                "rules": args.get("rules").cloned().unwrap_or_else(|| json!([])),
+                "applied": true,
+            });
+            if let Some(tab_id) = tab_id {
+                result["tab_id"] = tab_id;
+            }
+            result
+        }
+        "download_list" => json!({
+            "downloads": [{
+                "id": "dl-1",
+                "filename": "corvus.txt",
+                "url": "https://example.test/corvus.txt",
+                "state": "complete",
+                "bytes_received": 12,
+                "total_bytes": 12,
+                "danger": "safe",
+                "exists": true,
+                "started_at": 1_700_000_000_000u64,
+                "tab_id": "1",
+            }],
+        }),
+        "download_wait" => json!({
+            "id": args.get("id").cloned().unwrap_or_else(|| json!("dl-1")),
+            "state": "complete",
+            "filename": "corvus.txt",
+            "url": "https://example.test/corvus.txt",
+            "bytes_received": 12,
+            "total_bytes": 12,
+        }),
+        "upload_file" => json!({
+            "uploaded": true,
+            "files": args.get("files").cloned().unwrap_or_else(|| json!([])),
+            "target": { "ref": "@e2", "tag": "input", "text": "" },
+            "input": { "accept": "text/plain", "multiple": false },
+        }),
+        "browser_list" => {
+            panic!("browser_list is answered locally and must not reach the extension")
+        }
         other => panic!("the fake extension does not know {other}"),
     }
 }
@@ -1095,6 +1204,384 @@ async fn default_command_timeout_is_sixty_seconds_for_regular_tools() {
     ] {
         expect_timeout(&commands, tool, 60_000);
     }
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn browser_list_is_answered_locally_and_sorted_by_connection_time() {
+    let daemon = start_daemon(5_000).await;
+    let (first, first_seen) = answer_named(&daemon, "edge:first").await;
+    let (second, second_seen) = answer_named(&daemon, "edge:second").await;
+
+    let result = tools_call(&daemon, "browser_list", json!({})).await;
+    assert!(
+        !is_error(&result),
+        "unexpected error: {}",
+        content_text(&result)
+    );
+    let list = payload(&result);
+    let browsers = list
+        .get("browsers")
+        .and_then(Value::as_array)
+        .expect("a browsers array");
+    assert_eq!(browsers.len(), 2, "both browsers are listed");
+    let mut ids: Vec<String> = browsers
+        .iter()
+        .filter_map(|browser| browser.get("browser_id"))
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    assert_eq!(ids, vec!["edge:first", "edge:second"]);
+    for browser in browsers {
+        assert_eq!(
+            browser.get("profile").and_then(Value::as_str),
+            Some("default")
+        );
+        assert_eq!(
+            browser.get("version").and_then(Value::as_str),
+            Some("0.1.0")
+        );
+        assert_eq!(
+            browser.get("capabilities").and_then(Value::as_array),
+            Some(&vec![json!("dom")])
+        );
+        assert!(
+            browser
+                .get("connected_at_ms")
+                .and_then(Value::as_u64)
+                .is_some(),
+            "connected_at_ms is reported"
+        );
+    }
+    let times: Vec<u64> = browsers
+        .iter()
+        .filter_map(|browser| browser.get("connected_at_ms"))
+        .filter_map(Value::as_u64)
+        .collect();
+    assert!(
+        times.windows(2).all(|pair| pair[0] <= pair[1]),
+        "browser_list is sorted oldest first: {times:?}"
+    );
+    assert!(
+        recorded(&first_seen).is_empty() && recorded(&second_seen).is_empty(),
+        "browser_list must not reach the extension"
+    );
+
+    first.abort();
+    second.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn browser_id_routes_commands_to_the_chosen_socket() {
+    let daemon = start_daemon(5_000).await;
+    let (first, first_seen) = answer_named(&daemon, "edge:first").await;
+    let (second, second_seen) = answer_named(&daemon, "edge:second").await;
+
+    let result = tools_call(
+        &daemon,
+        "browser_click",
+        json!({ "target": "@e7", "browser_id": "edge:second" }),
+    )
+    .await;
+    assert!(
+        !is_error(&result),
+        "unexpected error: {}",
+        content_text(&result)
+    );
+    assert_eq!(
+        payload(&result).get("target").and_then(Value::as_str),
+        Some("@e7")
+    );
+    assert!(
+        recorded(&first_seen).is_empty(),
+        "the unselected browser must not receive the command"
+    );
+    let second_commands = recorded(&second_seen);
+    assert_eq!(second_commands.len(), 1);
+    assert_eq!(second_commands[0].tool, "browser_click");
+    assert_eq!(second_commands[0].timeout_ms, Some(5_000));
+
+    first.abort();
+    second.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn ambiguous_and_unknown_browser_ids_report_typed_details() {
+    let daemon = start_daemon(5_000).await;
+    let (first, _first_seen) = answer_named(&daemon, "edge:first").await;
+    let (second, _second_seen) = answer_named(&daemon, "edge:second").await;
+
+    let ambiguous = tools_call(&daemon, "browser_click", json!({ "target": "@e1" })).await;
+    assert!(is_error(&ambiguous), "two browsers need an explicit choice");
+    let text = content_text(&ambiguous);
+    assert!(text.starts_with("BAD_ARGS: "), "unexpected text: {text}");
+    let start = text.find('{').expect("the details are appended");
+    let details: Value = serde_json::from_str(&text[start..]).expect("the details are JSON");
+    assert_eq!(
+        details.get("reason").and_then(Value::as_str),
+        Some("multiple_browsers")
+    );
+    let mut browser_ids: Vec<&str> = details
+        .get("browser_ids")
+        .and_then(Value::as_array)
+        .expect("browser_ids")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    browser_ids.sort_unstable();
+    assert_eq!(browser_ids, vec!["edge:first", "edge:second"]);
+
+    let unknown = tools_call(
+        &daemon,
+        "browser_click",
+        json!({ "target": "@e1", "browser_id": "edge:ghost" }),
+    )
+    .await;
+    assert!(is_error(&unknown));
+    let text = content_text(&unknown);
+    assert!(
+        text.starts_with("TRANSPORT_DOWN: "),
+        "unexpected text: {text}"
+    );
+    assert!(
+        text.contains("\"browser_id\":\"edge:ghost\""),
+        "the unknown identifier must be reported: {text}"
+    );
+
+    first.abort();
+    second.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn network_tools_round_trip() {
+    let daemon = start_daemon(60_000).await;
+    let (responder, seen) = answer_all_tools(&daemon).await;
+
+    let capture = tools_call(
+        &daemon,
+        "net_capture",
+        json!({ "action": "start", "tab_id": "1" }),
+    )
+    .await;
+    assert!(
+        !is_error(&capture),
+        "unexpected error: {}",
+        content_text(&capture)
+    );
+    let capture = payload(&capture);
+    assert_eq!(
+        capture.get("capturing").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(capture.get("capacity").and_then(Value::as_u64), Some(2000));
+
+    let log = tools_call(
+        &daemon,
+        "net_log",
+        json!({ "tab_id": "1", "since_seq": 0, "limit": 10, "include_headers": true }),
+    )
+    .await;
+    assert!(!is_error(&log), "unexpected error: {}", content_text(&log));
+    let log = payload(&log);
+    assert_eq!(log.get("next_seq").and_then(Value::as_u64), Some(7));
+    assert_eq!(
+        log.get("entries")
+            .and_then(Value::as_array)
+            .and_then(|entries| entries.first())
+            .and_then(|entry| entry.get("seq"))
+            .and_then(Value::as_u64),
+        Some(7)
+    );
+
+    let clear = tools_call(&daemon, "net_clear", json!({ "tab_id": "1" })).await;
+    assert!(
+        !is_error(&clear),
+        "unexpected error: {}",
+        content_text(&clear)
+    );
+    assert_eq!(
+        payload(&clear).get("cleared").and_then(Value::as_u64),
+        Some(4)
+    );
+
+    let browser_wide = tools_call(
+        &daemon,
+        "net_intercept",
+        json!({
+            "action": "set",
+            "rules": [{ "id": "r1", "url_regex": "/api/", "action": "block" }],
+        }),
+    )
+    .await;
+    assert!(
+        !is_error(&browser_wide),
+        "unexpected error: {}",
+        content_text(&browser_wide)
+    );
+    let browser_wide = payload(&browser_wide);
+    assert_eq!(
+        browser_wide.get("scope").and_then(Value::as_str),
+        Some("browser")
+    );
+    assert_eq!(
+        browser_wide.get("applied").and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let tab_wide = tools_call(
+        &daemon,
+        "net_intercept",
+        json!({
+            "action": "set",
+            "tab_id": "1",
+            "rules": [
+                { "id": "r2", "url_regex": "/api/", "method": "POST", "action": "mock", "status": 201 }
+            ],
+        }),
+    )
+    .await;
+    assert!(
+        !is_error(&tab_wide),
+        "unexpected error: {}",
+        content_text(&tab_wide)
+    );
+    let tab_wide = payload(&tab_wide);
+    assert_eq!(tab_wide.get("scope").and_then(Value::as_str), Some("tab"));
+    assert_eq!(tab_wide.get("tab_id").and_then(Value::as_str), Some("1"));
+    assert_eq!(
+        tab_wide
+            .get("rules")
+            .and_then(Value::as_array)
+            .and_then(|rules| rules.first())
+            .and_then(|rule| rule.get("status"))
+            .and_then(Value::as_u64),
+        Some(201)
+    );
+
+    let commands = recorded(&seen);
+    for tool in ["net_capture", "net_log", "net_clear", "net_intercept"] {
+        expect_timeout(&commands, tool, 60_000);
+    }
+    let log_command = commands
+        .iter()
+        .find(|command| command.tool == "net_log")
+        .expect("net_log was recorded");
+    assert_eq!(log_command.args.get("include_headers"), Some(&json!(true)));
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn download_tools_round_trip_and_wait_timeout() {
+    let daemon = start_daemon(60_000).await;
+    let (responder, seen) = answer_all_tools(&daemon).await;
+
+    let list = tools_call(&daemon, "download_list", json!({ "limit": 5 })).await;
+    assert!(
+        !is_error(&list),
+        "unexpected error: {}",
+        content_text(&list)
+    );
+    let list = payload(&list);
+    assert_eq!(
+        list.get("downloads")
+            .and_then(Value::as_array)
+            .and_then(|downloads| downloads.first())
+            .and_then(|download| download.get("id"))
+            .and_then(Value::as_str),
+        Some("dl-1")
+    );
+
+    let wait = tools_call(&daemon, "download_wait", json!({})).await;
+    assert!(
+        !is_error(&wait),
+        "unexpected error: {}",
+        content_text(&wait)
+    );
+    assert_eq!(
+        payload(&wait).get("state").and_then(Value::as_str),
+        Some("complete")
+    );
+
+    let explicit = tools_call(
+        &daemon,
+        "download_wait",
+        json!({ "id": "dl-9", "timeout_ms": 120000 }),
+    )
+    .await;
+    assert!(
+        !is_error(&explicit),
+        "unexpected error: {}",
+        content_text(&explicit)
+    );
+    assert_eq!(
+        payload(&explicit).get("id").and_then(Value::as_str),
+        Some("dl-9")
+    );
+
+    let commands = recorded(&seen);
+    expect_timeout(&commands, "download_list", 60_000);
+    let waits: Vec<Option<u64>> = commands
+        .iter()
+        .filter(|command| command.tool == "download_wait")
+        .map(|command| command.timeout_ms)
+        .collect();
+    assert_eq!(
+        waits,
+        vec![Some(35_000), Some(125_000)],
+        "download_wait adds its grace period and caps the result"
+    );
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn upload_file_round_trip() {
+    let daemon = start_daemon(60_000).await;
+    let (responder, seen) = answer_all_tools(&daemon).await;
+    let path = std::env::temp_dir()
+        .join("corvus-upload.txt")
+        .to_string_lossy()
+        .into_owned();
+
+    let upload = tools_call(
+        &daemon,
+        "upload_file",
+        json!({ "target": "#file", "files": [path.clone()] }),
+    )
+    .await;
+    assert!(
+        !is_error(&upload),
+        "unexpected error: {}",
+        content_text(&upload)
+    );
+    let upload = payload(&upload);
+    assert_eq!(upload.get("uploaded").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        upload
+            .get("files")
+            .and_then(Value::as_array)
+            .and_then(|files| files.first())
+            .and_then(Value::as_str),
+        Some(path.as_str())
+    );
+    assert_eq!(
+        upload
+            .get("target")
+            .and_then(|target| target.get("tag"))
+            .and_then(Value::as_str),
+        Some("input")
+    );
+
+    expect_timeout(&recorded(&seen), "upload_file", 60_000);
 
     responder.abort();
     daemon.shutdown().await;

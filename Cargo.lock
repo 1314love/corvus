@@ -219,6 +219,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "corvus-proto",
  "futures",
  "serde_json",

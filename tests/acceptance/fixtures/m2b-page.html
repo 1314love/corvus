@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Corvus M2b Page</title>
+  </head>
+  <body data-fixture="m2b">
+    <main id="main">
+      <h1 id="h">Corvus M2b</h1>
+      <p id="lead">M2b fixture marker 5b21. Network, download and upload checks run here.</p>
+
+      <button id="fetch-slow" type="button">Fetch slow JSON</button>
+      <button id="fetch-json" type="button">Fetch JSON</button>
+      <p id="net-out" data-net="idle">network idle</p>
+
+      <p><a id="download" href="/download/report.txt" download="corvus-report.txt">Download report</a></p>
+
+      <input id="file" type="file" accept=".txt,text/plain" hidden />
+      <p id="file-out" data-files="0">no files selected</p>
+
+      <a id="to-m2" href="/m2">M2 page</a>
+    </main>
+    <script>
+      const out = document.getElementById("net-out");
+      async function load(path) {
+        out.dataset.net = "pending";
+        out.textContent = "network pending";
+        try {
+          const response = await fetch(path, { headers: { accept: "application/json" } });
+          const body = await response.json();
+          out.dataset.net = body.source + ":" + body.value;
+          out.textContent = body.source + ":" + body.value;
+        } catch (error) {
+          out.dataset.net = "failed";
+          out.textContent = "network failed: " + error.message;
+        }
+      }
+      document.getElementById("fetch-slow").addEventListener("click", () => load("/api/slow"));
+      document.getElementById("fetch-json").addEventListener("click", () => load("/api/json"));
+      document.getElementById("file").addEventListener("change", (event) => {
+        const files = event.target.files;
+        document.getElementById("file-out").dataset.files = String(files.length);
+        document.getElementById("file-out").textContent =
+          files.length === 0 ? "no files selected" : "files:" + [...files].map((file) => file.name).join(",");
+      });
+    </script>
+  </body>
+</html>

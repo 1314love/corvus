@@ -31,6 +31,15 @@ const CDP_IDLE_TIMEOUT_MS = 30000;
 const CDP_ATTACH_TIMEOUT_MS = 5000;
 const CDP_PROTOCOL_VERSION = '1.3';
 
+// M2b: network capture, interception, downloads and file uploads.
+const NET_CAPTURE_CAPACITY = 2000;
+const MAX_INTERCEPT_RULES = 50;
+const MAX_INTERCEPT_RULE_ID_LENGTH = 64;
+const MAX_INTERCEPT_BODY_BYTES = 1048576;
+const MAX_UPLOAD_FILES = 10;
+const DOWNLOAD_POLL_MS = 100;
+const DOWNLOAD_RECENT_WINDOW_MS = 5000;
+
 const STORAGE = {
   connection: 'corvus.connection',
   profile: 'corvus.profile',
@@ -57,7 +66,8 @@ const BASE_CAPABILITIES = ['dom', 'scripting', 'debugger'];
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
-// The frozen M2 wave 1 tool names. No aliases: these eighteen names are the contract.
+// The frozen M2b tool names. No aliases: these twenty-five names are handled by
+// the extension. browser_list is answered by the daemon from its live registry.
 const TOOL_NAMES = [
   'browser_navigate',
   'page_snapshot',
@@ -77,6 +87,13 @@ const TOOL_NAMES = [
   'tab_new',
   'tab_close',
   'tab_switch',
+  'net_capture',
+  'net_log',
+  'net_clear',
+  'net_intercept',
+  'download_list',
+  'download_wait',
+  'upload_file',
 ];
 
 const state = {
@@ -92,6 +109,10 @@ const state = {
 const responseCache = new Map();
 const debuggerSessions = new Map();
 const debuggerAttachPromises = new Map();
+const networkCaptures = new Map();
+const tabInterceptRules = new Map();
+let browserInterceptRules = [];
+let networkSeq = 0;
 let bootPromise = null;
 let creationPromise = null;
 
@@ -492,6 +513,13 @@ const HANDLERS = {
   tab_new: (args, frame) => tabNewTool(args, frame),
   tab_close: (args) => tabCloseTool(args),
   tab_switch: (args) => tabSwitchTool(args),
+  net_capture: (args) => netCaptureTool(args),
+  net_log: (args) => netLogTool(args),
+  net_clear: (args) => netClearTool(args),
+  net_intercept: (args) => netInterceptTool(args),
+  download_list: (args) => downloadListTool(args),
+  download_wait: (args, frame) => downloadWaitTool(args, frame),
+  upload_file: (args) => uploadFileTool(args),
 };
 
 function idempotencyKeyOf(frame) {
@@ -521,6 +549,19 @@ function withTimeout(promise, timeoutMs) {
   });
 }
 
+function commandTimeoutFor(tool, args, frame) {
+  let timeoutMs = clampTimeout(frame && frame.meta ? frame.meta.timeout_ms : undefined);
+  // download_wait may legitimately outlive the daemon default: its own argument
+  // defines the wait and the command budget is that wait plus a small margin.
+  if (tool === 'download_wait') {
+    const requested = args && args.timeout_ms !== undefined && args.timeout_ms !== null ? args.timeout_ms : 30000;
+    if (Number.isInteger(requested) && requested >= 100 && requested <= 120000) {
+      timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(timeoutMs, requested + 5000));
+    }
+  }
+  return timeoutMs;
+}
+
 async function handleCommand(frame) {
   const startedAt = Date.now();
   const traceId = frame && frame.meta && frame.meta.trace_id ? String(frame.meta.trace_id) : null;
@@ -547,7 +588,8 @@ async function handleCommand(frame) {
     if (typeof handler !== 'function') throw new ToolError('INTERNAL', 'no handler registered for ' + tool);
 
     const args = frame.args && typeof frame.args === 'object' ? frame.args : {};
-    const timeoutMs = clampTimeout(frame.meta && frame.meta.timeout_ms);
+    await assertBrowserSelection(args);
+    const timeoutMs = commandTimeoutFor(tool, args, frame);
     const result = await withTimeout(handler(args, frame), timeoutMs + COMMAND_TIMEOUT_PAD_MS);
     response = buildResponse(frame, true, result, null);
   } catch (error) {
@@ -732,6 +774,26 @@ async function runInTab(tool, args, frame) {
     throw classifyContentFailure(error, tab);
   }
 
+  if (!reply || typeof reply !== 'object') {
+    throw new ToolError('INTERNAL', 'content script returned an empty reply');
+  }
+  if (reply.ok === false) throw fromContentError(reply.error);
+  return reply.result;
+}
+
+// Sends a non-tool message to a content script and unwraps its reply. Used by
+// upload_file to resolve a hidden file input through the page DOM first.
+async function requestContentResult(tab, message) {
+  if (!tab || typeof tab.id !== 'number') {
+    throw new ToolError('NOT_FOUND', 'no tab is available for the content request');
+  }
+  await ensureContentScript(tab.id, false);
+  let reply;
+  try {
+    reply = await sendContentCommand(tab.id, message);
+  } catch (error) {
+    throw classifyContentFailure(error, tab);
+  }
   if (!reply || typeof reply !== 'object') {
     throw new ToolError('INTERNAL', 'content script returned an empty reply');
   }
@@ -1327,6 +1389,1037 @@ async function tabSwitchTool(args) {
 }
 
 // ---------------------------------------------------------------------------
+// M2b: browser routing, network capture, interception, downloads, uploads
+// ---------------------------------------------------------------------------
+
+// Every tool accepts an optional browser_id. This extension owns exactly one
+// transport, so a value that is present must name the browser assigned by the
+// daemon in hello_ack; anything else is TRANSPORT_DOWN. Omitted is allowed.
+async function assertBrowserSelection(args) {
+  const raw = args ? args.browser_id : undefined;
+  if (raw === undefined || raw === null) return;
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new ToolError('BAD_ARGS', 'args.browser_id must be a non-empty string when provided');
+  }
+  const requested = raw.trim();
+  await stateReady;
+  if (!state.browserId || String(state.browserId) !== requested) {
+    throw new ToolError('TRANSPORT_DOWN', 'browser ' + requested + ' is not connected to this extension', { browser_id: requested });
+  }
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function hasTabIdArgument(args) {
+  const raw = args ? args.tab_id : undefined;
+  return raw !== undefined && raw !== null && String(raw).trim() !== '';
+}
+
+function readOptionalString(value, label) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new ToolError('BAD_ARGS', label + ' must be a non-empty string', { value: value });
+  }
+  return value.trim();
+}
+
+function readBoolean(value, fallback, label) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'boolean') {
+    throw new ToolError('BAD_ARGS', label + ' must be a boolean', { value: value });
+  }
+  return value;
+}
+
+function isAbsoluteFilePath(value) {
+  if (typeof value !== 'string' || value.trim() === '') return false;
+  const path = value.trim();
+  if (path.indexOf('\u0000') !== -1) return false;
+  if (/^[A-Za-z]:[\\/]/.test(path)) return true;
+  if (path.indexOf('\\\\') === 0) return true;
+  return path.charAt(0) === '/' || path.charAt(0) === '\\';
+}
+
+function parseDownloadId(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new ToolError('BAD_ARGS', 'args.id must be a non-negative integer download id', { id: value });
+    }
+    return value;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const numeric = Number(value.trim());
+    if (Number.isSafeInteger(numeric) && numeric >= 0) return numeric;
+  }
+  throw new ToolError('BAD_ARGS', 'args.id must be a non-negative integer download id', { id: value });
+}
+
+// ---------------------------------------------------------------------------
+// Network capture state and pure helpers
+// ---------------------------------------------------------------------------
+
+function cloneHeaderMap(headers) {
+  const output = {};
+  if (!headers || typeof headers !== 'object') return output;
+  Object.keys(headers).forEach((name) => {
+    const value = headers[name];
+    if (typeof value === 'string') output[name] = value;
+    else if (value !== undefined && value !== null) output[name] = String(value);
+  });
+  return output;
+}
+
+function durationFromTimestamps(startTimestamp, endTimestamp) {
+  if (typeof startTimestamp !== 'number' || typeof endTimestamp !== 'number') return null;
+  if (!isFinite(startTimestamp) || !isFinite(endTimestamp) || endTimestamp < startTimestamp) return null;
+  return Math.round((endTimestamp - startTimestamp) * 1000);
+}
+
+function publicNetEntry(entry, includeHeaders) {
+  const output = {
+    seq: entry.seq,
+    ts: entry.ts,
+    tab_id: tabIdString(entry.tabId),
+    request_id: entry.request_id || '',
+    method: entry.method || '',
+    url: entry.url || '',
+    status: typeof entry.status === 'number' ? entry.status : null,
+    mime: typeof entry.mime === 'string' ? entry.mime : null,
+    resource_type: entry.resource_type || 'other',
+    from_cache: entry.from_cache === true,
+    duration_ms: typeof entry.duration_ms === 'number' ? entry.duration_ms : null,
+    error: typeof entry.error === 'string' ? entry.error : null,
+    intercepted: entry.intercepted ? { action: entry.intercepted.action, rule_id: entry.intercepted.rule_id } : null,
+  };
+  if (includeHeaders) {
+    output.request_headers = cloneHeaderMap(entry.request_headers);
+    output.response_headers = cloneHeaderMap(entry.response_headers);
+  }
+  return output;
+}
+
+function appendNetEntry(capture, entry, capacity) {
+  capture.entries.push(entry);
+  if (entry.request_id) capture.byRequestId.set(entry.request_id, entry);
+  while (capture.entries.length > capacity) {
+    const removed = capture.entries.shift();
+    if (removed && removed.request_id && capture.byRequestId.get(removed.request_id) === removed) {
+      capture.byRequestId.delete(removed.request_id);
+    }
+  }
+}
+
+function filterNetEntries(entries, options) {
+  const sinceSeq = options && Number.isInteger(options.sinceSeq) ? options.sinceSeq : 0;
+  const limit = options && Number.isInteger(options.limit) ? options.limit : 100;
+  const urlContains = options && typeof options.urlContains === 'string' ? options.urlContains.toLowerCase() : null;
+  const method = options && typeof options.method === 'string' ? options.method.toUpperCase() : null;
+  const resourceType = options && typeof options.resourceType === 'string' ? options.resourceType.toLowerCase() : null;
+  const statusMin = options && Number.isInteger(options.statusMin) ? options.statusMin : null;
+  const statusMax = options && Number.isInteger(options.statusMax) ? options.statusMax : null;
+  const includeHeaders = !!(options && options.includeHeaders === true);
+  const matches = [];
+
+  (Array.isArray(entries) ? entries : []).forEach((entry) => {
+    if (!entry || !Number.isInteger(entry.seq) || entry.seq <= sinceSeq) return;
+    if (urlContains !== null && String(entry.url || '').toLowerCase().indexOf(urlContains) === -1) return;
+    if (method !== null && String(entry.method || '').toUpperCase() !== method) return;
+    if (resourceType !== null && String(entry.resource_type || '').toLowerCase() !== resourceType) return;
+    if (statusMin !== null || statusMax !== null) {
+      if (typeof entry.status !== 'number') return;
+      if (statusMin !== null && entry.status < statusMin) return;
+      if (statusMax !== null && entry.status > statusMax) return;
+    }
+    matches.push(entry);
+  });
+
+  matches.sort((a, b) => a.seq - b.seq);
+  const selected = matches.slice(0, limit);
+  return {
+    entries: selected.map((entry) => publicNetEntry(entry, includeHeaders)),
+    next_seq: selected.length > 0 ? selected[selected.length - 1].seq : sinceSeq,
+  };
+}
+
+function base64DecodedLength(text) {
+  if (typeof text !== 'string') return -1;
+  const clean = text.replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) return -1;
+  if (clean.length % 4 === 1) return -1;
+  const padding = clean.slice(-2) === '==' ? 2 : clean.slice(-1) === '=' ? 1 : 0;
+  if (padding > 0 && clean.length % 4 !== 0) return -1;
+  return Math.floor((clean.length * 3) / 4) - padding;
+}
+
+function validateInterceptRules(rawRules) {
+  if (!Array.isArray(rawRules) || rawRules.length < 1 || rawRules.length > MAX_INTERCEPT_RULES) {
+    throw new ToolError('BAD_ARGS', 'args.rules must contain between 1 and ' + MAX_INTERCEPT_RULES + ' rules', { count: Array.isArray(rawRules) ? rawRules.length : null });
+  }
+  const seen = new Set();
+  return rawRules.map((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new ToolError('BAD_ARGS', 'each intercept rule must be an object', { index: index });
+    }
+    const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+    if (!id || id.length > MAX_INTERCEPT_RULE_ID_LENGTH) {
+      throw new ToolError('BAD_ARGS', 'rule id must be a non-empty string of at most ' + MAX_INTERCEPT_RULE_ID_LENGTH + ' characters', { index: index, rule_id: id || null });
+    }
+    if (seen.has(id)) {
+      throw new ToolError('BAD_ARGS', 'intercept rule ids must be unique', { rule_id: id });
+    }
+    seen.add(id);
+
+    const action = typeof raw.action === 'string' ? raw.action.trim().toLowerCase() : '';
+    if (action !== 'block' && action !== 'mock' && action !== 'continue') {
+      throw new ToolError('BAD_ARGS', 'rule action must be block, mock or continue', { rule_id: id });
+    }
+    if (typeof raw.url_regex !== 'string' || raw.url_regex === '') {
+      throw new ToolError('BAD_ARGS', 'rule url_regex must be a non-empty string', { rule_id: id });
+    }
+    let regex;
+    try {
+      regex = new RegExp(raw.url_regex);
+    } catch (error) {
+      throw new ToolError('BAD_ARGS', 'rule url_regex is not a valid regular expression: ' + describeError(error), { rule_id: id });
+    }
+
+    let method = null;
+    if (raw.method !== undefined && raw.method !== null) {
+      if (typeof raw.method !== 'string' || raw.method.trim() === '') {
+        throw new ToolError('BAD_ARGS', 'rule method must be a non-empty string', { rule_id: id });
+      }
+      method = raw.method.trim().toUpperCase();
+    }
+    let resourceType = null;
+    if (raw.resource_type !== undefined && raw.resource_type !== null) {
+      if (typeof raw.resource_type !== 'string' || raw.resource_type.trim() === '') {
+        throw new ToolError('BAD_ARGS', 'rule resource_type must be a non-empty string', { rule_id: id });
+      }
+      resourceType = raw.resource_type.trim().toLowerCase();
+    }
+
+    let status = action === 'mock' ? 200 : null;
+    let headers = null;
+    let body = null;
+    if (raw.status !== undefined && raw.status !== null) {
+      if (action !== 'mock') {
+        throw new ToolError('BAD_ARGS', 'rule status is only valid for mock rules', { rule_id: id });
+      }
+      status = readBoundedInteger(raw.status, 200, 100, 599, 'rules[' + index + '].status');
+    }
+    if (raw.headers !== undefined && raw.headers !== null) {
+      if (action !== 'mock' || typeof raw.headers !== 'object' || Array.isArray(raw.headers)) {
+        throw new ToolError('BAD_ARGS', 'rule headers must be a string map and are only valid for mock rules', { rule_id: id });
+      }
+      headers = {};
+      const names = Object.keys(raw.headers);
+      for (let i = 0; i < names.length; i += 1) {
+        if (typeof raw.headers[names[i]] !== 'string') {
+          throw new ToolError('BAD_ARGS', 'rule header values must be strings', { rule_id: id, header: names[i] });
+        }
+        headers[names[i]] = raw.headers[names[i]];
+      }
+    }
+    if (raw.body_base64 !== undefined && raw.body_base64 !== null) {
+      if (action !== 'mock' || typeof raw.body_base64 !== 'string') {
+        throw new ToolError('BAD_ARGS', 'rule body_base64 must be a base64 string and is only valid for mock rules', { rule_id: id });
+      }
+      const decodedLength = base64DecodedLength(raw.body_base64);
+      if (decodedLength < 0) {
+        throw new ToolError('BAD_ARGS', 'rule body_base64 is not valid base64', { rule_id: id });
+      }
+      if (decodedLength > MAX_INTERCEPT_BODY_BYTES) {
+        throw new ToolError('BAD_ARGS', 'rule body_base64 exceeds the decoded body limit', { rule_id: id, limit_bytes: MAX_INTERCEPT_BODY_BYTES });
+      }
+      body = raw.body_base64;
+    }
+
+    const rule = {
+      id: id,
+      action: action,
+      url_regex: raw.url_regex,
+      method: method,
+      resource_type: resourceType,
+      status: status,
+      headers: headers,
+      body_base64: body,
+    };
+    Object.defineProperty(rule, 'regex', { value: regex, enumerable: false, writable: false, configurable: false });
+    return rule;
+  });
+}
+
+function publicInterceptRule(rule) {
+  const output = { id: rule.id, action: rule.action, url_regex: rule.url_regex };
+  if (rule.method) output.method = rule.method;
+  if (rule.resource_type) output.resource_type = rule.resource_type;
+  return output;
+}
+
+function matchInterceptRule(rules, request, resourceType) {
+  const list = Array.isArray(rules) ? rules : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const rule = list[i];
+    if (!rule || !rule.regex) continue;
+    if (rule.method && String(request && request.method ? request.method : '').toUpperCase() !== rule.method) continue;
+    if (rule.resource_type && String(resourceType || '').toLowerCase() !== rule.resource_type) continue;
+    rule.regex.lastIndex = 0;
+    if (rule.regex.test(String(request && request.url ? request.url : ''))) return rule;
+  }
+  return null;
+}
+
+function buildInterceptFulfillParams(requestId, rule) {
+  const headers = rule.headers ? cloneHeaderMap(rule.headers) : {};
+  const names = Object.keys(headers);
+  if (rule.body_base64 !== null && rule.body_base64 !== undefined) {
+    let hasContentType = false;
+    for (let i = 0; i < names.length; i += 1) {
+      if (names[i].toLowerCase() === 'content-type') {
+        hasContentType = true;
+        break;
+      }
+    }
+    if (!hasContentType) headers['content-type'] = 'text/plain; charset=utf-8';
+  }
+  const responseHeaders = Object.keys(headers).map((name) => ({ name: name, value: String(headers[name]) }));
+  const params = {
+    requestId: requestId,
+    responseCode: rule.status || 200,
+    responseHeaders: responseHeaders,
+  };
+  if (rule.body_base64 !== null && rule.body_base64 !== undefined) params.body = rule.body_base64;
+  return params;
+}
+
+function rulesForTab(tabId) {
+  const numeric = typeof tabId === 'number' ? tabId : Number(tabId);
+  const tabRules = tabInterceptRules.get(numeric) || [];
+  return tabRules.concat(browserInterceptRules);
+}
+
+function captureForTab(tabId, create) {
+  const numeric = typeof tabId === 'number' ? tabId : Number(tabId);
+  let capture = networkCaptures.get(numeric);
+  if (!capture && create) {
+    capture = {
+      tabId: numeric,
+      capturing: false,
+      startedAt: null,
+      entries: [],
+      byRequestId: new Map(),
+      pendingIntercepts: new Map(),
+      fetchEnabled: false,
+      lastInterceptError: null,
+    };
+    networkCaptures.set(numeric, capture);
+  }
+  return capture || null;
+}
+
+function markNetworkCaptureDetached(tabId) {
+  const capture = captureForTab(tabId, false);
+  if (!capture) return;
+  capture.capturing = false;
+  capture.fetchEnabled = false;
+}
+
+function cleanupNetworkForTab(tabId) {
+  const numeric = typeof tabId === 'number' ? tabId : Number(tabId);
+  networkCaptures.delete(numeric);
+  tabInterceptRules.delete(numeric);
+}
+
+// ---------------------------------------------------------------------------
+// CDP Network/Fetch event handling
+// ---------------------------------------------------------------------------
+
+function requestEntryForEvent(capture, params) {
+  const request = params && params.request && typeof params.request === 'object' ? params.request : {};
+  const wallTime = params && typeof params.wallTime === 'number' ? Math.round(params.wallTime * 1000) : Date.now();
+  return {
+    seq: networkSeq + 1,
+    ts: wallTime,
+    tabId: capture.tabId,
+    request_id: String((params && params.requestId) || ''),
+    method: request.method || 'GET',
+    url: request.url || '',
+    status: null,
+    mime: null,
+    resource_type: (params && params.type) || 'other',
+    from_cache: false,
+    duration_ms: null,
+    error: null,
+    intercepted: null,
+    request_headers: cloneHeaderMap(request.headers),
+    response_headers: null,
+    started_timestamp: params && typeof params.timestamp === 'number' ? params.timestamp : null,
+  };
+}
+
+function applyResponseToEntry(entry, response) {
+  const body = response && typeof response === 'object' ? response : {};
+  entry.status = typeof body.status === 'number' ? body.status : null;
+  entry.mime = typeof body.mimeType === 'string' ? body.mimeType : null;
+  entry.from_cache = body.fromDiskCache === true || body.fromServiceWorker === true || body.fromPrefetchCache === true || body.fromMemoryCache === true;
+  entry.response_headers = cloneHeaderMap(body.headers);
+}
+
+function applyPendingIntercept(capture, entry) {
+  if (!entry || !entry.request_id) return;
+  const pending = capture.pendingIntercepts.get(entry.request_id);
+  if (!pending) return;
+  entry.intercepted = pending;
+  capture.pendingIntercepts.delete(entry.request_id);
+}
+
+function handleNetworkEvent(tabId, method, params) {
+  const capture = captureForTab(tabId, false);
+  if (!capture || !capture.capturing) return;
+  const body = params && typeof params === 'object' ? params : {};
+
+  if (method === 'Network.requestWillBeSent') {
+    const requestId = String(body.requestId || '');
+    const previous = capture.byRequestId.get(requestId);
+    if (previous && body.redirectResponse) {
+      applyResponseToEntry(previous, body.redirectResponse);
+      if (previous.started_timestamp !== null && typeof body.timestamp === 'number') {
+        previous.duration_ms = durationFromTimestamps(previous.started_timestamp, body.timestamp);
+      }
+    }
+    networkSeq += 1;
+    const entry = requestEntryForEvent(capture, body);
+    entry.seq = networkSeq;
+    applyPendingIntercept(capture, entry);
+    appendNetEntry(capture, entry, NET_CAPTURE_CAPACITY);
+    return;
+  }
+
+  if (method === 'Network.responseReceived') {
+    const entry = capture.byRequestId.get(String(body.requestId || ''));
+    if (!entry) return;
+    applyResponseToEntry(entry, body.response);
+    return;
+  }
+
+  if (method === 'Network.loadingFinished') {
+    const entry = capture.byRequestId.get(String(body.requestId || ''));
+    if (!entry) return;
+    if (entry.started_timestamp !== null && typeof body.timestamp === 'number') {
+      entry.duration_ms = durationFromTimestamps(entry.started_timestamp, body.timestamp);
+    }
+    return;
+  }
+
+  if (method === 'Network.loadingFailed') {
+    const entry = capture.byRequestId.get(String(body.requestId || ''));
+    if (!entry) return;
+    entry.error = String(body.errorText || body.blockedReason || 'failed');
+    if (entry.started_timestamp !== null && typeof body.timestamp === 'number') {
+      entry.duration_ms = durationFromTimestamps(entry.started_timestamp, body.timestamp);
+    }
+  }
+}
+
+function applyInterceptTag(capture, requestId, rule) {
+  if (!capture || !requestId || !rule) return;
+  const tag = { action: rule.action, rule_id: rule.id };
+  const entry = capture.byRequestId.get(requestId);
+  if (entry) {
+    entry.intercepted = tag;
+    return;
+  }
+  capture.pendingIntercepts.set(requestId, tag);
+  if (capture.pendingIntercepts.size > 500) {
+    const first = capture.pendingIntercepts.keys().next();
+    if (!first.done) capture.pendingIntercepts.delete(first.value);
+  }
+}
+
+async function ensureFetchForTab(tabId) {
+  const capture = captureForTab(tabId, false);
+  if (!capture || capture.fetchEnabled) return;
+  await sendCdpCommand(tabId, 'Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+  capture.fetchEnabled = true;
+}
+
+async function disableFetchForTab(tabId) {
+  const capture = captureForTab(tabId, false);
+  if (!capture || !capture.fetchEnabled) return;
+  capture.fetchEnabled = false;
+  try {
+    await sendCdpCommand(tabId, 'Fetch.disable', {});
+  } catch (error) {
+    log('Fetch.disable failed', describeError(error));
+  }
+}
+
+async function syncFetchForAllCaptures() {
+  const ids = Array.from(networkCaptures.keys());
+  for (let i = 0; i < ids.length; i += 1) {
+    const capture = networkCaptures.get(ids[i]);
+    if (!capture || !capture.capturing) continue;
+    if (rulesForTab(ids[i]).length > 0) await ensureFetchForTab(ids[i]);
+    else await disableFetchForTab(ids[i]);
+  }
+}
+
+async function handleFetchRequestPaused(tabId, params) {
+  const body = params && typeof params === 'object' ? params : {};
+  const requestId = String(body.requestId || '');
+  if (!requestId) return;
+  const request = body.request && typeof body.request === 'object' ? body.request : {};
+  const capture = captureForTab(tabId, false);
+  const rule = matchInterceptRule(rulesForTab(tabId), request, body.resourceType);
+  if (capture) applyInterceptTag(capture, String(body.networkId || requestId), rule);
+
+  if (!rule) {
+    await sendCdpCommand(tabId, 'Fetch.continueRequest', { requestId: requestId });
+    return;
+  }
+
+  try {
+    if (rule.action === 'block') {
+      await sendCdpCommand(tabId, 'Fetch.failRequest', { requestId: requestId, errorReason: 'BlockedByClient' });
+    } else if (rule.action === 'mock') {
+      await sendCdpCommand(tabId, 'Fetch.fulfillRequest', buildInterceptFulfillParams(requestId, rule));
+    } else {
+      await sendCdpCommand(tabId, 'Fetch.continueRequest', { requestId: requestId });
+    }
+  } catch (error) {
+    if (capture) capture.lastInterceptError = { rule_id: rule.id, action: rule.action, message: describeError(error) };
+    log('intercept action failed', rule.id, describeError(error));
+    try {
+      await sendCdpCommand(tabId, 'Fetch.continueRequest', { requestId: requestId });
+    } catch (fallbackError) {
+      log('intercept continue fallback failed', describeError(fallbackError));
+    }
+  }
+}
+
+function handleDebuggerEvent(source, method, params) {
+  const tabId = source && typeof source.tabId === 'number' ? source.tabId : null;
+  if (tabId === null || typeof method !== 'string') return;
+  if (method.indexOf('Network.') === 0) {
+    handleNetworkEvent(tabId, method, params);
+    touchDebuggerChannel(tabId);
+    return;
+  }
+  if (method === 'Fetch.requestPaused') {
+    touchDebuggerChannel(tabId);
+    void handleFetchRequestPaused(tabId, params).catch((error) => {
+      log('Fetch.requestPaused failed', describeError(error));
+    });
+  }
+}
+
+function handleDebuggerDetach(tabId, reason) {
+  markNetworkCaptureDetached(tabId);
+  clearDebuggerSession(tabId);
+  log('debugger detached by target', tabId, reason || 'unknown reason');
+}
+
+// ---------------------------------------------------------------------------
+// Network tools
+// ---------------------------------------------------------------------------
+
+async function startNetworkCapture(tab) {
+  const capture = captureForTab(tab.id, true);
+  if (capture.capturing) return capture;
+  capture.entries = [];
+  capture.byRequestId = new Map();
+  capture.pendingIntercepts = new Map();
+  capture.fetchEnabled = false;
+  capture.lastInterceptError = null;
+  capture.startedAt = Date.now();
+  capture.capturing = true;
+  try {
+    await sendCdpCommand(tab.id, 'Network.enable', {});
+    if (rulesForTab(tab.id).length > 0) await ensureFetchForTab(tab.id);
+    return capture;
+  } catch (error) {
+    capture.capturing = false;
+    capture.startedAt = null;
+    capture.fetchEnabled = false;
+    if (!error || error.code !== 'CAPABILITY_UNAVAILABLE') {
+      try {
+        await sendCdpCommand(tab.id, 'Network.disable', {});
+      } catch (disableError) {
+        log('Network.disable rollback failed', describeError(disableError));
+      }
+    }
+    throw error;
+  }
+}
+
+async function stopNetworkCapture(tab) {
+  const capture = captureForTab(tab.id, false);
+  if (!capture) return null;
+  capture.capturing = false;
+  capture.pendingIntercepts.clear();
+  if (debuggerSessions.has(tab.id)) {
+    if (capture.fetchEnabled) await disableFetchForTab(tab.id);
+    try {
+      await sendCdpCommand(tab.id, 'Network.disable', {});
+    } catch (error) {
+      log('Network.disable failed', describeError(error));
+    }
+  }
+  capture.fetchEnabled = false;
+  return capture;
+}
+
+async function netCaptureTool(args) {
+  const rawAction = args ? args.action : undefined;
+  if (typeof rawAction !== 'string' || rawAction.trim() === '') {
+    throw new ToolError('BAD_ARGS', 'args.action must be start, stop or status', { action: rawAction === undefined ? null : rawAction });
+  }
+  const action = rawAction.trim().toLowerCase();
+  if (action !== 'start' && action !== 'stop' && action !== 'status') {
+    throw new ToolError('BAD_ARGS', 'args.action must be start, stop or status', { action: rawAction });
+  }
+  const tab = await resolveTab(args);
+  if (!tab || typeof tab.id !== 'number') throw new ToolError('NOT_FOUND', 'no active tab is available');
+
+  if (action === 'start') {
+    const capture = await startNetworkCapture(tab);
+    return {
+      capturing: capture.capturing === true,
+      tab_id: tabIdString(tab.id),
+      started_at: capture.startedAt,
+      capacity: NET_CAPTURE_CAPACITY,
+    };
+  }
+
+  if (action === 'stop') {
+    const capture = await stopNetworkCapture(tab);
+    return {
+      capturing: false,
+      tab_id: tabIdString(tab.id),
+      entries: capture ? capture.entries.length : 0,
+    };
+  }
+
+  const capture = captureForTab(tab.id, false);
+  const result = {
+    capturing: !!(capture && capture.capturing),
+    tab_id: tabIdString(tab.id),
+    entries: capture ? capture.entries.length : 0,
+  };
+  if (capture && typeof capture.startedAt === 'number') result.started_at = capture.startedAt;
+  return result;
+}
+
+async function netLogTool(args) {
+  const sinceSeq = readBoundedInteger(args.since_seq, 0, 0, Number.MAX_SAFE_INTEGER, 'args.since_seq');
+  const limit = readBoundedInteger(args.limit, 100, 1, 1000, 'args.limit');
+  const includeHeaders = readBoolean(args.include_headers, false, 'args.include_headers');
+  const urlContains = readOptionalString(args.url_contains, 'args.url_contains');
+  const method = readOptionalString(args.method, 'args.method');
+  const resourceType = readOptionalString(args.resource_type, 'args.resource_type');
+  const statusMin = args.status_min === undefined || args.status_min === null ? null : readBoundedInteger(args.status_min, 0, 0, 999, 'args.status_min');
+  const statusMax = args.status_max === undefined || args.status_max === null ? null : readBoundedInteger(args.status_max, 999, 0, 999, 'args.status_max');
+  if (statusMin !== null && statusMax !== null && statusMin > statusMax) {
+    throw new ToolError('BAD_ARGS', 'args.status_min must not exceed args.status_max', { status_min: statusMin, status_max: statusMax });
+  }
+
+  let captures = [];
+  if (hasTabIdArgument(args)) {
+    const tab = await resolveTab(args);
+    const capture = captureForTab(tab.id, false);
+    if (capture) captures.push(capture);
+  } else {
+    captures = Array.from(networkCaptures.values());
+  }
+
+  const allEntries = [];
+  let capturing = false;
+  captures.forEach((capture) => {
+    if (capture && capture.capturing) capturing = true;
+    if (!capture) return;
+    for (let i = 0; i < capture.entries.length; i += 1) allEntries.push(capture.entries[i]);
+  });
+
+  const filtered = filterNetEntries(allEntries, {
+    sinceSeq: sinceSeq,
+    limit: limit,
+    urlContains: urlContains,
+    method: method,
+    resourceType: resourceType,
+    statusMin: statusMin,
+    statusMax: statusMax,
+    includeHeaders: includeHeaders,
+  });
+  return { entries: filtered.entries, next_seq: filtered.next_seq, capturing: capturing };
+}
+
+async function netClearTool(args) {
+  let captures = [];
+  if (hasTabIdArgument(args)) {
+    const tab = await resolveTab(args);
+    const capture = captureForTab(tab.id, false);
+    if (capture) captures.push(capture);
+  } else {
+    captures = Array.from(networkCaptures.values());
+  }
+  let cleared = 0;
+  captures.forEach((capture) => {
+    if (!capture) return;
+    cleared += capture.entries.length;
+    capture.entries = [];
+    capture.byRequestId = new Map();
+    capture.pendingIntercepts.clear();
+  });
+  return { cleared: cleared };
+}
+
+async function netInterceptTool(args) {
+  const rawAction = args ? args.action : undefined;
+  if (typeof rawAction !== 'string' || rawAction.trim() === '') {
+    throw new ToolError('BAD_ARGS', 'args.action must be set or clear', { action: rawAction === undefined ? null : rawAction });
+  }
+  const action = rawAction.trim().toLowerCase();
+  if (action !== 'set' && action !== 'clear') {
+    throw new ToolError('BAD_ARGS', 'args.action must be set or clear', { action: rawAction });
+  }
+  const tabScoped = hasTabIdArgument(args);
+  let tab = null;
+  if (tabScoped) {
+    tab = await resolveTab(args);
+    if (!tab || typeof tab.id !== 'number') throw new ToolError('NOT_FOUND', 'the target tab does not exist');
+  }
+
+  if (action === 'clear') {
+    if (tabScoped) {
+      tabInterceptRules.delete(tab.id);
+      const capture = captureForTab(tab.id, false);
+      if (capture && capture.capturing) {
+        if (rulesForTab(tab.id).length > 0) await ensureFetchForTab(tab.id);
+        else await disableFetchForTab(tab.id);
+      }
+      return { ok: true, scope: 'tab', tab_id: tabIdString(tab.id), rules: [], applied: true };
+    }
+    browserInterceptRules = [];
+    await syncFetchForAllCaptures();
+    return { ok: true, scope: 'browser', rules: [], applied: true };
+  }
+
+  const rules = validateInterceptRules(args.rules);
+  if (tabScoped) {
+    await startNetworkCapture(tab);
+    const previous = tabInterceptRules.get(tab.id) || null;
+    tabInterceptRules.set(tab.id, rules);
+    try {
+      await ensureFetchForTab(tab.id);
+    } catch (error) {
+      if (previous === null) tabInterceptRules.delete(tab.id);
+      else tabInterceptRules.set(tab.id, previous);
+      throw error;
+    }
+    return {
+      ok: true,
+      scope: 'tab',
+      tab_id: tabIdString(tab.id),
+      rules: rules.map(publicInterceptRule),
+      applied: true,
+    };
+  }
+
+  const previous = browserInterceptRules;
+  browserInterceptRules = rules;
+  try {
+    await syncFetchForAllCaptures();
+  } catch (error) {
+    browserInterceptRules = previous;
+    try {
+      await syncFetchForAllCaptures();
+    } catch (rollbackError) {
+      log('intercept rollback sync failed', describeError(rollbackError));
+    }
+    throw error;
+  }
+  return { ok: true, scope: 'browser', rules: rules.map(publicInterceptRule), applied: true };
+}
+
+// ---------------------------------------------------------------------------
+// Downloads
+// ---------------------------------------------------------------------------
+
+function downloadSummary(item, includeTab) {
+  const started = item && item.startTime ? Date.parse(item.startTime) : NaN;
+  const result = {
+    id: item && typeof item.id === 'number' ? item.id : null,
+    filename: item && typeof item.filename === 'string' ? item.filename : '',
+    url: item && typeof item.url === 'string' ? item.url : '',
+    state: item && typeof item.state === 'string' ? item.state : '',
+    bytes_received: item && typeof item.bytesReceived === 'number' ? item.bytesReceived : 0,
+    total_bytes: item && typeof item.totalBytes === 'number' ? item.totalBytes : 0,
+    danger: item && typeof item.danger === 'string' ? item.danger : 'safe',
+    exists: !!(item && item.exists === true),
+    started_at: Number.isFinite(started) ? started : null,
+  };
+  if (includeTab && item && typeof item.tabId === 'number' && item.tabId >= 0) {
+    result.tab_id = tabIdString(item.tabId);
+  }
+  return result;
+}
+
+function downloadSortValue(item) {
+  const started = item && item.startTime ? Date.parse(item.startTime) : NaN;
+  return Number.isFinite(started) ? started : 0;
+}
+
+// A download that started just before download_wait was called must still be a
+// candidate. Prefer the newest such download and ignore anything that started
+// more than five seconds before the call, so an unrelated old entry never wins.
+function selectDownloadWaitCandidate(items, baselineIds, callStartedAt, recentWindowMs) {
+  const cutoff = callStartedAt - recentWindowMs;
+  const candidates = [];
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (!item || typeof item.id !== 'number') continue;
+    const started = downloadSortValue(item);
+    const isNew = !baselineIds.has(item.id);
+    const isRecent = started > 0 && started >= cutoff;
+    if (!isNew && !isRecent) continue;
+    if (started > 0 && started < cutoff) continue;
+    candidates.push(item);
+  }
+  candidates.sort((a, b) => {
+    const delta = downloadSortValue(b) - downloadSortValue(a);
+    if (delta !== 0) return delta;
+    return b.id - a.id;
+  });
+  return candidates.length > 0 ? candidates[0] : null;
+}
+
+async function downloadListTool(args) {
+  const limit = readBoundedInteger(args.limit, 50, 1, 200, 'args.limit');
+  let items;
+  try {
+    items = await chrome.downloads.search({});
+  } catch (error) {
+    throw new ToolError('INTERNAL', 'the downloads list could not be read: ' + describeError(error));
+  }
+  const sorted = (Array.isArray(items) ? items.slice() : []).sort((a, b) => {
+    const delta = downloadSortValue(b) - downloadSortValue(a);
+    if (delta !== 0) return delta;
+    return (b && typeof b.id === 'number' ? b.id : 0) - (a && typeof a.id === 'number' ? a.id : 0);
+  });
+  return { downloads: sorted.slice(0, limit).map((item) => downloadSummary(item, true)) };
+}
+
+async function downloadWaitTool(args, frame) {
+  const id = parseDownloadId(args.id);
+  const timeoutMs = readBoundedInteger(args.timeout_ms, 30000, 100, 120000, 'args.timeout_ms');
+  const startedAt = Date.now();
+  let baselineIds = null;
+  if (id === null) {
+    let items;
+    try {
+      items = await chrome.downloads.search({});
+    } catch (error) {
+      throw new ToolError('INTERNAL', 'the downloads list could not be read: ' + describeError(error));
+    }
+    baselineIds = new Set((Array.isArray(items) ? items : []).filter((item) => item && typeof item.id === 'number').map((item) => item.id));
+  }
+
+  while (true) {
+    let items;
+    try {
+      items = await chrome.downloads.search(id === null ? {} : { id: id });
+    } catch (error) {
+      throw new ToolError('INTERNAL', 'the download state could not be read: ' + describeError(error));
+    }
+    const list = Array.isArray(items) ? items : [];
+    let item = null;
+    if (id !== null) {
+      for (let i = 0; i < list.length; i += 1) {
+        if (list[i] && list[i].id === id) {
+          item = list[i];
+          break;
+        }
+      }
+    } else {
+      item = selectDownloadWaitCandidate(list, baselineIds, startedAt, DOWNLOAD_RECENT_WINDOW_MS);
+    }
+
+    if (item && (item.state === 'complete' || item.state === 'interrupted')) {
+      const summary = downloadSummary(item, false);
+      return {
+        id: summary.id,
+        state: summary.state,
+        filename: summary.filename,
+        url: summary.url,
+        bytes_received: summary.bytes_received,
+        total_bytes: summary.total_bytes,
+      };
+    }
+
+    const waited = Date.now() - startedAt;
+    if (waited >= timeoutMs) {
+      const details = { waited_ms: waited };
+      if (id !== null) details.id = id;
+      throw new ToolError('TIMEOUT', 'no download finished within ' + timeoutMs + ' ms', details);
+    }
+    await sleep(DOWNLOAD_POLL_MS);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File uploads
+// ---------------------------------------------------------------------------
+
+function filePathToFileUrl(filePath) {
+  const normalized = String(filePath).replace(/\\/g, '/');
+  if (/^[A-Za-z]:\//.test(normalized)) return 'file:///' + normalized;
+  if (normalized.indexOf('//') === 0) return 'file:' + normalized;
+  if (normalized.charAt(0) === '/') return 'file://' + normalized;
+  return 'file:///' + normalized;
+}
+
+// DOM.setFileInputFiles can attach a path that does not exist, producing an
+// empty File entry instead of a CDP error. The extension page can read file
+// URLs under its host permission, so probe each path once before attaching it.
+async function ensureUploadFilesExist(files) {
+  const results = await Promise.all(files.map(async (file) => {
+    try {
+      const response = await fetch(filePathToFileUrl(file), { method: 'HEAD', cache: 'no-store' });
+      if (response && response.ok) return { file: file, ok: true };
+      return { file: file, ok: false };
+    } catch (error) {
+      return { file: file, ok: false };
+    }
+  }));
+  for (let i = 0; i < results.length; i += 1) {
+    if (!results[i].ok) {
+      throw new ToolError('BAD_ARGS', 'the file could not be read: ' + results[i].file, { path: results[i].file });
+    }
+  }
+}
+
+// chrome.debugger.sendCommand resolves the CDP result object. DOM.getDocument
+// wraps the root as {root:{nodeId}}, while DOM.querySelector returns {nodeId}
+// directly, so read both shapes instead of assuming the root is top-level.
+function readCdpNodeId(result) {
+  if (!result || typeof result !== 'object') return null;
+  if (typeof result.nodeId === 'number' && result.nodeId > 0) return result.nodeId;
+  if (result.root && typeof result.root.nodeId === 'number' && result.root.nodeId > 0) {
+    return result.root.nodeId;
+  }
+  return null;
+}
+
+async function uploadFileTool(args) {
+  const target = args && typeof args.target === 'string' ? args.target.trim() : '';
+  if (!target) {
+    throw new ToolError('BAD_ARGS', 'args.target is required; use an @eN reference or a CSS selector');
+  }
+  if (!Array.isArray(args.files) || args.files.length < 1 || args.files.length > MAX_UPLOAD_FILES) {
+    throw new ToolError('BAD_ARGS', 'args.files must contain between 1 and ' + MAX_UPLOAD_FILES + ' absolute paths', { count: Array.isArray(args.files) ? args.files.length : null });
+  }
+  const files = [];
+  for (let i = 0; i < args.files.length; i += 1) {
+    const raw = args.files[i];
+    if (!isAbsoluteFilePath(raw)) {
+      throw new ToolError('BAD_ARGS', 'each upload path must be an absolute file path', { path: raw === undefined || raw === null ? null : String(raw) });
+    }
+    files.push(raw.trim());
+  }
+  await ensureUploadFilesExist(files);
+
+  const tab = await resolveTab(args);
+  if (!tab || typeof tab.id !== 'number') throw new ToolError('NOT_FOUND', 'no active tab is available');
+  if (isRestrictedUrl(tab.url)) {
+    throw new ToolError('CAPABILITY_UNAVAILABLE', 'this page cannot be scripted: ' + String(tab.url), { url: tab.url, reason: 'restricted_scheme' });
+  }
+
+  const uploadTarget = await requestContentResult(tab, { type: 'corvus.upload_target', target: target });
+  if (!uploadTarget || typeof uploadTarget.selector !== 'string' || uploadTarget.selector === '') {
+    throw new ToolError('INTERNAL', 'the file input could not be resolved to a selector');
+  }
+
+  const documentResult = await sendCdpCommand(tab.id, 'DOM.getDocument', { depth: 0 });
+  const rootNodeId = readCdpNodeId(documentResult);
+  if (rootNodeId === null) throw new ToolError('INTERNAL', 'the document root could not be read');
+
+  let found;
+  try {
+    found = await sendCdpCommand(tab.id, 'DOM.querySelector', { nodeId: rootNodeId, selector: uploadTarget.selector });
+  } catch (error) {
+    if (error && error.code === 'NOT_FOUND') throw error;
+    throw new ToolError('NOT_FOUND', 'the file input disappeared from the page', { selector: uploadTarget.selector });
+  }
+  const foundNodeId = readCdpNodeId(found);
+  if (foundNodeId === null) {
+    throw new ToolError('NOT_FOUND', 'the file input disappeared from the page', { selector: uploadTarget.selector });
+  }
+
+  const described = await sendCdpCommand(tab.id, 'DOM.describeNode', { nodeId: foundNodeId, depth: 0 });
+  const node = described && described.node ? described.node : null;
+  const nodeName = node && typeof node.nodeName === 'string' ? node.nodeName.toUpperCase() : '';
+  const attributes = node && Array.isArray(node.attributes) ? node.attributes : [];
+  let inputType = '';
+  for (let i = 0; i + 1 < attributes.length; i += 2) {
+    if (String(attributes[i]).toLowerCase() === 'type') {
+      inputType = String(attributes[i + 1]).toLowerCase();
+      break;
+    }
+  }
+  if (nodeName !== 'INPUT' || inputType !== 'file') {
+    throw new ToolError('BAD_ARGS', 'the target is not a file input', { reason: 'not_a_file_input', tag: nodeName.toLowerCase(), input_type: inputType || null });
+  }
+
+  try {
+    await sendCdpCommand(tab.id, 'DOM.setFileInputFiles', { files: files, nodeId: foundNodeId });
+  } catch (error) {
+    if (error && error.code === 'CAPABILITY_UNAVAILABLE') throw error;
+    const message = describeError(error);
+    if (/No such file|not found|Could not read file|failed to read|ENOENT|unable to read/i.test(message)) {
+      let missingPath = files[0];
+      for (let i = 0; i < files.length; i += 1) {
+        if (message.indexOf(files[i]) !== -1) {
+          missingPath = files[i];
+          break;
+        }
+      }
+      throw new ToolError('BAD_ARGS', 'the file could not be attached: ' + message, { path: missingPath });
+    }
+    throw new ToolError('INTERNAL', 'the file selection failed: ' + message);
+  }
+
+  const selectorLiteral = JSON.stringify(uploadTarget.selector);
+  const script = '(function () {' +
+    ' var el = document.querySelector(' + selectorLiteral + ');' +
+    ' if (!el) return false;' +
+    ' el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));' +
+    ' el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));' +
+    ' return true;' +
+    '})()';
+  const dispatchResult = await sendCdpCommand(tab.id, 'Runtime.evaluate', {
+    expression: script,
+    returnByValue: true,
+    userGesture: true,
+  });
+  if (dispatchResult && dispatchResult.exceptionDetails) {
+    throw new ToolError('INTERNAL', 'the input and change events could not be dispatched');
+  }
+  if (dispatchResult && dispatchResult.result && dispatchResult.result.value === false) {
+    throw new ToolError('NOT_FOUND', 'the file input disappeared after files were attached', { selector: uploadTarget.selector });
+  }
+
+  const resolvedTarget = { tag: uploadTarget.tag || 'input', text: uploadTarget.text || '' };
+  if (uploadTarget.ref) resolvedTarget.ref = uploadTarget.ref;
+  const input = { multiple: uploadTarget.multiple === true };
+  if (uploadTarget.accept) input.accept = uploadTarget.accept;
+  return { uploaded: true, files: files, target: resolvedTarget, input: input };
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Navigation: issue, wait for the new document, read the final URL
 // ---------------------------------------------------------------------------
 
@@ -1755,6 +2848,7 @@ async function detachDebuggerSession(tabId, reason) {
   const session = debuggerSessions.get(numeric);
   if (!session) return false;
   debuggerSessions.delete(numeric);
+  markNetworkCaptureDetached(numeric);
   if (session.idleTimer !== null) {
     clearTimeout(session.idleTimer);
     session.idleTimer = null;
@@ -1962,8 +3056,15 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.debugger.onDetach.addListener((source, reason) => {
   const tabId = source && typeof source.tabId === 'number' ? source.tabId : null;
   if (tabId === null) return;
-  clearDebuggerSession(tabId);
-  log('debugger detached by target', tabId, reason || 'unknown reason');
+  handleDebuggerDetach(tabId, reason);
+});
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  try {
+    handleDebuggerEvent(source, method, params);
+  } catch (error) {
+    log('debugger event failed', method, describeError(error));
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -1971,6 +3072,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // local session so no timer or pending attach survives the tab.
   void detachDebuggerSession(tabId, 'tab_closed');
   clearDebuggerSession(tabId);
+  cleanupNetworkForTab(tabId);
 });
 
 chrome.runtime.onInstalled.addListener(() => {

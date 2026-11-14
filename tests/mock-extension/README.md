@@ -19,7 +19,7 @@ Binary: `tests/mock-extension/target/debug/mock-extension.exe` (Windows) or
 
 ## Run against a local daemon
 
-With no answer flags the mock answers all 18 frozen tools from its own state:
+With no answer flags the mock answers all 26 frozen tools from its own state:
 
 ```bash
 tests/mock-extension/target/debug/mock-extension.exe \
@@ -65,6 +65,24 @@ entry (or its `*` fallback), then `--answer-json` when provided and the tool
 matches `--answer-tool`, then the built-in stateful answer. When
 `--answer-json` is omitted, known tools use the stateful answers.
 
+## Two instances and browser routing
+
+`--url` and `--browser-id` are independent, so two mocks can share one daemon.
+This is how the conformance suite proves `browser_id` routing:
+
+```bash
+mock-extension.exe --url ws://127.0.0.1:7330 --browser-id mock:conformance \
+  --out ./.tmp/mock-a.jsonl --exit-after 100 &
+mock-extension.exe --url ws://127.0.0.1:7330 --browser-id mock:b \
+  --out ./.tmp/mock-b.jsonl --exit-after 100 &
+```
+
+With two browsers connected, a tool call that omits `browser_id` is rejected
+by the daemon as BAD_ARGS with `details.reason="multiple_browsers"`; an
+explicit known `browser_id` routes the command to that mock; an unknown one is
+TRANSPORT_DOWN with `details.browser_id`. `browser_list` is answered by the
+daemon from its registry, never sent to a mock.
+
 ## Wire assumptions
 
 The mock matches the protocol v1 contract in `docs/02-architecture.md` section 4:
@@ -76,14 +94,16 @@ The mock matches the protocol v1 contract in `docs/02-architecture.md` section 4
   `meta`, and puts the raw tool result in `args`.
 - A failed command response sets `args` to `null` and adds a top-level
   `error: {"code":"<ErrorCode>","message":"...","retryable":<bool>}`.
+- `browser_id` is stripped by the daemon before forwarding; the mock sees the
+  routed command with its `tab_id` and other arguments intact.
 
 ## Stateful answers
 
 The mock keeps one tab, `tab-1`, at `about:blank`, with `next_tab=2`.
 `browser_navigate` updates the tab URL and history; `tab_new` creates
-`tab-2`, `tab-3` and so on. The active tab is tracked, and every answer that
-takes a `tab_id` resolves it against the same state, so tab tests do not need
-canned data.
+`tab-2`, `tab-3` and so on. Tab ids are strings. The active tab is tracked,
+and every answer that takes a `tab_id` resolves it against the same state, so
+tab tests do not need canned data.
 
 Representative stateful results:
 
@@ -100,6 +120,31 @@ Representative stateful results:
 - `browser_history` moves through the tab's recorded history.
 - `tab_list`, `tab_new`, `tab_switch` and `tab_close` mutate the same tab
   list; unknown tab ids return NOT_FOUND.
+
+### M2b tools
+
+The eight M2b tools also answer from state, so one mock run covers the whole
+26-tool surface:
+
+- `net_capture` `start` seeds four network entries and reports
+  `capacity:2000`; `status` reports the entry count; `stop` stops capture.
+- `net_log` filters by `since_seq`, `limit`, `tab_id`, `url_contains`,
+  `method`, `resource_type`, `status_min` and `status_max`. Header maps are
+  present only when `include_headers:true`. `next_seq` is the last returned
+  sequence or `since_seq` when nothing matches.
+- `net_clear` returns `{"cleared":n}` and empties the stored entries.
+- `net_intercept` `set` validates string rule ids (non-empty, at most 64,
+  unique), accepts 1 to 50 rules, and rejects an invalid `url_regex` with
+  BAD_ARGS and `details.rule_id`. `clear` returns the empty rule list.
+- `download_list` returns two synthetic downloads with numeric ids, newest
+  first: `2 corvus-report.txt` and `1 corvus-notes.txt`.
+- `download_wait` accepts a decimal-string download id; `"1"` and `"2"` exist.
+  A non-decimal id is BAD_ARGS, and an unknown decimal id is TIMEOUT with
+  `details.waited_ms` and `details.id`. Without an id it returns the newest
+  download.
+- `upload_file` accepts a target and 1 to 10 absolute paths. A target
+  containing `not-file` is BAD_ARGS `not_a_file_input`; a path containing
+  `missing` is BAD_ARGS with `details.path`.
 
 ## Canned answers and placeholders
 

@@ -41,7 +41,7 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
                                                |  Corvus extension (MV3, popup)   |
                                                +-----------------------------+----+
                                                                              |
-                                                       Edge / Chrome / Firefox / ...
+                                                       Edge / Chrome / Firefox / ... (one extension per connected browser)
 
 - **corvusd** - the daemon: MCP server, transport hub, command router, session recorder, site memory.
 - **corvus** - the CLI: doctor, serve, attach, session replay, bench.
@@ -57,7 +57,9 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 
 ### Status
 
-M1 is implemented end to end: the daemon, the extension and the MCP server expose the four core tools on three-platform CI. M2 wave 1 ships 18 tools end to end, adding text and HTML extraction, find, hover, press, scroll, select, JavaScript evaluation, waits, history and tab management. See [docs/03-roadmap.md](docs/03-roadmap.md) and [docs/02-architecture.md](docs/02-architecture.md).
+M1 is implemented end to end: the daemon, the extension and the MCP server expose the four core tools on three-platform CI. M2 ships 26 tools in two waves: wave 1 added text and HTML extraction, find, hover, press, scroll, select, JavaScript evaluation, waits, history and tab management; wave 2 added browser listing and routing, network capture and interception, downloads and uploads. See [docs/03-roadmap.md](docs/03-roadmap.md) and [docs/02-architecture.md](docs/02-architecture.md).
+
+Network capture is opt-in per tab and keeps a 2000-entry ring. Interception supports block, mock and continue rules. Downloads can be listed and awaited, and uploads set file inputs through CDP, including hidden ones.
 
 ### Development
 
@@ -114,7 +116,7 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
                                                  |   Corvus 扩展（MV3，弹窗）      |
                                                  +-----------------------------+----+
                                                                                |
-                                                         Edge / Chrome / Firefox / ...
+                                                         Edge / Chrome / Firefox / ... (one extension per connected browser)
 
 - **corvusd**：守护进程。MCP 服务端、传输中枢、命令路由、会话录制、站点记忆。
 - **corvus**：命令行。doctor、serve、attach、会话回放、bench。
@@ -130,7 +132,9 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 
 ### 状态
 
-M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的 CI 上提供四个核心工具。M2 第一波已端到端落地，工具面扩到 18 个：新增文本与 HTML 提取、查找、悬停、按键、滚动、下拉选择、JS 求值、等待、前进后退与标签管理。见 [docs/03-roadmap.zh.md](docs/03-roadmap.zh.md) 与 [docs/02-architecture.zh.md](docs/02-architecture.zh.md)。
+M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的 CI 上提供四个核心工具。M2 分两波落地，工具面达到 26 个：第一波新增文本与 HTML 提取、查找、悬停、按键、滚动、下拉选择、JS 求值、等待、前进后退与标签管理；第二波新增浏览器列表与路由、网络捕获与拦截、下载与上传。见 [docs/03-roadmap.zh.md](docs/03-roadmap.zh.md) 与 [docs/02-architecture.zh.md](docs/02-architecture.zh.md)。
+
+网络捕获按标签显式开启，每个标签保留 2000 条环形缓冲。拦截支持 block、mock 与 continue 规则；下载可列出并等待完成，上传通过 CDP 设置文件 input，隐藏 input 也可用。
 
 ### 开发
 

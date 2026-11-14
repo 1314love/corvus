@@ -1,5 +1,7 @@
 //! Tool catalogue: names, JSON schemas, descriptions and MCP annotations.
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use corvus_proto::{ErrorBody, ErrorCode};
 use serde_json::{json, Map, Value};
 
@@ -14,7 +16,7 @@ struct Spec {
     open_world: bool,
 }
 
-const SPECS: [Spec; 18] = [
+const SPECS: [Spec; 26] = [
     Spec {
         name: "browser_navigate",
         title: "Navigate",
@@ -195,6 +197,86 @@ const SPECS: [Spec; 18] = [
         idempotent: true,
         open_world: true,
     },
+    Spec {
+        name: "browser_list",
+        title: "List browsers",
+        description: "List the browsers currently connected to the daemon, sorted by connection time. The result is answered locally from the transport registry and never reaches a browser.",
+        schema: browser_list_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "net_capture",
+        title: "Network capture",
+        description: "Start, stop or inspect network capture for a tab. Starting attaches the debugger when needed, enables the network domain and keeps a 2000-entry per-tab ring buffer that survives same-tab navigation.",
+        schema: net_capture_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "net_log",
+        title: "Network log",
+        description: "Return captured network entries, optionally filtered by url, method, resource type and status range. Entries are sorted by sequence; request and response headers are included only when requested.",
+        schema: net_log_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "net_clear",
+        title: "Clear network log",
+        description: "Clear captured network entries for one tab, or for every captured tab of the browser when tab_id is omitted.",
+        schema: net_clear_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "net_intercept",
+        title: "Network interception",
+        description: "Replace the network interception rules for a tab, or browser-wide when tab_id is omitted. Rules are matched in order; each matching request is blocked, mocked or continued.",
+        schema: net_intercept_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "download_list",
+        title: "List downloads",
+        description: "List recent downloads for a browser, newest first, with state, byte counts and local file availability.",
+        schema: download_list_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "download_wait",
+        title: "Wait for download",
+        description: "Wait until a download reaches the complete or interrupted state, then report its id, state, filename, url and byte counts. Without an id it waits for the most recent download started after the call. A timeout is reported as TIMEOUT.",
+        schema: download_wait_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "upload_file",
+        title: "Upload file",
+        description: "Set one or more local files on a file input resolved through the debugger channel, so hidden inputs work, then dispatch input and change events.",
+        schema: upload_file_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        open_world: false,
+    },
 ];
 
 /// Names of every tool, in catalogue order.
@@ -207,11 +289,13 @@ pub fn definitions() -> Vec<Value> {
     SPECS
         .iter()
         .map(|spec| {
+            let mut schema = (spec.schema)();
+            add_browser_id(&mut schema);
             json!({
                 "name": spec.name,
                 "title": spec.title,
                 "description": spec.description,
-                "inputSchema": (spec.schema)(),
+                "inputSchema": schema,
                 "annotations": {
                     "readOnlyHint": spec.read_only,
                     "destructiveHint": spec.destructive,
@@ -221,6 +305,19 @@ pub fn definitions() -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Add the optional routing field every tool accepts.
+fn add_browser_id(schema: &mut Value) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(
+            "browser_id".to_string(),
+            json!({
+                "type": "string",
+                "description": "Browser to route the call to; the only connected browser when omitted.",
+            }),
+        );
+    }
 }
 
 fn navigate_schema() -> Value {
@@ -629,6 +726,234 @@ fn tab_switch_schema() -> Value {
     })
 }
 
+fn browser_list_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false,
+    })
+}
+
+fn net_capture_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["start", "stop", "status"],
+                "description": "Start capture, stop capture, or report capture state.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to capture; the active tab when omitted.",
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": false,
+    })
+}
+
+fn net_log_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": {
+                "type": "string",
+                "description": "Tab whose captured entries to read; every captured tab of the browser when omitted.",
+            },
+            "since_seq": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0,
+                "description": "Return entries with a sequence number greater than this value.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000,
+                "default": 100,
+                "description": "Upper bound on the entries returned after filtering.",
+            },
+            "url_contains": {
+                "type": "string",
+                "description": "Only return entries whose url contains this text.",
+            },
+            "method": {
+                "type": "string",
+                "description": "Only return requests with this HTTP method.",
+            },
+            "resource_type": {
+                "type": "string",
+                "description": "Only return entries with this network resource type.",
+            },
+            "status_min": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 599,
+                "description": "Only return responses with a status at or above this value.",
+            },
+            "status_max": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 599,
+                "description": "Only return responses with a status at or below this value.",
+            },
+            "include_headers": {
+                "type": "boolean",
+                "default": false,
+                "description": "Include request and response headers in each entry.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn net_clear_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to clear; every captured tab of the browser when omitted.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn net_intercept_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["set", "clear"],
+                "description": "Replace the rule set or clear it.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to scope the rules to; browser-wide rules when omitted.",
+            },
+            "rules": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "description": "Rules to apply in order; the first matching rule wins. Required for action set.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                            "description": "Caller-chosen rule identifier, unique in the set.",
+                        },
+                        "url_regex": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "JavaScript regular expression matched against the request url.",
+                        },
+                        "method": {
+                            "type": "string",
+                            "description": "Only match this HTTP method.",
+                        },
+                        "resource_type": {
+                            "type": "string",
+                            "description": "Only match this network resource type.",
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["block", "mock", "continue"],
+                            "description": "What to do with a matching request.",
+                        },
+                        "status": {
+                            "type": "integer",
+                            "minimum": 100,
+                            "maximum": 599,
+                            "default": 200,
+                            "description": "Response status for a mock rule.",
+                        },
+                        "headers": {
+                            "type": "object",
+                            "additionalProperties": { "type": "string" },
+                            "description": "Response headers for a mock rule.",
+                        },
+                        "body_base64": {
+                            "type": "string",
+                            "description": "Base64 response body for a mock rule, at most 1 MiB decoded.",
+                        },
+                    },
+                    "required": ["id", "url_regex", "action"],
+                    "additionalProperties": false,
+                },
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": false,
+    })
+}
+
+fn download_list_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "default": 50,
+                "description": "Upper bound on the downloads returned.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn download_wait_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "Download to wait for; the most recent download started after the call when omitted.",
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 120000,
+                "default": 30000,
+                "description": "Maximum time to wait for the download to settle.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn upload_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "File input reference from page_snapshot such as @e12, or a CSS selector.",
+            },
+            "files": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 },
+                "minItems": 1,
+                "maxItems": 10,
+                "description": "Absolute local file paths to set on the input.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab that holds the input; the active tab when omitted.",
+            },
+        },
+        "required": ["target", "files"],
+        "additionalProperties": false,
+    })
+}
+
 /// Check a tool call against the catalogue and normalise its arguments.
 ///
 /// Everything this function rejects is a caller mistake, so the returned error
@@ -645,6 +970,7 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
         }
     };
     let mut object = arguments.as_object().cloned().unwrap_or_default();
+    optional_string(&object, "browser_id", name)?;
     match name {
         "browser_navigate" => {
             required_string(&object, "url", name)?;
@@ -774,6 +1100,60 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
         }
         "tab_switch" => {
             required_string(&object, "tab_id", name)?;
+        }
+        "browser_list" => {}
+        "net_capture" => {
+            required_choice(&object, "action", &["start", "stop", "status"], name)?;
+            optional_string(&object, "tab_id", name)?;
+        }
+        "net_log" => {
+            optional_string(&object, "tab_id", name)?;
+            optional_string(&object, "url_contains", name)?;
+            optional_string(&object, "method", name)?;
+            optional_string(&object, "resource_type", name)?;
+            optional_integer_range(&object, "since_seq", 0, u64::MAX, name)?;
+            optional_integer_range(&object, "limit", 1, 1000, name)?;
+            optional_integer_range(&object, "status_min", 100, 599, name)?;
+            optional_integer_range(&object, "status_max", 100, 599, name)?;
+            optional_bool(&object, "include_headers", name)?;
+            if let (Some(min), Some(max)) = (
+                object.get("status_min").and_then(Value::as_u64),
+                object.get("status_max").and_then(Value::as_u64),
+            ) {
+                if min > max {
+                    return Err(ErrorBody::new(
+                        ErrorCode::BadArgs,
+                        "net_log status_min must not exceed status_max",
+                    ));
+                }
+            }
+            fill_default(&mut object, "since_seq", json!(0));
+            fill_default(&mut object, "limit", json!(100));
+            fill_default(&mut object, "include_headers", json!(false));
+        }
+        "net_clear" => {
+            optional_string(&object, "tab_id", name)?;
+        }
+        "net_intercept" => {
+            required_choice(&object, "action", &["set", "clear"], name)?;
+            optional_string(&object, "tab_id", name)?;
+            if object.get("action").and_then(Value::as_str) == Some("set") {
+                validate_intercept_rules(&mut object)?;
+            }
+        }
+        "download_list" => {
+            optional_integer_range(&object, "limit", 1, 200, name)?;
+            fill_default(&mut object, "limit", json!(50));
+        }
+        "download_wait" => {
+            optional_string(&object, "id", name)?;
+            optional_integer_range(&object, "timeout_ms", 100, 120_000, name)?;
+            fill_default(&mut object, "timeout_ms", json!(30_000));
+        }
+        "upload_file" => {
+            required_string(&object, "target", name)?;
+            required_upload_files(&object)?;
+            optional_string(&object, "tab_id", name)?;
         }
         other => {
             return Err(
@@ -928,6 +1308,157 @@ fn required_keys(object: &Map<String, Value>, tool: &str) -> Result<(), ErrorBod
     }
 }
 
+fn validate_intercept_rules(object: &mut Map<String, Value>) -> Result<(), ErrorBody> {
+    let Some(Value::Array(rules)) = object.get_mut("rules") else {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            "net_intercept action set requires 1 to 50 rules",
+        ));
+    };
+    if rules.is_empty() || rules.len() > 50 {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            "net_intercept action set requires 1 to 50 rules",
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for value in rules.iter_mut() {
+        let Some(rule) = value.as_object_mut() else {
+            return Err(rule_error("", "net_intercept rules must be objects"));
+        };
+        let id = rule
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if id.is_empty() || id.chars().count() > 64 {
+            return Err(rule_error(
+                &id,
+                "net_intercept rule id must be a non-empty string of at most 64 characters",
+            ));
+        }
+        if !seen.insert(id.clone()) {
+            return Err(rule_error(&id, "net_intercept rule ids must be unique"));
+        }
+        match rule.get("url_regex").and_then(Value::as_str) {
+            Some(url_regex) if !url_regex.trim().is_empty() => {}
+            _ => {
+                return Err(rule_error(
+                    &id,
+                    "net_intercept rule url_regex must be a non-empty string",
+                ))
+            }
+        }
+        let action = match rule.get("action").and_then(Value::as_str) {
+            Some(action @ ("block" | "mock" | "continue")) => action.to_string(),
+            _ => {
+                return Err(rule_error(
+                    &id,
+                    "net_intercept rule action must be block, mock or continue",
+                ))
+            }
+        };
+        for field in ["method", "resource_type"] {
+            if let Some(value) = rule.get(field) {
+                if !value.is_string() {
+                    return Err(rule_error(
+                        &id,
+                        format!("net_intercept rule {field} must be a string"),
+                    ));
+                }
+            }
+        }
+        if action != "mock" {
+            for field in ["status", "headers", "body_base64"] {
+                if rule.contains_key(field) {
+                    return Err(rule_error(
+                        &id,
+                        format!("net_intercept rule {field} is only valid for mock rules"),
+                    ));
+                }
+            }
+            continue;
+        }
+        if let Some(status) = rule.get("status") {
+            match status.as_u64() {
+                Some(number) if (100..=599).contains(&number) => {}
+                _ => {
+                    return Err(rule_error(
+                        &id,
+                        "net_intercept rule status must be an integer from 100 to 599",
+                    ))
+                }
+            }
+        }
+        if let Some(headers) = rule.get("headers") {
+            match headers.as_object() {
+                Some(headers) if headers.values().all(Value::is_string) => {}
+                _ => {
+                    return Err(rule_error(
+                        &id,
+                        "net_intercept rule headers must be an object of strings",
+                    ))
+                }
+            }
+        }
+        if let Some(body) = rule.get("body_base64") {
+            let Some(encoded) = body.as_str() else {
+                return Err(rule_error(
+                    &id,
+                    "net_intercept rule body_base64 must be a string",
+                ));
+            };
+            let decoded = BASE64.decode(encoded).map_err(|_| {
+                rule_error(&id, "net_intercept rule body_base64 is not valid base64")
+            })?;
+            if decoded.len() > 1_048_576 {
+                return Err(rule_error(
+                    &id,
+                    "net_intercept rule body_base64 must not exceed 1 MiB decoded",
+                ));
+            }
+        }
+        rule.entry("status".to_string()).or_insert(json!(200));
+    }
+    Ok(())
+}
+
+fn rule_error(rule_id: &str, message: impl Into<String>) -> ErrorBody {
+    ErrorBody::new(ErrorCode::BadArgs, message).with_details(json!({ "rule_id": rule_id }))
+}
+
+fn required_upload_files(object: &Map<String, Value>) -> Result<(), ErrorBody> {
+    let Some(Value::Array(files)) = object.get("files") else {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            "upload_file requires 1 to 10 absolute file paths",
+        ));
+    };
+    if files.is_empty() || files.len() > 10 {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            "upload_file requires 1 to 10 absolute file paths",
+        ));
+    }
+    for file in files {
+        let Some(path) = file.as_str() else {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                "upload_file files must be absolute paths",
+            )
+            .with_details(json!({ "path": file })));
+        };
+        if path.trim().is_empty() || !std::path::Path::new(path).is_absolute() {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                "upload_file files must be absolute paths",
+            )
+            .with_details(json!({ "path": path })));
+        }
+    }
+    Ok(())
+}
+
 fn fill_default(object: &mut Map<String, Value>, field: &str, value: Value) {
     if matches!(object.get(field), None | Some(Value::Null)) {
         object.insert(field.to_string(), value);
@@ -941,7 +1472,7 @@ mod tests {
     #[test]
     fn definitions_carry_names_schemas_and_annotations() {
         let definitions = definitions();
-        assert_eq!(definitions.len(), 18);
+        assert_eq!(definitions.len(), 26);
         for definition in &definitions {
             assert!(definition.get("name").and_then(Value::as_str).is_some());
             let schema = definition.get("inputSchema").expect("schema");
@@ -980,7 +1511,93 @@ mod tests {
                 "tab_new",
                 "tab_close",
                 "tab_switch",
+                "browser_list",
+                "net_capture",
+                "net_log",
+                "net_clear",
+                "net_intercept",
+                "download_list",
+                "download_wait",
+                "upload_file",
             ]
+        );
+    }
+
+    #[test]
+    fn every_tool_schema_accepts_an_optional_browser_id() {
+        for definition in definitions() {
+            let name = definition
+                .get("name")
+                .and_then(Value::as_str)
+                .expect("tool name");
+            let properties = definition
+                .get("inputSchema")
+                .and_then(|schema| schema.get("properties"))
+                .and_then(Value::as_object)
+                .expect("properties");
+            let browser_id = properties
+                .get("browser_id")
+                .unwrap_or_else(|| panic!("{name} is missing browser_id"));
+            assert_eq!(
+                browser_id.get("type").and_then(Value::as_str),
+                Some("string"),
+                "{name} browser_id must be a string"
+            );
+        }
+        let click = validate(
+            "browser_click",
+            &json!({ "target": "@e1", "browser_id": "edge:one" }),
+        )
+        .expect("click with browser_id");
+        assert_eq!(
+            click.get("browser_id").and_then(Value::as_str),
+            Some("edge:one")
+        );
+    }
+
+    #[test]
+    fn network_download_and_upload_defaults_are_filled() {
+        let capture = validate("net_capture", &json!({ "action": "start" })).expect("capture");
+        assert_eq!(capture.get("action").and_then(Value::as_str), Some("start"));
+        let log = validate("net_log", &json!({})).expect("net_log");
+        assert_eq!(log.get("since_seq").and_then(Value::as_u64), Some(0));
+        assert_eq!(log.get("limit").and_then(Value::as_u64), Some(100));
+        assert_eq!(
+            log.get("include_headers").and_then(Value::as_bool),
+            Some(false)
+        );
+        let intercept = validate(
+            "net_intercept",
+            &json!({
+                "action": "set",
+                "rules": [
+                    { "id": "r1", "url_regex": "/api/", "action": "mock", "headers": { "x-test": "1" } }
+                ]
+            }),
+        )
+        .expect("net_intercept");
+        assert_eq!(
+            intercept
+                .get("rules")
+                .and_then(Value::as_array)
+                .and_then(|rules| rules.first())
+                .and_then(|rule| rule.get("status"))
+                .and_then(Value::as_u64),
+            Some(200)
+        );
+        let list = validate("download_list", &json!({})).expect("download_list");
+        assert_eq!(list.get("limit").and_then(Value::as_u64), Some(50));
+        let wait = validate("download_wait", &json!({})).expect("download_wait");
+        assert_eq!(wait.get("timeout_ms").and_then(Value::as_u64), Some(30_000));
+        let path = std::env::temp_dir().join("corvus-upload.txt");
+        let upload = validate(
+            "upload_file",
+            &json!({ "target": "#file", "files": [path.to_string_lossy()] }),
+        )
+        .expect("upload_file");
+        assert_eq!(
+            upload.get("files").and_then(Value::as_array).map(Vec::len),
+            Some(1)
         );
     }
 
@@ -1094,6 +1711,52 @@ mod tests {
             ("tab_close", json!({})),
             ("tab_switch", json!({})),
             ("tab_new", json!({ "active": "yes" })),
+            ("browser_list", json!({ "browser_id": 7 })),
+            ("net_capture", json!({})),
+            ("net_capture", json!({ "action": "pause" })),
+            ("net_log", json!({ "limit": 0 })),
+            ("net_log", json!({ "limit": 1001 })),
+            ("net_log", json!({ "status_min": 500, "status_max": 200 })),
+            ("net_log", json!({ "include_headers": "yes" })),
+            ("net_intercept", json!({ "action": "set" })),
+            ("net_intercept", json!({ "action": "set", "rules": [] })),
+            (
+                "net_intercept",
+                json!({
+                    "action": "set",
+                    "rules": [
+                        { "id": "r1", "url_regex": "x", "action": "block", "status": 204 }
+                    ]
+                }),
+            ),
+            (
+                "net_intercept",
+                json!({
+                    "action": "set",
+                    "rules": [
+                        { "id": "r1", "url_regex": "x", "action": "mock", "body_base64": "***" }
+                    ]
+                }),
+            ),
+            (
+                "net_intercept",
+                json!({
+                    "action": "set",
+                    "rules": [
+                        { "id": "same", "url_regex": "a", "action": "block" },
+                        { "id": "same", "url_regex": "b", "action": "block" }
+                    ]
+                }),
+            ),
+            ("download_list", json!({ "limit": 0 })),
+            ("download_wait", json!({ "timeout_ms": 99 })),
+            ("upload_file", json!({ "target": "#file" })),
+            ("upload_file", json!({ "target": "#file", "files": [] })),
+            (
+                "upload_file",
+                json!({ "target": "#file", "files": ["relative.txt"] }),
+            ),
+            ("upload_file", json!({ "target": "#file", "files": [7] })),
             ("browser_wiggle", json!({})),
         ];
         for (tool, arguments) in cases {

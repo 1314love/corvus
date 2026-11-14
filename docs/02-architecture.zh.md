@@ -77,7 +77,7 @@
 - 传输：stdio（IDE 类客户端默认）与 streamable-http，监听 127.0.0.1:7331/mcp（DSH 及 Web 类客户端默认）。
 - 工具命名：<域>_<动词>，一经发布永久稳定；别名只废弃不删除。
 - 每个工具都声明注解：readOnlyHint、destructiveHint、idempotentHint、openWorldHint。
-- 长输出按调用截断：`max_chars` 截断长字符串并置 `truncated: true`；M2 第一波不做游标分页。
+- 长输出按调用截断：`max_chars` 截断长字符串并置 `truncated: true`；M2 不做游标分页。
 - Resource：corvus://session/<id>/step/<n> 返回该步骤记录下来的页面快照，代理无需重跑即可查看历史。
 - Prompt：M1 不提供（代理应当直接用工具），M3 再评估。
 
@@ -137,6 +137,45 @@ M2 第一波冻结的工具面共 18 个。`browser_navigate`、`page_snapshot`�
 - `browser_history` 的每次 `back` 或 `forward` 都通过 CDP `Page.getNavigationHistory` 与 `Page.navigateToHistoryEntry` 精确移动一个条目，等待文档加载完成后返回最终 `url`；越界条目返回 `NOT_FOUND`。
 - `browser_wait` 至少需要一个条件；超时为 `TIMEOUT`，`details.waited_ms` 给出已等待时长。 错误带有 `details` 时，MCP 工具结果的文本会以紧凑 JSON 追加这些内容（例如 `TIMEOUT: wait timed out after 100 ms {"waited_ms":4321}`）；错误结果不携带 `structuredContent`。
 - `tab_close` 关闭活动标签并激活相邻标签时返回 `next_tab_id`。
+
+### 5.3 M2 第二波工具面
+
+M2 第二波新增 8 个工具，工具面达到 26 个。下表结果均为成功 MCP 工具结果中的 JSON 对象；失败使用第 8 节的错误分类并置 `isError`。
+
+通用路由与超时：
+
+- 每个面向浏览器的工具都接受可选的 `browser_id` 字符串输入，包括 5.2 节的 18 个工具；`browser_list` 是例外，因为它操作的是浏览器集合。省略 `browser_id` 且恰好连接一个浏览器时选择该浏览器；没有浏览器时调用失败并返回 `TRANSPORT_DOWN`；连接两个或更多浏览器时调用失败并返回 `BAD_ARGS`，`details` 为 `{"reason":"multiple_browsers","browser_ids":[...]}`。给出未知 id 时调用失败并返回 `TRANSPORT_DOWN`，`details` 为 `{"browser_id":"..."}`。现有 18 个工具的其他参数、行为和结果形状保持不变。
+- `browser_list` 不接受参数，按 `connected_at_ms` 升序返回所有已连接浏览器；它由实时传输注册表直接应答，不经过扩展往返。
+- 8 个新工具默认使用 60000 毫秒的 `meta.timeout_ms`；`download_wait` 改用 `min(args.timeout_ms + 5000, 125000)`。第 8 节的 9 个错误码保持不变。
+
+| 工具 | 参数（除标注 ? 外必填） | 结果 |
+|---|---|---|
+| `browser_list` | 无 | `browsers[]`，元素含 `browser_id`、`profile`、`version`、`capabilities[]`、`connected_at_ms`，按 `connected_at_ms` 升序 |
+| `net_capture` | `action`（`start`、`stop` 或 `status`）；`tab_id?`；`browser_id?` | start：`capturing: true`、`tab_id`、`started_at`、`capacity: 2000`；stop：`capturing: false`、`tab_id`、`entries`；status：`capturing`、`tab_id`、`started_at?`、`entries` |
+| `net_log` | `tab_id?`；`browser_id?`；`since_seq?` 默认 0；`limit?` 1..1000 默认 100；`url_contains?`；`method?`；`resource_type?`；`status_min?`；`status_max?`；`include_headers?` 默认 false | `entries[]`，元素含 `seq`、`ts`、`tab_id`、`request_id`、`method`、`url`、`status`（数字或 null）、`mime`（字符串或 null）、`resource_type`、`from_cache`、`duration_ms`（数字或 null）、`error`（字符串或 null）、`intercepted`（`{action, rule_id}` 或 null），可选 `request_headers`、`response_headers`；`next_seq`；`capturing` |
+| `net_clear` | `tab_id?`；`browser_id?` | `cleared` |
+| `net_intercept` | `action`（`set` 或 `clear`）；`browser_id?`；`tab_id?`；`rules?` 1..50 | `ok: true`、`scope`（`tab` 或 `browser`）、`tab_id?`、`rules[]`（元素含 `id`、`action`、`url_regex`，可选 `method`、`resource_type`）；`applied` |
+| `download_list` | `browser_id?`；`limit?` 1..200 默认 50 | `downloads[]`，元素含 `id`、`filename`、`url`、`state`、`bytes_received`、`total_bytes`、`danger`、`exists`、`started_at`，可选 `tab_id`；按开始时间从新到旧 |
+| `download_wait` | `browser_id?`；`id?`；`timeout_ms?` 100..120000 默认 30000 | `id`、`state`、`filename`、`url`、`bytes_received`、`total_bytes` |
+| `upload_file` | `target`；`files[]` 1..10 个绝对路径；`browser_id?`；`tab_id?` | `uploaded: true`、`files[]`、`target`（含可选 `ref`、`tag`、`text`）；`input`（含可选 `accept`、`multiple`） |
+
+捕获生命周期：
+
+- `net_capture` 按标签显式开启；省略 `tab_id` 时作用于当前活动标签。`start` 在需要时挂载 debugger 并启用 CDP Network 域；缓冲区是每个标签 2000 条的环形缓冲。挂载被拒绝时返回 `CAPABILITY_UNAVAILABLE`，`details` 为 `{"tab_id":"...","cause":"..."}`。捕获在同一标签导航后继续存在，标签关闭时静默结束。
+- `net_log` 读取捕获数据。省略 `tab_id` 时读取所选浏览器的所有已捕获标签。条目按 `seq` 升序；过滤在 `limit` 之前执行，`limit` 在过滤之后执行。`next_seq` 为最后返回的 `seq`；结果为空时等于 `since_seq`。只有 `include_headers` 为 true 时才包含头信息。`net_clear` 清除一个标签；省略 `tab_id` 时清除该浏览器的所有已捕获标签。
+
+拦截：
+
+- `net_intercept` 的 `set` 替换该作用域的规则集，`clear` 删除规则集。规则需要唯一 `id`（1..64）、必填的 `url_regex`（按 JavaScript `RegExp` 编译）以及 `block`、`mock`、`continue` 之一作为 `action`；`method` 与 `resource_type` 用于收窄匹配。正则无效时返回 `BAD_ARGS`，`details` 为 `{"rule_id":"..."}`。`mock` 接受 `status` 100..599（默认 200）、`headers` 与 `body_base64`（解码后最多 1 MiB）；这三个字段在其他 action 上无效。
+- 规则按数组顺序求值，首个匹配生效。带 `tab_id` 的规则集同时在该标签上启动捕获；不带 `tab_id` 的浏览器级规则集作用于任何正在捕获的标签。`block` 调用 CDP `Fetch.failRequest` 并传入 `BlockedByClient`；`mock` 调用 `Fetch.fulfillRequest` 并传入状态、头与 base64 body（有 body 且未给出 content type 时使用 `text/plain; charset=utf-8`）；`continue` 调用 `Fetch.continueRequest`。即使 CDP 调用失败，也必须继续被暂停的请求，并返回 `isError`。
+
+下载与上传：
+
+- `download_list` 按从新到旧返回已跟踪的下载，只暴露元数据，不返回本地文件路径。
+- `download_wait` 在所选下载到达 `complete` 或 `interrupted` 时返回。其 `id` 是字符串：非负十进制字符串选择该下载；其他字符串返回 `BAD_ARGS`，`details` 为 `{"id":"..."}`；`id` 使用 JSON 数字时在 schema 层按 `BAD_ARGS` 拒绝。
+- 未知的十进制 `id` 不会返回 `NOT_FOUND`，最终返回 `TIMEOUT`，`details` 为 `{"waited_ms":...,"id":"..."}`（未给出 `id` 时 `details` 只含 `waited_ms`）。省略 `id` 时，选择本次调用之前 5000 毫秒内新建或开始的下载，从新到旧查找，绝不选择更早的下载；已完成的候选立即返回。
+- `upload_file` 将 `target`（该标签最新快照中的 `@eN` 引用或 CSS 选择器）经 CDP 解析并调用 `DOM.setFileInputFiles`，因此隐藏的文件 input 也能使用；随后派发 `input` 与 `change` 事件。它在设置文件前逐个检查所有本地路径，文件缺失或不可读时返回 `BAD_ARGS`，`details` 为 `{"path":"..."}`。
+- 扩展没有文件访问权限时，浏览器仍可能拒绝 file URL 访问。`target` 不是 `input[type=file]` 时返回 `BAD_ARGS`，`details` 为 `{"reason":"not_a_file_input","tag":"...","input_type":"..."}`。
 
 ## 6. 扩展设计
 
@@ -209,7 +248,7 @@ SQLite 位于 ~/.corvus/corvus.db（WAL 模式）。
     enabled = true
     export_format = "jsonl"
 
-按工具覆盖超时：`browser_wait` 为 `args.timeout_ms + 5000` 毫秒、上限 125000 毫秒，`browser_eval` 为 30000 毫秒，其余工具使用 60000 毫秒默认值；路由器把所有截止时间统一限制在 125000 毫秒以内。
+按工具覆盖超时：`browser_wait` 为 `args.timeout_ms + 5000` 毫秒、上限 125000 毫秒，`browser_eval` 为 30000 毫秒，`download_wait` 为 `args.timeout_ms + 5000` 毫秒、上限 125000 毫秒，其余工具使用 60000 毫秒默认值；路由器把所有截止时间统一限制在 125000 毫秒以内。
 
 ## 11. 构建与 CI
 

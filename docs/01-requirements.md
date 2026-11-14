@@ -157,6 +157,18 @@ M2 wave 1 ships all 18 tools. The following requirements have an implemented too
 - **FR-A8** — `page_find` covers text and role lookup, and matches accessible labels and placeholders for form controls.
 - **FR-T1** — `tab_list`, `tab_new`, `tab_close` and `tab_switch` cover list, create, close and switch. Duplicate remains open.
 
+### 4.2 M2 wave 2 traceability
+
+M2 wave 2 adds eight tools for a total of 26. The following requirements now have an implemented path; partial coverage is stated explicitly. Everything not listed remains open.
+
+- **FR-C5** — `browser_list` reports the live browser set, and every browser-facing tool accepts `browser_id` to route one command to one connected browser. The routing failures are `BAD_ARGS` with `details.reason` `multiple_browsers` when several browsers are connected and no id is given, and `TRANSPORT_DOWN` when none is connected or the id is unknown. Per-browser disable and enable (FR-C6) remain open.
+- **FR-N1** — `net_capture` and `net_log` cover request method, URL, status, MIME, resource type, cache flag, duration, errors and optional headers from a 2000-entry per-tab ring. Response bodies remain open.
+- **FR-N2** — `net_intercept` covers URL-regex rules with block, mock and continue actions; mock sets status, headers and a base64 body, and the first matching rule wins. Request-body rewriting remains open.
+- **FR-N3** — the `block` action covers request blocking. Throttling and offline emulation remain open.
+- **FR-A6** — `download_list` and `download_wait` cover download tracking and completion; `upload_file` covers file-input upload through CDP, including hidden inputs. Drag-path upload and a returned local download path remain open.
+
+M3 remains: session recording and replay (FR-O1, FR-O2), export (FR-O3), site memory (FR-O4), and metrics and observability (FR-O5). Request and network-idle waits (FR-N4, FR-P5) and the storage and identity family (FR-S1–FR-S4) also remain open.
+
 ## 5. Non-functional requirements
 
 | ID | Category | Requirement |
