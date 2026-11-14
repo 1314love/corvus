@@ -13,6 +13,7 @@ commit. 每份文档在同一目录下维护英文与中文两版，同一提交
 | Architecture / 架构 | [02-architecture.md](02-architecture.md) | [02-architecture.zh.md](02-architecture.zh.md) | done |
 | Roadmap / 路线图 | [03-roadmap.md](03-roadmap.md) | [03-roadmap.zh.md](03-roadmap.zh.md) | done |
 | Install / 安装 | [04-install.md](04-install.md) | [04-install.zh.md](04-install.zh.md) | done |
+| Release notes / 发布说明 | [release-notes/v0.1.0.md](release-notes/v0.1.0.md) | [release-notes/v0.1.0.zh.md](release-notes/v0.1.0.zh.md) | done |
 | Process / 交付流程 | [PROCESS.md](PROCESS.md) | [PROCESS.zh.md](PROCESS.zh.md) | done |
 
 Reading order: charter -> requirements -> architecture -> roadmap. 阅读顺序：立项书 → 需求规格 → 架构 → 路线图。
