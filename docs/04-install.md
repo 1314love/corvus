@@ -198,6 +198,7 @@ nssm restart Corvus
 | Package fails offline | `bash scripts/dev-setup.sh` | Populate the cargo cache once with network access, or use a prepared `dist/` |
 | Script is blocked by policy | error text names ExecutionPolicy | Use `-ExecutionPolicy Bypass` as shown above |
 | `missing ...corvusd.exe` | `dist/` contents | Run `bash scripts/package.sh` first |
+| page_text/page_snapshot return TIMEOUT after the extension is reloaded or loaded from a new directory | tab_list still lists the tab; extension card is green | Reload the tab or open its URL again. Tabs keep the previous extension content script until reloaded; tab_list does not need a content script |
 
 ## Security notes
 

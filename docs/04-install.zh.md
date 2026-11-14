@@ -187,6 +187,7 @@ nssm restart Corvus
 | 离线打包失败 | `bash scripts/dev-setup.sh` | 先在有网络时填充 cargo 缓存，或使用准备好的 `dist/` |
 | 脚本被执行策略拦截 | 错误文本会指出 ExecutionPolicy | 按上文使用 `-ExecutionPolicy Bypass` |
 | 提示 `missing ...corvusd.exe` | `dist/` 内容 | 先运行 `bash scripts/package.sh` |
+| 扩展重新加载或从新目录加载后，page_text/page_snapshot 返回 TIMEOUT | tab_list 仍能列出标签页；扩展卡片为绿点 | 重新加载标签页或重新打开其 URL 即可。标签页会继续运行旧扩展的内容脚本，而 tab_list 不需要内容脚本 |
 
 ## 安全说明
 
