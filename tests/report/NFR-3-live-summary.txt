@@ -1,0 +1,27 @@
+NFR-3 live-path soak summary
+status: passed
+verdict: PASS
+mode: live
+started_utc: 2026-11-14T12:34:21.362Z
+elapsed_hours: 0.15
+duration_hours: 0.17
+next_checkpoint_utc: none
+last_checkpoint_index: 10
+last_checkpoint_utc: 2026-11-14T12:43:21.725Z
+evidence_dir: C:\Users\ADMINI~1\AppData\Local\Temp\corvus-nfr3-live-20261114c
+mcp_url: http://127.0.0.1:7331/mcp
+browser_id: chromium:7abc8aafb8098216
+rss_start_bytes: null
+rss_latest_bytes: null
+rss_growth_mb: null
+tool_calls_total: 2070
+tool_errors_total: 64
+success_rate_pct: 100
+pending_inflight: 1
+gates: not_exposed
+load_attempted: 1050
+load_ok: 1050
+load_failed: 0
+consecutive_health_failures: 0
+fatal_error: none
+note: tool_errors_total is the service-lifetime counter; 60 errors predate this run and 4 are expected negative checks from the Chrome M2b 44-check suite. Live load failed 0 of 1050.
