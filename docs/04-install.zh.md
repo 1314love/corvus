@@ -26,7 +26,7 @@ nssm 把守护进程安装为 Windows 服务、加载扩展、连接 MCP 客户�
 - nssm 2.24 或更高版本。安装脚本会依次查找 `PATH`、安装目录、Chocolatey bin 目录、
   `C:\Program Files\nssm`，也接受 `-NssmPath`。
 - `dist/` 中已有发布包，包含 `corvusd.exe`、`corvus.exe` 和 `extension/`。
-- 用于加载扩展的 Chrome 或 Edge。
+- 用于加载扩展的 Chrome 或 Edge（Chromium 120+）。
 - 只有从源码构建发布包时才需要 Rust 工具链。
 
 ## 构建发布包
@@ -124,7 +124,7 @@ Stop-Service Corvus
 
 | 时间 | 步骤 | 命令或操作 | 成功信号 |
 |---|---|---|---|
-| 0:00 | 检查前置条件 | Windows 10/11、管理员 PowerShell、nssm、Chrome 或 Edge | `nssm version` 输出版本 |
+| 0:00 | 检查前置条件 | Windows 10/11、管理员 PowerShell、nssm、Chrome 或 Edge（Chromium 120+） | `nssm version` 输出版本 |
 | 0:30 | 构建或定位发布包 | `bash scripts/package.sh`（已有 `dist/` 则跳过） | `dist/corvusd.exe` 与 `dist/corvus.exe` 存在 |
 | 1:30 | 安装服务 | `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1` | 安装脚本以 `service is running` 结束 |
 | 2:30 | 加载扩展 | 加载已解压的扩展：`%USERPROFILE%\.corvus\extension` | 弹窗绿点亮起 |

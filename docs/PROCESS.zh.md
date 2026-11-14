@@ -78,4 +78,4 @@
 - `scripts/dev-setup.sh` 定位 Rust 工具链、打印所用版本，并用 `cargo metadata --offline` 验证工作区可以解析。
 - `scripts/build.sh` 以 release 模式构建 `corvusd` 与 `corvus` 到 `dist/`，并生成 `dist/SHA256SUMS`。
 - 本机使用 `--offline` 构建，因为依赖来自已预热的 cargo 缓存、且没有通用外网。CI 正常从网络安装；两种环境的差别只有这个参数，干净构建以 CI 为准。
-- CI 在 `ubuntu-latest`、`windows-latest`、`macos-14` 上运行同样的三道门禁，见 [.github/workflows/ci.yml](../.github/workflows/ci.yml)。
+- CI 在 `ubuntu-latest`、`windows-latest`、`macos-latest` 上运行同样的三道门禁，见 [.github/workflows/ci.yml](../.github/workflows/ci.yml)。

@@ -108,4 +108,4 @@ relax it.
   two environments differ only in that flag, and CI is the authority on a clean
   build.
 - CI runs the same three gates on `ubuntu-latest`, `windows-latest` and
-  `macos-14`; see [.github/workflows/ci.yml](../.github/workflows/ci.yml).
+  `macos-latest`; see [.github/workflows/ci.yml](../.github/workflows/ci.yml).

@@ -288,7 +288,7 @@ Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capp
 ## 11. Build and CI
 
 - cargo workspace, edition 2021, MSRV pinned in rust-toolchain.toml.
-- CI matrix: windows-latest, macos-14, ubuntu-22.04; each runs fmt, clippy -D warnings, nextest.
+- CI matrix: windows-latest, macos-latest, ubuntu-22.04; each runs fmt, clippy -D warnings, nextest.
 - Extension: esbuild bundle, no framework; size budget 1MB; manifest key pinned so the extension id is stable across machines.
 - Release: cross-built binaries with checksums, GitHub release notes generated from conventional commits.
 
