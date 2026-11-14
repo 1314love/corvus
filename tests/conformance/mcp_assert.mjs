@@ -13,6 +13,15 @@
 //   node mcp_assert.mjs command  <jsonl-file> <tool> <expected-args-json>
 //   node mcp_assert.mjs command-any <jsonl-file> <tool> <expected-args-json>
 //   node mcp_assert.mjs command-mode <jsonl-file> <tool> <expected-mode>
+//   node mcp_assert.mjs session-list <body-file> <empty|initial|contains> [<session-id>] [<min-steps>]
+//   node mcp_assert.mjs steps    <body-file> <session-id> <min-steps>
+//   node mcp_assert.mjs step     <body-file> <tool> <expected-args-json> [<expected-result-json>]
+//   node mcp_assert.mjs step-seq <body-file> <tool>
+//   node mcp_assert.mjs replay   <body-file> <dry_run|live> [<tool>]
+//   node mcp_assert.mjs replay-id <body-file>
+//   node mcp_assert.mjs export   <body-file>
+//   node mcp_assert.mjs metrics  <body-file> [<ErrorCode>...]
+//   node mcp_assert.mjs logs     <body-file> [<level>] [<min-entries>]
 //
 // The body may be plain JSON or an SSE stream (event:/data: lines). Prints one
 // diagnostic line and exits 0 on success, 1 on a failed assertion.
@@ -49,6 +58,12 @@ const TOOLS = (
     "download_list",
     "download_wait",
     "upload_file",
+    "session_list",
+    "session_steps",
+    "session_replay",
+    "session_export",
+    "metrics",
+    "logs_tail",
   ].join(",")
 )
   .split(",")
@@ -464,6 +479,38 @@ if (mode === "tools") {
       properties: ["target", "files"],
       arrays: [["files", 1, 10]],
     },
+    session_list: {
+      required: [],
+      properties: ["limit", "since_ms"],
+      defaults: [["limit", 50]],
+      ranges: [["limit", 1, 200]],
+    },
+    session_steps: {
+      required: ["session_id"],
+      properties: ["session_id", "from_seq", "limit"],
+      defaults: [["from_seq", 0], ["limit", 100]],
+      ranges: [["limit", 1, 500]],
+    },
+    session_replay: {
+      required: ["session_id"],
+      properties: ["session_id", "from_seq", "to_seq", "mode", "browser_id", "continue_on_error"],
+      defaults: [["mode", "dry_run"], ["continue_on_error", false]],
+      enums: [["mode", ["dry_run", "live"]]],
+    },
+    session_export: {
+      required: ["session_id"],
+      properties: ["session_id", "format"],
+      defaults: [["format", "jsonl"]],
+      enums: [["format", ["jsonl"]]],
+    },
+    metrics: { required: [], properties: [] },
+    logs_tail: {
+      required: [],
+      properties: ["limit", "level", "since_ms"],
+      defaults: [["limit", 200]],
+      ranges: [["limit", 1, 1000]],
+      enums: [["level", ["debug", "info", "warn", "error"]]],
+    },
   };
   const problems = [];
   for (const tool of tools) {
@@ -532,7 +579,7 @@ if (mode === "tools") {
       )
       .join(" "),
   );
-  ok("input schemas match the frozen 26-tool argument shapes and declare browser_id");
+  ok("input schemas match the frozen 32-tool argument shapes and declare browser_id");
   process.exit(0);
 }
 
@@ -675,4 +722,447 @@ if (mode === "result") {
   process.exit(0);
 }
 
-fail("unknown mode " + JSON.stringify(mode) + " (use protocol, tools, call, error-detail, navigate, snapshot, result, command or command-mode)");
+if (mode === "session-list") {
+  const expectationName = rest[0] || "";
+  const sessionId = rest[1] || "";
+  const minSteps = Number(rest[2] || 0);
+  const { parsed } = structuredToolText(message, "session_list");
+  if (!Array.isArray(parsed.sessions)) fail("session_list has no sessions array");
+  if (typeof parsed.total !== "number") fail("session_list has no numeric total");
+  if (parsed.total < parsed.sessions.length) fail("session_list total is smaller than the returned array");
+
+  if (expectationName === "empty") {
+    if (parsed.sessions.length !== 0 || parsed.total !== 0) {
+      fail(
+        "session_list expected empty, got " +
+          parsed.sessions.length +
+          " session(s), total=" +
+          parsed.total +
+          ": " +
+          JSON.stringify(parsed.sessions).slice(0, 300),
+      );
+    }
+    ok("session_list empty total=0");
+    process.exit(0);
+  }
+
+  if (expectationName === "initial") {
+    if (!sessionId) fail("usage: session-list <body> initial <session-id>");
+    if (parsed.sessions.length !== 1 || parsed.total !== 1) {
+      fail(
+        "session_list expected only the current session, got " +
+          parsed.sessions.length +
+          " session(s), total=" +
+          parsed.total,
+      );
+    }
+    const found = parsed.sessions[0];
+    if (!found || found.session_id !== sessionId) {
+      fail(
+        "session_list initial session is not " +
+          JSON.stringify(sessionId) +
+          ": " +
+          JSON.stringify(found).slice(0, 300),
+      );
+    }
+    for (const key of ["session_id", "started_at", "ended_at", "status", "transport", "agent", "steps", "errors"]) {
+      if (!(key in found)) fail("session " + sessionId + " missing " + key);
+    }
+    if (typeof found.started_at !== "number") fail("session " + sessionId + " started_at is not numeric");
+    if (found.steps !== 0) fail("session " + sessionId + " initial steps=" + found.steps + " expected 0");
+    if (found.errors !== 0) fail("session " + sessionId + " initial errors=" + found.errors + " expected 0");
+    if (found.status !== "active") fail("session " + sessionId + " initial status=" + JSON.stringify(found.status));
+    if (found.transport !== "http") fail("session " + sessionId + " initial transport=" + JSON.stringify(found.transport));
+    ok("session_list initial current session steps=0 errors=0 total=1");
+    process.exit(0);
+  }
+
+  if (expectationName === "contains") {
+    if (!sessionId) fail("usage: session-list <body> contains <session-id> [<min-steps>]");
+    const found = parsed.sessions.find((session) => session && session.session_id === sessionId);
+    if (!found) {
+      fail(
+        "session_list has no " +
+          JSON.stringify(sessionId) +
+          ": " +
+          JSON.stringify(parsed.sessions).slice(0, 300),
+      );
+    }
+    for (const key of ["session_id", "started_at", "ended_at", "status", "transport", "agent", "steps", "errors"]) {
+      if (!(key in found)) fail("session " + sessionId + " missing " + key);
+    }
+    if (typeof found.started_at !== "number") fail("session " + sessionId + " started_at is not numeric");
+    if (typeof found.steps !== "number") fail("session " + sessionId + " steps is not numeric");
+    if (typeof found.errors !== "number") fail("session " + sessionId + " errors is not numeric");
+    if (typeof found.status !== "string" || found.status.length === 0) fail("session " + sessionId + " status missing");
+    if (typeof found.transport !== "string" || found.transport.length === 0) {
+      fail("session " + sessionId + " transport missing");
+    }
+    if (found.steps < minSteps) {
+      fail("session " + sessionId + " steps=" + found.steps + " expected at least " + minSteps);
+    }
+    let previousStart = Infinity;
+    for (const session of parsed.sessions) {
+      if (typeof session.started_at !== "number") fail("session_list entry has no numeric started_at");
+      if (session.started_at > previousStart) fail("session_list is not newest-first");
+      previousStart = session.started_at;
+    }
+    ok(
+      "session_list contains " +
+        sessionId +
+        " status=" +
+        found.status +
+        " transport=" +
+        found.transport +
+        " steps=" +
+        found.steps +
+        " errors=" +
+        found.errors,
+    );
+    process.exit(0);
+  }
+
+  fail("unknown session-list expectation " + JSON.stringify(expectationName) + " (use empty, initial or contains)");
+}
+
+if (mode === "steps") {
+  const sessionId = rest[0] || "";
+  const minSteps = Number(rest[1] || 0);
+  if (!sessionId) fail("usage: steps <body-file> <session-id> <min-steps>");
+  const { parsed } = structuredToolText(message, "session_steps");
+  if (parsed.session_id !== sessionId) {
+    fail("session_steps session_id=" + JSON.stringify(parsed.session_id) + " expected " + JSON.stringify(sessionId));
+  }
+  if (!Array.isArray(parsed.steps)) fail("session_steps has no steps array");
+  if (typeof parsed.total_steps !== "number") fail("session_steps has no numeric total_steps");
+  if (parsed.steps.length < minSteps) {
+    fail("session_steps returned " + parsed.steps.length + " steps, expected at least " + minSteps);
+  }
+  let previousSeq = -1;
+  for (const step of parsed.steps) {
+    for (const key of [
+      "seq",
+      "ts",
+      "tool",
+      "browser_id",
+      "tab_id",
+      "ok",
+      "error_code",
+      "duration_ms",
+      "args",
+      "args_truncated",
+      "result",
+      "result_truncated",
+    ]) {
+      if (!(key in step)) fail("session step missing " + key);
+    }
+    if (!Number.isInteger(step.seq)) fail("session step seq is not an integer");
+    if (step.seq <= previousSeq) fail("session step seq is not strictly ascending: " + step.seq);
+    if (typeof step.ts !== "number") fail("session step ts is not numeric");
+    if (typeof step.tool !== "string" || step.tool.length === 0) fail("session step tool missing");
+    if (typeof step.ok !== "boolean") fail("session step ok is not boolean");
+    if (typeof step.duration_ms !== "number") fail("session step duration_ms is not numeric");
+    if (typeof step.args_truncated !== "boolean") fail("session step args_truncated is not boolean");
+    if (typeof step.result_truncated !== "boolean") fail("session step result_truncated is not boolean");
+    if (step.error_code !== null && typeof step.error_code !== "string") fail("session step error_code is not string/null");
+    if (step.browser_id !== null && typeof step.browser_id !== "string") fail("session step browser_id is not string/null");
+    if (step.tab_id !== null && typeof step.tab_id !== "string") fail("session step tab_id is not string/null");
+    previousSeq = step.seq;
+  }
+  if (parsed.steps.length < parsed.total_steps) {
+    if (!Number.isInteger(parsed.next_seq)) fail("session_steps has more steps but no integer next_seq");
+  }
+  ok(
+    "isError=false session=" +
+      sessionId +
+      " steps=" +
+      parsed.steps.length +
+      " total_steps=" +
+      parsed.total_steps +
+      " seq=" +
+      (parsed.steps.length ? parsed.steps[0].seq + ".." + parsed.steps[parsed.steps.length - 1].seq : "none"),
+  );
+  process.exit(0);
+}
+
+if (mode === "step") {
+  const toolName = rest[0] || "";
+  const expectedArgs = parseExpectedJson("step", 1);
+  const expectedResultRaw = rest[2] || "";
+  if (!toolName) fail("usage: step <body-file> <tool> <expected-args-json> [<expected-result-json>]");
+  let expectedResult = null;
+  if (expectedResultRaw) {
+    try {
+      expectedResult = JSON.parse(expectedResultRaw);
+    } catch (error) {
+      fail("step expected result JSON is invalid: " + error.message);
+    }
+  }
+  const { parsed } = structuredToolText(message, "session_steps");
+  if (!Array.isArray(parsed.steps)) fail("session_steps has no steps array");
+  let firstProblem = "";
+  for (const step of parsed.steps) {
+    if (!step || step.tool !== toolName || step.ok !== true) continue;
+    if (!step.args || typeof step.args !== "object" || Array.isArray(step.args)) continue;
+    const argsProblem = mismatch(step.args, expectedArgs, "args");
+    if (argsProblem) {
+      if (!firstProblem) firstProblem = argsProblem;
+      continue;
+    }
+    if (expectedResult !== null) {
+      if (!step.result || typeof step.result !== "object" || Array.isArray(step.result)) {
+        firstProblem = "result is not an object";
+        continue;
+      }
+      const resultProblem = mismatch(step.result, expectedResult, "result");
+      if (resultProblem) {
+        if (!firstProblem) firstProblem = resultProblem;
+        continue;
+      }
+    }
+    ok("step " + toolName + " seq=" + step.seq + " args=" + JSON.stringify(expectedArgs));
+    process.exit(0);
+  }
+  const matching = parsed.steps.filter((step) => step && step.tool === toolName).length;
+  fail(
+    "no successful parsed step for " +
+      toolName +
+      " matching " +
+      JSON.stringify(expectedArgs) +
+      " (" +
+      matching +
+      " candidate(s))" +
+      (firstProblem ? ": " + firstProblem : ""),
+  );
+}
+
+if (mode === "step-seq") {
+  const toolName = rest[0] || "";
+  if (!toolName) fail("usage: step-seq <body-file> <tool>");
+  const { parsed } = structuredToolText(message, "session_steps");
+  if (!Array.isArray(parsed.steps)) fail("session_steps has no steps array");
+  const matches = parsed.steps.filter((step) => step && step.tool === toolName && step.ok === true);
+  if (matches.length === 0) fail("no successful session step for " + toolName);
+  const step = matches[0];
+  if (!Number.isInteger(step.seq)) fail("step seq is not an integer");
+  ok(String(step.seq));
+  process.exit(0);
+}
+
+if (mode === "replay") {
+  const expectedMode = rest[0] || "";
+  const expectedTool = rest[1] || "";
+  if (expectedMode !== "dry_run" && expectedMode !== "live") {
+    fail("usage: replay <body-file> <dry_run|live> [<tool>]");
+  }
+  const { parsed } = structuredToolText(message, "session_replay");
+  if (parsed.mode !== expectedMode) {
+    fail("session_replay mode=" + JSON.stringify(parsed.mode) + " expected " + JSON.stringify(expectedMode));
+  }
+  if (!Array.isArray(parsed.planned)) fail("session_replay has no planned array");
+  if (!Array.isArray(parsed.executed)) fail("session_replay has no executed array");
+  if (!Array.isArray(parsed.skipped)) fail("session_replay has no skipped array");
+  if (typeof parsed.total !== "number") fail("session_replay has no numeric total");
+  for (const item of parsed.planned) {
+    if (!item || !Number.isInteger(item.seq) || typeof item.tool !== "string" || !("args" in item)) {
+      fail("session_replay planned entry is malformed: " + JSON.stringify(item).slice(0, 200));
+    }
+  }
+  if (expectedMode === "dry_run") {
+    if (parsed.executed.length !== 0) {
+      fail("dry_run executed " + parsed.executed.length + " step(s): " + JSON.stringify(parsed.executed).slice(0, 300));
+    }
+    if (expectedTool && !parsed.planned.some((item) => item.tool === expectedTool)) {
+      fail("dry_run planned no " + expectedTool + ": " + JSON.stringify(parsed.planned).slice(0, 300));
+    }
+    const controls = [
+      "session_list",
+      "session_steps",
+      "session_replay",
+      "session_export",
+      "metrics",
+      "logs_tail",
+      "browser_list",
+    ];
+    const plannedControl = parsed.planned.find((item) => controls.includes(item.tool));
+    if (plannedControl) fail("dry_run planned a control tool: " + plannedControl.tool);
+    if (!parsed.skipped.some((item) => item && item.reason === "control_tool")) {
+      fail("dry_run skipped no control_tool entries: " + JSON.stringify(parsed.skipped).slice(0, 300));
+    }
+    ok(
+      "isError=false mode=dry_run planned=" +
+        parsed.planned.length +
+        " skipped=" +
+        parsed.skipped.length +
+        " executed=0",
+    );
+    process.exit(0);
+  }
+
+  if (parsed.executed.length === 0) fail("live replay executed no steps");
+  for (const item of parsed.executed) {
+    if (!item || typeof item.tool !== "string" || typeof item.ok !== "boolean") {
+      fail("session_replay executed entry is malformed: " + JSON.stringify(item).slice(0, 200));
+    }
+  }
+  if (expectedTool && !parsed.executed.some((item) => item.tool === expectedTool && item.ok === true)) {
+    fail("live replay did not execute " + expectedTool + " successfully: " + JSON.stringify(parsed.executed).slice(0, 300));
+  }
+  if (typeof parsed.replay_session_id !== "string" || parsed.replay_session_id.length === 0) {
+    fail("live replay returned no replay_session_id");
+  }
+  ok(
+    "isError=false mode=live planned=" +
+      parsed.planned.length +
+      " executed=" +
+      parsed.executed.length +
+      " replay_session=" +
+      parsed.replay_session_id,
+  );
+  process.exit(0);
+}
+
+if (mode === "replay-id") {
+  const { parsed } = structuredToolText(message, "session_replay");
+  if (typeof parsed.replay_session_id !== "string" || parsed.replay_session_id.length === 0) {
+    fail("session_replay has no replay_session_id");
+  }
+  ok(parsed.replay_session_id);
+  process.exit(0);
+}
+
+if (mode === "export") {
+  const { parsed } = structuredToolText(message, "session_export");
+  if (parsed.format !== "jsonl") fail("session_export format=" + JSON.stringify(parsed.format) + " expected jsonl");
+  if (typeof parsed.content !== "string") fail("session_export content is not a string");
+  if (typeof parsed.bytes !== "number") fail("session_export bytes is not numeric");
+  if (typeof parsed.truncated !== "boolean") fail("session_export truncated is not boolean");
+  const lines = parsed.content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length < 2) fail("session_export has fewer than two JSONL lines");
+  const objects = [];
+  for (const line of lines) {
+    try {
+      objects.push(JSON.parse(line));
+    } catch (error) {
+      fail("session_export has an invalid JSONL line: " + line.slice(0, 200));
+    }
+  }
+  if (objects[0].type !== "session") fail("session_export first line type=" + JSON.stringify(objects[0].type));
+  if (typeof objects[0].id !== "string" || objects[0].id.length === 0) {
+    fail("session_export first line has no session id");
+  }
+  if (objects[0].id !== parsed.session_id) {
+    fail("session_export first line id does not match the response");
+  }
+  const steps = objects.slice(1);
+  if (steps.length === 0) fail("session_export has no step lines");
+  let previousSeq = -1;
+  for (const step of steps) {
+    if (step.type !== "step") fail("session_export line type=" + JSON.stringify(step.type));
+    if (!Number.isInteger(step.seq)) fail("session_export step seq is not an integer");
+    if (step.seq <= previousSeq) fail("session_export step seq is not strictly ascending");
+    previousSeq = step.seq;
+  }
+  ok(
+    "session_export jsonl session=" +
+      parsed.session_id +
+      " steps=" +
+      steps.length +
+      " bytes=" +
+      parsed.bytes +
+      " truncated=" +
+      parsed.truncated,
+  );
+  process.exit(0);
+}
+
+if (mode === "metrics") {
+  const { parsed } = structuredToolText(message, "metrics");
+  for (const key of [
+    "uptime_ms",
+    "started_at",
+    "browsers_connected",
+    "sessions_total",
+    "sessions_active",
+    "tool_calls_total",
+    "tool_errors_total",
+    "inflight",
+  ]) {
+    if (typeof parsed[key] !== "number") fail("metrics." + key + " is not numeric");
+  }
+  if (!Number.isInteger(parsed.protocol) || parsed.protocol < 1) {
+    fail("metrics.protocol is not a wire protocol version integer");
+  }
+  if (!Array.isArray(parsed.browsers)) fail("metrics.browsers is not an array");
+  if (!parsed.by_tool || typeof parsed.by_tool !== "object" || Array.isArray(parsed.by_tool)) {
+    fail("metrics.by_tool is not an object");
+  }
+  if (!parsed.errors_by_code || typeof parsed.errors_by_code !== "object" || Array.isArray(parsed.errors_by_code)) {
+    fail("metrics.errors_by_code is not an object");
+  }
+  for (const [code, count] of Object.entries(parsed.errors_by_code)) {
+    if (typeof count !== "number") fail("metrics.errors_by_code." + code + " is not numeric");
+  }
+  if (!parsed.recording || typeof parsed.recording !== "object" || Array.isArray(parsed.recording)) {
+    fail("metrics.recording is not an object");
+  }
+  if (typeof parsed.recording.enabled !== "boolean") fail("metrics.recording.enabled is not boolean");
+  if (typeof parsed.recording.db_path !== "string" || parsed.recording.db_path.length === 0) {
+    fail("metrics.recording.db_path missing");
+  }
+  if (typeof parsed.recording.sessions !== "number") fail("metrics.recording.sessions is not numeric");
+  if (typeof parsed.recording.steps !== "number") fail("metrics.recording.steps is not numeric");
+  if (parsed.tool_calls_total <= 0) fail("metrics.tool_calls_total is not positive");
+  if (parsed.sessions_total <= 0) fail("metrics.sessions_total is not positive");
+  for (const code of rest) {
+    if (!(code in parsed.errors_by_code) || parsed.errors_by_code[code] <= 0) {
+      fail("metrics.errors_by_code has no positive " + code + " count: " + JSON.stringify(parsed.errors_by_code));
+    }
+  }
+  ok(
+    "isError=false tool_calls=" +
+      parsed.tool_calls_total +
+      " errors=" +
+      parsed.tool_errors_total +
+      " sessions=" +
+      parsed.sessions_total +
+      " codes=" +
+      Object.keys(parsed.errors_by_code).length,
+  );
+  process.exit(0);
+}
+
+if (mode === "logs") {
+  const expectedLevel = rest[0] || "";
+  const minEntries = rest[1] === undefined ? 1 : Number(rest[1]);
+  const { parsed } = structuredToolText(message, "logs_tail");
+  if (!Array.isArray(parsed.entries)) fail("logs_tail has no entries array");
+  if (typeof parsed.dropped !== "number") fail("logs_tail.dropped is not numeric");
+  const levels = ["debug", "info", "warn", "error"];
+  for (const entry of parsed.entries) {
+    if (!entry || typeof entry !== "object") fail("logs_tail entry is not an object");
+    if (typeof entry.ts !== "number") fail("logs_tail entry ts is not numeric");
+    if (!levels.includes(entry.level)) fail("logs_tail entry level=" + JSON.stringify(entry.level));
+    if (typeof entry.target !== "string") fail("logs_tail entry target is not a string");
+    if (typeof entry.message !== "string") fail("logs_tail entry message is not a string");
+    if (!entry.fields || typeof entry.fields !== "object" || Array.isArray(entry.fields)) {
+      fail("logs_tail entry fields is not an object");
+    }
+    if (expectedLevel && entry.level !== expectedLevel) {
+      fail("logs_tail level=" + JSON.stringify(entry.level) + " expected " + JSON.stringify(expectedLevel));
+    }
+  }
+  if (parsed.entries.length < minEntries) {
+    fail("logs_tail returned " + parsed.entries.length + " entries, expected at least " + minEntries);
+  }
+  ok(
+    "isError=false entries=" +
+      parsed.entries.length +
+      " dropped=" +
+      parsed.dropped +
+      (expectedLevel ? " level=" + expectedLevel : ""),
+  );
+  process.exit(0);
+}
+
+fail("unknown mode " + JSON.stringify(mode) + " (use protocol, tools, call, error-detail, navigate, snapshot, result, command, command-any, command-mode, session-list, steps, step, step-seq, replay, replay-id, export, metrics or logs)");

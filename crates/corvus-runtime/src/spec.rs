@@ -42,7 +42,7 @@ pub struct ToolSpec {
 }
 
 /// Every tool exposed in this version.
-pub const TOOLS: [ToolSpec; 26] = [
+pub const TOOLS: [ToolSpec; 32] = [
     ToolSpec {
         name: "browser_navigate",
         serial: true,
@@ -199,6 +199,42 @@ pub const TOOLS: [ToolSpec; 26] = [
         capability: None,
         default_timeout_ms: Some(60_000),
     },
+    ToolSpec {
+        name: "session_list",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "session_steps",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "session_replay",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "session_export",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "metrics",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "logs_tail",
+        serial: false,
+        capability: None,
+        default_timeout_ms: Some(60_000),
+    },
 ];
 
 impl ToolSpec {
@@ -246,7 +282,7 @@ mod tests {
 
     #[test]
     fn tool_table_is_lookup_able() {
-        assert_eq!(names().len(), 26);
+        assert_eq!(names().len(), 32);
         for spec in TOOLS {
             assert_eq!(lookup(spec.name).map(|found| found.name), Some(spec.name));
         }
@@ -259,7 +295,8 @@ mod tests {
             match spec.name {
                 "tab_list" | "tab_new" | "tab_close" | "tab_switch" | "browser_list"
                 | "net_capture" | "net_log" | "net_clear" | "net_intercept" | "download_list"
-                | "download_wait" | "upload_file" => {
+                | "download_wait" | "upload_file" | "session_list" | "session_steps"
+                | "session_replay" | "session_export" | "metrics" | "logs_tail" => {
                     assert_eq!(spec.capability, None, "{} needs no DOM", spec.name);
                 }
                 _ => assert_eq!(
@@ -301,6 +338,12 @@ mod tests {
             ("download_list", false),
             ("download_wait", false),
             ("upload_file", true),
+            ("session_list", false),
+            ("session_steps", false),
+            ("session_replay", false),
+            ("session_export", false),
+            ("metrics", false),
+            ("logs_tail", false),
         ] {
             let spec = lookup(name).expect("known tool");
             assert_eq!(spec.serial, serial, "wrong serial flag for {name}");

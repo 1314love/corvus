@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+tracing-subscriber.workspace = true
 corvus-proto.workspace = true
 corvusd.workspace = true
 corvus-mcp.workspace = true

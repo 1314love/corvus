@@ -1,9 +1,11 @@
 //! corvusd: the Corvus daemon binary.
 
 use std::net::IpAddr;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 use corvusd::{Daemon, DaemonConfig};
@@ -32,6 +34,9 @@ enum Command {
         /// MCP streamable HTTP port
         #[arg(long, default_value_t = corvusd::DEFAULT_HTTP_PORT)]
         http_port: u16,
+        /// Recording database path
+        #[arg(long)]
+        db: Option<PathBuf>,
         /// Also serve MCP over standard input and output
         #[arg(long)]
         stdio: bool,
@@ -47,14 +52,18 @@ enum Command {
         /// MCP streamable HTTP port to probe
         #[arg(long, default_value_t = corvusd::DEFAULT_HTTP_PORT)]
         http_port: u16,
+        /// Recording database path to inspect
+        #[arg(long)]
+        db: Option<PathBuf>,
     },
 }
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(corvusd::logs::global().clone())
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 }
 
@@ -67,12 +76,14 @@ async fn main() -> Result<()> {
             bind,
             ws_port,
             http_port,
+            db,
             stdio,
         } => {
             let daemon = Daemon::start(DaemonConfig {
                 bind,
                 ws_port,
                 http_port,
+                db_path: db,
                 ..DaemonConfig::default()
             })
             .await?;
@@ -97,8 +108,9 @@ async fn main() -> Result<()> {
             bind,
             ws_port,
             http_port,
+            db,
         } => {
-            let report = corvusd::doctor::inspect(bind, ws_port, http_port).await;
+            let report = corvusd::doctor::inspect_with_db(bind, ws_port, http_port, db).await;
             print!("{}", corvusd::doctor::render(&report));
         }
     }

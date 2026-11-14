@@ -1,9 +1,12 @@
 //! corvus: command line interface for the Corvus daemon.
 
 use std::net::IpAddr;
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use corvusd::{Daemon, DaemonConfig};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
@@ -26,6 +29,9 @@ enum Command {
         ws_port: u16,
         #[arg(long, default_value_t = corvusd::DEFAULT_HTTP_PORT)]
         http_port: u16,
+        /// Recording database path to inspect
+        #[arg(long)]
+        db: Option<PathBuf>,
     },
     /// Run the daemon in the foreground
     Serve {
@@ -35,6 +41,9 @@ enum Command {
         ws_port: u16,
         #[arg(long, default_value_t = corvusd::DEFAULT_HTTP_PORT)]
         http_port: u16,
+        /// Recording database path
+        #[arg(long)]
+        db: Option<PathBuf>,
         #[arg(long)]
         stdio: bool,
     },
@@ -48,6 +57,15 @@ enum Command {
     Version,
 }
 
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(corvusd::logs::global().clone())
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -56,20 +74,24 @@ async fn main() -> anyhow::Result<()> {
             bind,
             ws_port,
             http_port,
+            db,
         } => {
-            let report = corvusd::doctor::inspect(bind, ws_port, http_port).await;
+            let report = corvusd::doctor::inspect_with_db(bind, ws_port, http_port, db).await;
             print!("{}", corvusd::doctor::render(&report));
         }
         Command::Serve {
             bind,
             ws_port,
             http_port,
+            db,
             stdio,
         } => {
+            init_tracing();
             let daemon = Daemon::start(DaemonConfig {
                 bind,
                 ws_port,
                 http_port,
+                db_path: db,
                 ..DaemonConfig::default()
             })
             .await?;

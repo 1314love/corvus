@@ -140,7 +140,7 @@ Notes:
 
 ### 5.3 M2 wave 2 tool surface
 
-M2 wave 2 adds eight tools for a total of 26. The successful results below are the JSON object inside an MCP tool result; failures use the taxonomy in section 8 and set `isError`.
+M2 wave 2 added eight tools. The successful results below are the JSON object inside an MCP tool result; failures use the taxonomy in section 8 and set `isError`.
 
 Common routing and timeouts:
 
@@ -176,6 +176,29 @@ Downloads and uploads:
 - An unknown decimal `id` never returns `NOT_FOUND`; it ends as `TIMEOUT` with `details` `{"waited_ms":...,"id":"..."}` (without `id`, the details carry only `waited_ms`). Without `id`, `download_wait` selects the newest download that is new or started within the 5000 ms before the call, never an older one; an already-complete candidate returns immediately.
 - `upload_file` resolves `target` (an `@eN` reference from that tab's latest snapshot or a CSS selector) through CDP and calls `DOM.setFileInputFiles`, so hidden file inputs work; it then dispatches `input` and `change` events. It pre-checks every local path before setting the files and returns `BAD_ARGS` with `details` `{"path":"..."}` for a missing or unreadable file.
 - The browser may refuse file-URL access when the extension has no file access. A target that is not an `input[type=file]` returns `BAD_ARGS` with `details` `{"reason":"not_a_file_input","tag":"...","input_type":"..."}`.
+
+### 5.4 M3 wave 1 tool surface
+
+M3 wave 1 adds six tools for a total of 32. Recording is always on; the four session tools read the SQLite recording store, while `metrics` and `logs_tail` read process-local observability state. The successful results below are the JSON object inside an MCP tool result; failures use the taxonomy in section 8 and set `isError`.
+
+| Tool | Arguments (required unless marked ?) | Result |
+|---|---|---|
+| `session_list` | `limit?` 1..200 default 50; `since_ms?` >= 0 | `sessions[]` with `session_id`, `started_at`, `ended_at` (number or null), `status`, `transport`, `agent` (string or null), `steps`, `errors`; `total`; newest `started_at` first |
+| `session_steps` | `session_id`; `from_seq?` >= 0 default 0; `limit?` 1..500 default 100 | `session_id`; `steps[]` with `seq`, `ts`, `tool`, `browser_id` (string or null), `tab_id` (string or null), `ok`, `error_code` (string or null), `duration_ms`, `args`, `args_truncated`, `result`, `result_truncated`; `total_steps`; `next_seq` only when more steps remain |
+| `session_replay` | `session_id`; `from_seq?` default first; `to_seq?` default last; `mode?` `dry_run` or `live` default `dry_run`; `browser_id?`; `continue_on_error?` default false | `session_id`, `mode`, `total`, `planned[]` with `seq`, `tool`, `args`, `executed[]` with `seq`, `tool`, `ok`, `error_code`, `duration_ms`, `skipped[]` with `seq`, `tool`, `reason`, `stopped_at?`, `error_code?`, `replay_session_id?` |
+| `session_export` | `session_id`; `format?` `jsonl` | `session_id`, `format`, `content`, `bytes`, `truncated` |
+| `metrics` | none | `uptime_ms`, `started_at`, `protocol`, `browsers_connected`, `browsers[]`, `sessions_total`, `sessions_active`, `tool_calls_total`, `tool_errors_total`, `by_tool` (`tool` -> `calls`, `errors`, `avg_ms`), `errors_by_code`, `inflight`, `recording` (`enabled`, `db_path`, `sessions`, `steps`), `last_call_at_ms?` |
+| `logs_tail` | `limit?` 1..1000 default 200; `level?` `debug`, `info`, `warn` or `error`; `since_ms?` | `entries[]` with `ts`, `level`, `target`, `message`, `fields`; `dropped` |
+
+**Session and recording.** A session is one MCP session: the HTTP `Mcp-Session-Id`, or one generated `s-<uuid v4>` id per stdio process. Every `tools/call` is recorded, including failures, with the resolved `browser_id` and `tab_id`, duration, `ok` and `error_code`; `args` and `result` are stored as JSON text capped at 262144 bytes each and flagged with `args_truncated`/`result_truncated`. Recording is asynchronous, and a database error logs a warning and never fails the call. A session ends as `closed` on close or shutdown; a session left active by a previous process is marked `abandoned` at the next startup.
+
+**Session reads.** `session_steps` returns steps with `seq` ascending from `from_seq`. `args` and `result` are parsed JSON when the stored text is complete and parses, otherwise the stored prefix as a string; a value whose serialized form exceeds 65536 bytes is returned as null with the matching `*_truncated` flag and `*_bytes` size. `next_seq` is present only when more steps remain. Unknown session ids are `NOT_FOUND` with `details` `{"session_id":"..."}` for `session_steps`, `session_replay` and `session_export`.
+
+**Replay.** `session_replay` defaults to `dry_run`, which only plans; `live` reissues steps through the normal router with normal tool timeouts and records them into a new session with `agent` `corvus-replay` and `transport` `internal`, returned as `replay_session_id`. `session_list`, `session_steps`, `session_replay`, `session_export`, `metrics`, `logs_tail` and `browser_list` are skipped with reason `control_tool`; in live mode `tab_close` and `tab_switch` are skipped with reason `tab_tool`, and recorded `tab_id` values are removed so steps run against the active tab unless `browser_id` selects a browser. Replay stops at the first failing step unless `continue_on_error` is true; a replayed tool failure is data, not an error of `session_replay` (`isError` false). An empty replayable range is `BAD_ARGS` with `details.reason` `no_replayable_steps`; `live` without a connected browser is `TRANSPORT_DOWN`.
+
+**Export and observability.** `session_export` writes JSONL: one `{"type":"session",...}` line with every session column, then one `{"type":"step",...}` line per step with `args_json` and `result_json` as strings. Content is capped at 2097152 bytes and `truncated` is true when cut; `format` is `jsonl` only. `metrics` counters are process-lifetime atomics with no reset, and `avg_ms` is integer milliseconds truncated. `logs_tail` reads a 5000-entry in-memory ring; `ts` is epoch milliseconds, `fields` holds at most 16 primitive top-level event fields with values stringified, `dropped` counts overwritten events since start, and an invalid `level` is `BAD_ARGS` with `details.level`.
+
+`GET /metrics` on the MCP HTTP port, next to `/health`, serves Prometheus text: `corvus_uptime_seconds`, `corvus_browsers_connected`, `corvus_tool_calls_total{tool="..."}`, `corvus_tool_errors_total{code="..."}`, `corvus_sessions_total` and `corvus_steps_total`. `/health` keeps its current shape.
 
 ## 6. Extension design
 
@@ -214,17 +237,16 @@ Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate r
 
 ## 9. Storage
 
-SQLite at ~/.corvus/corvus.db (WAL).
+SQLite at `~/.corvus/corvus.db` (`%USERPROFILE%\.corvus\corvus.db` on Windows), WAL, schema version 1 in `schema_meta`. `corvusd serve --db <path>` overrides the path, then `CORVUS_DB_PATH`; the parent directory is created.
 
 | table | columns |
 |---|---|
-| sessions | id, started_at, ended_at, browser, profile, agent, status |
-| steps | id, session_id, seq, ts, tool, args_json, result_json, error_code, duration_ms |
-| snapshots | id, step_id, url, title, nodes, blob_path |
-| network | id, step_id, url, method, status, ms, req_headers, res_headers, body_path |
-| site_cards | domain, selector, role, success_count, fail_count, last_used, payload |
+| sessions | `id`, `started_at`, `ended_at`, `browser`, `profile`, `agent`, `transport`, `status`, `steps`, `errors` |
+| steps | `id`, `session_id`, `seq`, `ts`, `tool`, `args_json`, `result_json`, `error_code`, `duration_ms`, `browser_id`, `tab_id`, `ok`, `args_truncated`, `result_truncated`; `UNIQUE(session_id, seq)` with an index on `(session_id, seq)` |
 
-Blobs (screenshots, response bodies) live beside the DB under ~/.corvus/blobs/<yyyy-mm-dd>/, with a retention policy (default 30 days, configurable).
+On startup, sessions left active by a previous process get `ended_at` set to now and `status` `abandoned`; sessions with `started_at` older than 30 days are pruned.
+
+`snapshots`, `network` and `site_cards` are not created in schema v1; they remain future work, and this milestone writes no blob directory.
 
 ## 10. Configuration
 
@@ -247,6 +269,8 @@ Blobs (screenshots, response bodies) live beside the DB under ~/.corvus/blobs/<y
     [memory]
     enabled = true
     export_format = "jsonl"
+
+`config.toml` is not loaded in this milestone. The `[recording]` block documents the target shape only; recording is always on, and the effective controls are `corvusd serve --db <path>`, `CORVUS_DB_PATH` and the fixed 30-day retention. File loading lands with packaging.
 
 Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capped at 125000 ms, `browser_eval` gets 30000 ms, `download_wait` gets `args.timeout_ms + 5000` ms capped at 125000 ms, and every other tool gets the 60000 ms default; the router clamps every deadline to the 125000 ms ceiling.
 

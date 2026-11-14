@@ -16,7 +16,7 @@ struct Spec {
     open_world: bool,
 }
 
-const SPECS: [Spec; 26] = [
+const SPECS: [Spec; 32] = [
     Spec {
         name: "browser_navigate",
         title: "Navigate",
@@ -275,6 +275,66 @@ const SPECS: [Spec; 26] = [
         read_only: false,
         destructive: false,
         idempotent: false,
+        open_world: false,
+    },
+    Spec {
+        name: "session_list",
+        title: "List sessions",
+        description: "List recorded MCP sessions, newest first, with transport, agent, step and error counts.",
+        schema: session_list_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "session_steps",
+        title: "Read session steps",
+        description: "Read the recorded steps of one session in sequence order. Arguments and results are parsed JSON when they were stored complete, otherwise a stored prefix string.",
+        schema: session_steps_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "session_replay",
+        title: "Replay a session",
+        description: "Plan or re-execute the recorded steps of a session. Dry run reports the plan; live mode sends each replayable call through the router and records it in a new replay session. Control tools and tab tools are skipped.",
+        schema: session_replay_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "session_export",
+        title: "Export a session",
+        description: "Export one recorded session as JSON Lines: a session row followed by every step row, capped at 2 MiB.",
+        schema: session_export_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "metrics",
+        title: "Daemon metrics",
+        description: "Report process uptime, connected browsers, recorded sessions and per-tool call, error and average latency counters since the daemon started.",
+        schema: metrics_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "logs_tail",
+        title: "Read daemon logs",
+        description: "Return the most recent daemon log entries from the bounded in-process buffer, optionally filtered by minimum level and timestamp.",
+        schema: logs_tail_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
         open_world: false,
     },
 ];
@@ -954,6 +1014,143 @@ fn upload_file_schema() -> Value {
     })
 }
 
+fn session_list_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "default": 50,
+                "description": "Upper bound on the sessions returned, newest first.",
+            },
+            "since_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Only return sessions that started at or after this Unix time in milliseconds.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn session_steps_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "session_id": {
+                "type": "string",
+                "description": "Recorded session to read.",
+            },
+            "from_seq": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0,
+                "description": "Return steps whose sequence number is at or above this value.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "default": 100,
+                "description": "Upper bound on the steps returned.",
+            },
+        },
+        "required": ["session_id"],
+        "additionalProperties": false,
+    })
+}
+
+fn session_replay_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "session_id": {
+                "type": "string",
+                "description": "Recorded session to replay.",
+            },
+            "from_seq": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "First recorded step to consider; the first step when omitted.",
+            },
+            "to_seq": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Last recorded step to consider; the last step when omitted.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["dry_run", "live"],
+                "default": "dry_run",
+                "description": "Plan only, or execute the replayable steps through the router.",
+            },
+            "continue_on_error": {
+                "type": "boolean",
+                "default": false,
+                "description": "Keep replaying after a failing step instead of stopping.",
+            },
+        },
+        "required": ["session_id"],
+        "additionalProperties": false,
+    })
+}
+
+fn session_export_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "session_id": {
+                "type": "string",
+                "description": "Recorded session to export.",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["jsonl"],
+                "default": "jsonl",
+                "description": "Export encoding.",
+            },
+        },
+        "required": ["session_id"],
+        "additionalProperties": false,
+    })
+}
+
+fn metrics_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false,
+    })
+}
+
+fn logs_tail_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000,
+                "default": 200,
+                "description": "Maximum number of entries to return.",
+            },
+            "level": {
+                "type": "string",
+                "enum": ["debug", "info", "warn", "error"],
+                "description": "Minimum level to include.",
+            },
+            "since_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Only return entries at or after this epoch millisecond.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
 /// Check a tool call against the catalogue and normalise its arguments.
 ///
 /// Everything this function rejects is a caller mistake, so the returned error
@@ -1154,6 +1351,61 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
             required_string(&object, "target", name)?;
             required_upload_files(&object)?;
             optional_string(&object, "tab_id", name)?;
+        }
+        "session_list" => {
+            optional_integer_range(&object, "limit", 1, 200, name)?;
+            optional_integer_range(&object, "since_ms", 0, u64::MAX, name)?;
+            fill_default(&mut object, "limit", json!(50));
+        }
+        "session_steps" => {
+            required_string(&object, "session_id", name)?;
+            optional_integer_range(&object, "from_seq", 0, u64::MAX, name)?;
+            optional_integer_range(&object, "limit", 1, 500, name)?;
+            fill_default(&mut object, "from_seq", json!(0));
+            fill_default(&mut object, "limit", json!(100));
+        }
+        "session_replay" => {
+            required_string(&object, "session_id", name)?;
+            optional_integer_range(&object, "from_seq", 0, u64::MAX, name)?;
+            optional_integer_range(&object, "to_seq", 0, u64::MAX, name)?;
+            optional_choice(&object, "mode", &["dry_run", "live"], name)?;
+            optional_bool(&object, "continue_on_error", name)?;
+            if let (Some(from), Some(to)) = (
+                object.get("from_seq").and_then(Value::as_u64),
+                object.get("to_seq").and_then(Value::as_u64),
+            ) {
+                if from > to {
+                    return Err(ErrorBody::new(
+                        ErrorCode::BadArgs,
+                        "session_replay from_seq must not exceed to_seq",
+                    ));
+                }
+            }
+            fill_default(&mut object, "mode", json!("dry_run"));
+            fill_default(&mut object, "continue_on_error", json!(false));
+        }
+        "session_export" => {
+            required_string(&object, "session_id", name)?;
+            optional_choice(&object, "format", &["jsonl"], name)?;
+            fill_default(&mut object, "format", json!("jsonl"));
+        }
+        "metrics" => {}
+        "logs_tail" => {
+            optional_integer_range(&object, "limit", 1, 1000, name)?;
+            optional_integer_range(&object, "since_ms", 0, u64::MAX, name)?;
+            if let Some(level) = object.get("level") {
+                let valid = level
+                    .as_str()
+                    .is_some_and(|level| ["debug", "info", "warn", "error"].contains(&level));
+                if !valid {
+                    return Err(ErrorBody::new(
+                        ErrorCode::BadArgs,
+                        "logs_tail level must be one of debug, info, warn, error",
+                    )
+                    .with_details(json!({ "level": level })));
+                }
+            }
+            fill_default(&mut object, "limit", json!(200));
         }
         other => {
             return Err(
@@ -1472,7 +1724,7 @@ mod tests {
     #[test]
     fn definitions_carry_names_schemas_and_annotations() {
         let definitions = definitions();
-        assert_eq!(definitions.len(), 26);
+        assert_eq!(definitions.len(), 32);
         for definition in &definitions {
             assert!(definition.get("name").and_then(Value::as_str).is_some());
             let schema = definition.get("inputSchema").expect("schema");
@@ -1519,6 +1771,12 @@ mod tests {
                 "download_list",
                 "download_wait",
                 "upload_file",
+                "session_list",
+                "session_steps",
+                "session_replay",
+                "session_export",
+                "metrics",
+                "logs_tail",
             ]
         );
     }
@@ -1666,6 +1924,23 @@ mod tests {
         assert_eq!(wait.get("timeout_ms").and_then(Value::as_u64), Some(10_000));
         let tab = validate("tab_new", &json!({})).expect("tab_new");
         assert_eq!(tab.get("active").and_then(Value::as_bool), Some(true));
+        let sessions = validate("session_list", &json!({})).expect("session_list");
+        assert_eq!(sessions.get("limit").and_then(Value::as_u64), Some(50));
+        let logs = validate("logs_tail", &json!({})).expect("logs_tail");
+        assert_eq!(logs.get("limit").and_then(Value::as_u64), Some(200));
+        assert!(logs.get("level").is_none());
+        assert!(validate("metrics", &json!({})).is_ok());
+        let steps = validate("session_steps", &json!({ "session_id": "s-1" })).expect("steps");
+        assert_eq!(steps.get("from_seq").and_then(Value::as_u64), Some(0));
+        assert_eq!(steps.get("limit").and_then(Value::as_u64), Some(100));
+        let replay = validate("session_replay", &json!({ "session_id": "s-1" })).expect("replay");
+        assert_eq!(replay.get("mode").and_then(Value::as_str), Some("dry_run"));
+        assert_eq!(
+            replay.get("continue_on_error").and_then(Value::as_bool),
+            Some(false)
+        );
+        let export = validate("session_export", &json!({ "session_id": "s-1" })).expect("export");
+        assert_eq!(export.get("format").and_then(Value::as_str), Some("jsonl"));
     }
 
     #[test]
@@ -1757,6 +2032,33 @@ mod tests {
                 json!({ "target": "#file", "files": ["relative.txt"] }),
             ),
             ("upload_file", json!({ "target": "#file", "files": [7] })),
+            ("session_list", json!({ "limit": 0 })),
+            ("session_list", json!({ "limit": 201 })),
+            ("session_list", json!({ "since_ms": -1 })),
+            ("session_steps", json!({})),
+            ("session_steps", json!({ "session_id": "s", "limit": 501 })),
+            ("session_replay", json!({})),
+            (
+                "session_replay",
+                json!({ "session_id": "s", "mode": "fast" }),
+            ),
+            (
+                "session_replay",
+                json!({ "session_id": "s", "from_seq": 9, "to_seq": 3 }),
+            ),
+            (
+                "session_replay",
+                json!({ "session_id": "s", "continue_on_error": "yes" }),
+            ),
+            ("session_export", json!({})),
+            (
+                "session_export",
+                json!({ "session_id": "s", "format": "csv" }),
+            ),
+            ("logs_tail", json!({ "limit": 0 })),
+            ("logs_tail", json!({ "limit": 1001 })),
+            ("logs_tail", json!({ "level": "verbose" })),
+            ("logs_tail", json!({ "since_ms": -1 })),
             ("browser_wiggle", json!({})),
         ];
         for (tool, arguments) in cases {

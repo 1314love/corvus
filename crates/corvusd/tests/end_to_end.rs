@@ -2,6 +2,7 @@
 //! daemon, and the MCP surface is driven through JSON-RPC.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
@@ -12,11 +13,26 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use corvus_proto::{Envelope, ErrorBody, ErrorCode, Hello, HelloAck, Kind};
+use corvus_record::SessionContext;
 use corvusd::{Daemon, DaemonConfig, RouterConfig};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+fn temporary_database() -> PathBuf {
+    let directory = tempfile::Builder::new()
+        .prefix("corvus-e2e-")
+        .tempdir()
+        .expect("a temporary directory");
+    let path = directory.path().join("corvus.db");
+    std::mem::forget(directory);
+    path
+}
+
 async fn start_daemon(default_timeout_ms: u64) -> Daemon {
+    start_daemon_at(default_timeout_ms, temporary_database()).await
+}
+
+async fn start_daemon_at(default_timeout_ms: u64, db_path: PathBuf) -> Daemon {
     Daemon::start(DaemonConfig {
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         ws_port: 0,
@@ -25,6 +41,7 @@ async fn start_daemon(default_timeout_ms: u64) -> Daemon {
             default_timeout_ms,
             ..RouterConfig::default()
         },
+        db_path: Some(db_path),
     })
     .await
     .expect("the daemon binds its ephemeral ports")
@@ -75,6 +92,15 @@ async fn wait_for_browser(daemon: &Daemon, browser: &str) {
 }
 
 async fn tools_call(daemon: &Daemon, name: &str, arguments: Value) -> Value {
+    tools_call_in(daemon, None, name, arguments).await
+}
+
+async fn tools_call_in(
+    daemon: &Daemon,
+    session: Option<&SessionContext>,
+    name: &str,
+    arguments: Value,
+) -> Value {
     let request = json!({
         "jsonrpc": "2.0",
         "id": 11,
@@ -83,7 +109,7 @@ async fn tools_call(daemon: &Daemon, name: &str, arguments: Value) -> Value {
     });
     let answer = daemon
         .mcp()
-        .handle_message(&request.to_string())
+        .handle_message_with(&request.to_string(), session)
         .await
         .expect("tools/call always answers");
     let answer: Value = serde_json::from_str(&answer).expect("decode json-rpc answer");
@@ -109,11 +135,25 @@ fn is_error(result: &Value) -> bool {
 }
 
 async fn http_request(addr: SocketAddr, method: &str, path: &str, body: &str) -> (String, String) {
+    http_request_with(addr, method, path, body, &[]).await
+}
+
+async fn http_request_with(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    body: &str,
+    extra_headers: &[(&str, &str)],
+) -> (String, String) {
     let mut stream = TcpStream::connect(addr)
         .await
         .expect("connect to the http listener");
+    let extra: String = extra_headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect();
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream
@@ -1585,4 +1625,855 @@ async fn upload_file_round_trip() {
 
     responder.abort();
     daemon.shutdown().await;
+}
+
+async fn answer_with_failures(
+    daemon: &Daemon,
+    browser: &str,
+) -> (
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::Mutex<Vec<SeenCommand>>>,
+) {
+    let socket = handshake(daemon.ws_addr(), browser).await;
+    let (mut sink, mut stream) = socket.split();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = std::sync::Arc::clone(&seen);
+    let responder = tokio::spawn(async move {
+        while let Some(frame) = stream.next().await {
+            let Ok(Message::Text(text)) = frame else {
+                continue;
+            };
+            let envelope: Envelope = serde_json::from_str(text.as_str()).expect("decode command");
+            if envelope.kind != Kind::Command {
+                continue;
+            }
+            let tool = envelope.tool.clone().unwrap_or_default();
+            recorder
+                .lock()
+                .expect("the recorder lock is not poisoned")
+                .push(SeenCommand {
+                    tool: tool.clone(),
+                    timeout_ms: envelope.meta.timeout_ms,
+                    args: envelope.args.clone(),
+                });
+            let target = envelope
+                .args
+                .get("target")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let response = if target == "@bad" {
+                Envelope::response_err(
+                    envelope.id,
+                    ErrorBody::new(ErrorCode::NotFound, "no element matches @bad"),
+                )
+            } else {
+                Envelope::response_ok(envelope.id, canned_result(&tool, &envelope.args))
+            };
+            sink.send(Message::text(
+                serde_json::to_string(&response).expect("encode response"),
+            ))
+            .await
+            .expect("the response reaches the daemon");
+        }
+    });
+    wait_for_browser(daemon, browser).await;
+    (responder, seen)
+}
+
+#[tokio::test]
+async fn session_recording_lists_steps_and_exports() {
+    let daemon = start_daemon(5_000).await;
+    let (responder, _seen) = answer_with_failures(&daemon, "edge:default").await;
+    let first = daemon
+        .mcp()
+        .start_session("http", Some("agent-one"))
+        .expect("the recording store is available");
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let second = daemon
+        .mcp()
+        .start_session("stdio", Some("agent-two"))
+        .expect("the recording store is available");
+
+    let click = tools_call_in(
+        &daemon,
+        Some(&first),
+        "browser_click",
+        json!({ "target": "@e1" }),
+    )
+    .await;
+    assert!(
+        !is_error(&click),
+        "unexpected error: {}",
+        content_text(&click)
+    );
+    let failure = tools_call_in(
+        &daemon,
+        Some(&first),
+        "browser_click",
+        json!({ "target": "@bad" }),
+    )
+    .await;
+    assert!(is_error(&failure), "the extension reported NOT_FOUND");
+    assert!(daemon.flush_recording().await, "the recorder flushes");
+
+    let list = tools_call(&daemon, "session_list", json!({ "limit": 10 })).await;
+    assert!(
+        !is_error(&list),
+        "unexpected error: {}",
+        content_text(&list)
+    );
+    let list = payload(&list);
+    assert_eq!(list.get("total").and_then(Value::as_i64), Some(2));
+    let sessions = list
+        .get("sessions")
+        .and_then(Value::as_array)
+        .expect("the session array");
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(
+        sessions[0].get("session_id").and_then(Value::as_str),
+        Some(second.session_id.as_str()),
+        "newest sessions come first"
+    );
+    assert_eq!(
+        sessions[0].get("transport").and_then(Value::as_str),
+        Some("stdio")
+    );
+    assert_eq!(sessions[0].get("steps").and_then(Value::as_i64), Some(0));
+    assert_eq!(
+        sessions[1].get("session_id").and_then(Value::as_str),
+        Some(first.session_id.as_str())
+    );
+    assert_eq!(sessions[1].get("steps").and_then(Value::as_i64), Some(2));
+    assert_eq!(sessions[1].get("errors").and_then(Value::as_i64), Some(1));
+    assert_eq!(
+        sessions[1].get("status").and_then(Value::as_str),
+        Some("active")
+    );
+
+    let steps = tools_call(
+        &daemon,
+        "session_steps",
+        json!({ "session_id": first.session_id, "limit": 1 }),
+    )
+    .await;
+    assert!(
+        !is_error(&steps),
+        "unexpected error: {}",
+        content_text(&steps)
+    );
+    let steps = payload(&steps);
+    assert_eq!(steps.get("total_steps").and_then(Value::as_i64), Some(2));
+    assert_eq!(steps.get("next_seq").and_then(Value::as_i64), Some(2));
+    let step = steps
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|steps| steps.first())
+        .expect("one step");
+    assert_eq!(
+        step.get("tool").and_then(Value::as_str),
+        Some("browser_click")
+    );
+    assert_eq!(
+        step.get("args")
+            .and_then(|args| args.get("target"))
+            .and_then(Value::as_str),
+        Some("@e1")
+    );
+    assert_eq!(
+        step.get("args_truncated").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        step.get("result")
+            .and_then(|result| result.get("clicked"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let rest = tools_call(
+        &daemon,
+        "session_steps",
+        json!({ "session_id": first.session_id, "from_seq": 2, "limit": 10 }),
+    )
+    .await;
+    assert!(
+        !is_error(&rest),
+        "unexpected error: {}",
+        content_text(&rest)
+    );
+    let rest = payload(&rest);
+    assert!(rest.get("next_seq").is_none(), "no page remains: {rest}");
+    let failed = rest
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|steps| steps.first())
+        .expect("the failed step");
+    assert_eq!(failed.get("ok").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        failed.get("error_code").and_then(Value::as_str),
+        Some("NOT_FOUND")
+    );
+    assert_eq!(failed.get("result"), Some(&Value::Null));
+
+    let export = tools_call(
+        &daemon,
+        "session_export",
+        json!({ "session_id": first.session_id }),
+    )
+    .await;
+    assert!(
+        !is_error(&export),
+        "unexpected error: {}",
+        content_text(&export)
+    );
+    let export = payload(&export);
+    assert_eq!(export.get("format").and_then(Value::as_str), Some("jsonl"));
+    assert_eq!(
+        export.get("truncated").and_then(Value::as_bool),
+        Some(false)
+    );
+    let content = export
+        .get("content")
+        .and_then(Value::as_str)
+        .expect("the exported content");
+    assert_eq!(
+        export.get("bytes").and_then(Value::as_u64),
+        Some(content.len() as u64)
+    );
+    let lines: Vec<Value> = content
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every line is JSON"))
+        .collect();
+    assert_eq!(lines.len(), 3, "one session line and two step lines");
+    assert_eq!(
+        lines[0].get("type").and_then(Value::as_str),
+        Some("session")
+    );
+    assert_eq!(lines[1].get("type").and_then(Value::as_str), Some("step"));
+    assert_eq!(
+        lines[1].get("tool").and_then(Value::as_str),
+        Some("browser_click")
+    );
+    assert_eq!(lines[2].get("type").and_then(Value::as_str), Some("step"));
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn session_steps_parse_and_truncate_large_arguments() {
+    let daemon = start_daemon(5_000).await;
+    let (responder, _seen) = answer_all_tools(&daemon).await;
+    let session = daemon
+        .mcp()
+        .start_session("http", Some("agent-large"))
+        .expect("the recording store is available");
+    let text = "x".repeat(70_000);
+    let typed = tools_call_in(
+        &daemon,
+        Some(&session),
+        "browser_type",
+        json!({ "target": "#input", "text": text }),
+    )
+    .await;
+    assert!(
+        !is_error(&typed),
+        "unexpected error: {}",
+        content_text(&typed)
+    );
+    assert!(daemon.flush_recording().await, "the recorder flushes");
+    let steps = tools_call(
+        &daemon,
+        "session_steps",
+        json!({ "session_id": session.session_id }),
+    )
+    .await;
+    assert!(
+        !is_error(&steps),
+        "unexpected error: {}",
+        content_text(&steps)
+    );
+    let steps = payload(&steps);
+    let step = steps
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|steps| steps.first())
+        .expect("one step");
+    assert_eq!(step.get("args"), Some(&Value::Null));
+    assert_eq!(
+        step.get("args_truncated").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        step.get("args_bytes").and_then(Value::as_u64).unwrap_or(0) > 65_536,
+        "the serialized size is reported: {step}"
+    );
+    assert_eq!(
+        step.get("result")
+            .and_then(|result| result.get("typed"))
+            .and_then(Value::as_bool),
+        Some(true),
+        "the result stays complete"
+    );
+    assert_eq!(
+        step.get("result_truncated").and_then(Value::as_bool),
+        Some(false)
+    );
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn replay_dry_run_plans_and_skips_control_tools() {
+    let daemon = start_daemon(5_000).await;
+    let (responder, _seen) = answer_all_tools(&daemon).await;
+    let session = daemon
+        .mcp()
+        .start_session("http", Some("agent-replay"))
+        .expect("the recording store is available");
+    let listed = tools_call_in(&daemon, Some(&session), "browser_list", json!({})).await;
+    assert!(
+        !is_error(&listed),
+        "unexpected error: {}",
+        content_text(&listed)
+    );
+    let clicked = tools_call_in(
+        &daemon,
+        Some(&session),
+        "browser_click",
+        json!({ "target": "@e1", "tab_id": "7" }),
+    )
+    .await;
+    assert!(
+        !is_error(&clicked),
+        "unexpected error: {}",
+        content_text(&clicked)
+    );
+    let closed = tools_call_in(
+        &daemon,
+        Some(&session),
+        "tab_close",
+        json!({ "tab_id": "7" }),
+    )
+    .await;
+    assert!(
+        !is_error(&closed),
+        "unexpected error: {}",
+        content_text(&closed)
+    );
+    assert!(daemon.flush_recording().await, "the recorder flushes");
+
+    let replay = tools_call(
+        &daemon,
+        "session_replay",
+        json!({ "session_id": session.session_id }),
+    )
+    .await;
+    assert!(
+        !is_error(&replay),
+        "unexpected error: {}",
+        content_text(&replay)
+    );
+    let replay = payload(&replay);
+    assert_eq!(replay.get("mode").and_then(Value::as_str), Some("dry_run"));
+    assert_eq!(replay.get("total").and_then(Value::as_i64), Some(3));
+    assert_eq!(
+        replay
+            .get("executed")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+    let planned = replay
+        .get("planned")
+        .and_then(Value::as_array)
+        .expect("the plan");
+    assert_eq!(planned.len(), 2);
+    assert_eq!(
+        planned[0].get("tool").and_then(Value::as_str),
+        Some("browser_click")
+    );
+    assert!(
+        planned[0]
+            .get("args")
+            .and_then(|args| args.get("tab_id"))
+            .is_none(),
+        "replayed arguments drop tab_id: {planned:?}"
+    );
+    assert_eq!(
+        planned[1].get("tool").and_then(Value::as_str),
+        Some("tab_close")
+    );
+    let skipped = replay
+        .get("skipped")
+        .and_then(Value::as_array)
+        .expect("the skip list");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(
+        skipped[0].get("tool").and_then(Value::as_str),
+        Some("browser_list")
+    );
+    assert_eq!(
+        skipped[0].get("reason").and_then(Value::as_str),
+        Some("control_tool")
+    );
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn replay_live_executes_skips_tab_tools_and_stops_on_error() {
+    let daemon = start_daemon(5_000).await;
+    let (responder, seen) = answer_with_failures(&daemon, "edge:default").await;
+    let session = daemon
+        .mcp()
+        .start_session("http", Some("agent-live"))
+        .expect("the recording store is available");
+    let first = tools_call_in(
+        &daemon,
+        Some(&session),
+        "browser_click",
+        json!({ "target": "@e1", "tab_id": "7" }),
+    )
+    .await;
+    assert!(
+        !is_error(&first),
+        "unexpected error: {}",
+        content_text(&first)
+    );
+    let closed = tools_call_in(
+        &daemon,
+        Some(&session),
+        "tab_close",
+        json!({ "tab_id": "7" }),
+    )
+    .await;
+    assert!(
+        !is_error(&closed),
+        "unexpected error: {}",
+        content_text(&closed)
+    );
+    let failure = tools_call_in(
+        &daemon,
+        Some(&session),
+        "browser_click",
+        json!({ "target": "@bad" }),
+    )
+    .await;
+    assert!(is_error(&failure), "the extension reported NOT_FOUND");
+    assert!(daemon.flush_recording().await, "the recorder flushes");
+
+    let replay = tools_call(
+        &daemon,
+        "session_replay",
+        json!({ "session_id": session.session_id, "mode": "live" }),
+    )
+    .await;
+    assert!(
+        !is_error(&replay),
+        "tool failures during replay are data: {}",
+        content_text(&replay)
+    );
+    let replay = payload(&replay);
+    assert_eq!(replay.get("mode").and_then(Value::as_str), Some("live"));
+    assert_eq!(replay.get("total").and_then(Value::as_i64), Some(3));
+    assert_eq!(
+        replay
+            .get("planned")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+    let skipped = replay
+        .get("skipped")
+        .and_then(Value::as_array)
+        .expect("the skip list");
+    assert_eq!(
+        skipped[0].get("reason").and_then(Value::as_str),
+        Some("tab_tool")
+    );
+    let executed = replay
+        .get("executed")
+        .and_then(Value::as_array)
+        .expect("the executions");
+    assert_eq!(executed.len(), 2);
+    assert_eq!(executed[0].get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(executed[1].get("ok").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        executed[1].get("error_code").and_then(Value::as_str),
+        Some("NOT_FOUND")
+    );
+    assert_eq!(replay.get("stopped_at").and_then(Value::as_i64), Some(3));
+    assert_eq!(
+        replay.get("error_code").and_then(Value::as_str),
+        Some("NOT_FOUND")
+    );
+    let replay_session_id = replay
+        .get("replay_session_id")
+        .and_then(Value::as_str)
+        .expect("the replay session id")
+        .to_string();
+    assert!(
+        replay_session_id.starts_with("s-"),
+        "unexpected replay id: {replay_session_id}"
+    );
+
+    assert!(daemon.flush_recording().await, "the recorder flushes");
+    let replayed_steps = tools_call(
+        &daemon,
+        "session_steps",
+        json!({ "session_id": replay_session_id }),
+    )
+    .await;
+    assert!(
+        !is_error(&replayed_steps),
+        "unexpected error: {}",
+        content_text(&replayed_steps)
+    );
+    let replayed_steps = payload(&replayed_steps);
+    assert_eq!(
+        replayed_steps.get("total_steps").and_then(Value::as_i64),
+        Some(2)
+    );
+    let replayed = replayed_steps
+        .get("steps")
+        .and_then(Value::as_array)
+        .expect("the replayed steps");
+    assert!(
+        replayed[0]
+            .get("args")
+            .and_then(|args| args.get("tab_id"))
+            .is_none(),
+        "replayed arguments run against the active tab"
+    );
+    let commands = recorded(&seen);
+    let replay_clicks: Vec<&SeenCommand> = commands
+        .iter()
+        .filter(|command| command.tool == "browser_click")
+        .collect();
+    assert_eq!(replay_clicks.len(), 4, "two recorded and two replayed");
+    assert!(replay_clicks[2].args.get("tab_id").is_none());
+    assert!(replay_clicks[3].args.get("tab_id").is_none());
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn unknown_sessions_are_not_found_errors() {
+    let daemon = start_daemon(1_000).await;
+    for tool in ["session_steps", "session_replay", "session_export"] {
+        let result = tools_call(&daemon, tool, json!({ "session_id": "s-missing" })).await;
+        assert!(is_error(&result), "{tool} must fail for an unknown session");
+        let text = content_text(&result);
+        assert!(
+            text.starts_with("NOT_FOUND: "),
+            "unexpected text for {tool}: {text}"
+        );
+        assert!(
+            text.contains("\"session_id\":\"s-missing\""),
+            "the details name the session for {tool}: {text}"
+        );
+    }
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn database_override_is_created_and_doctor_reports_it() {
+    let db_path = temporary_database();
+    let daemon = start_daemon_at(1_000, db_path.clone()).await;
+    assert_eq!(daemon.db_path(), db_path.as_path());
+    assert!(db_path.exists(), "the daemon creates the database file");
+    let health = daemon.health();
+    let recording = health.get("recording").expect("recording health");
+    assert_eq!(
+        recording.get("db_path").and_then(Value::as_str),
+        Some(db_path.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        recording.get("schema_version").and_then(Value::as_i64),
+        Some(1)
+    );
+    assert_eq!(recording.get("sessions").and_then(Value::as_i64), Some(0));
+    assert_eq!(recording.get("steps").and_then(Value::as_i64), Some(0));
+
+    let report = corvusd::doctor::inspect_with_db(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        daemon.ws_addr().port(),
+        daemon.http_addr().port(),
+        Some(db_path.clone()),
+    )
+    .await;
+    let text = corvusd::doctor::render(&report);
+    assert!(
+        text.contains("daemon: running"),
+        "unexpected report: {text}"
+    );
+    assert!(
+        text.contains(&format!("db: {}", db_path.display())),
+        "unexpected report: {text}"
+    );
+    assert!(text.contains("schema: 1"), "unexpected report: {text}");
+    assert!(text.contains("sessions: 0"), "unexpected report: {text}");
+    assert!(text.contains("steps: 0"), "unexpected report: {text}");
+    assert!(text.contains("uptime: "), "unexpected report: {text}");
+    assert!(text.contains("tool calls: "), "unexpected report: {text}");
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn http_sessions_record_tools_and_close_on_delete() {
+    let daemon = start_daemon(5_000).await;
+    let (responder, _seen) = answer_all_tools(&daemon).await;
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "http-agent", "version": "0.0.0" } },
+    });
+    let (headers, _body) =
+        http_request(daemon.http_addr(), "POST", "/mcp", &initialize.to_string()).await;
+    let session_id = header_value(&headers, "mcp-session-id").expect("a session header");
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": { "name": "browser_click", "arguments": { "target": "@e1" } },
+    });
+    let (headers, body) = http_request_with(
+        daemon.http_addr(),
+        "POST",
+        "/mcp",
+        &call.to_string(),
+        &[("Mcp-Session-Id", session_id.as_str())],
+    )
+    .await;
+    assert!(
+        headers.starts_with("HTTP/1.1 200"),
+        "unexpected status line: {headers}"
+    );
+    let answer: Value = serde_json::from_str(&body).expect("decode the tools/call answer");
+    assert_eq!(
+        answer
+            .get("result")
+            .and_then(|result| result.get("isError"))
+            .and_then(Value::as_bool),
+        Some(false),
+        "the call failed: {body}"
+    );
+    let sessions = daemon
+        .store()
+        .list_sessions(10, None)
+        .expect("the sessions are readable");
+    let recorded = sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .expect("the HTTP session was recorded");
+    assert_eq!(recorded.transport, "http");
+    assert_eq!(recorded.agent.as_deref(), Some("http-agent"));
+    assert_eq!(recorded.steps, 1);
+    assert_eq!(recorded.errors, 0);
+    assert_eq!(recorded.status, "active");
+
+    let (headers, _body) = http_request_with(
+        daemon.http_addr(),
+        "DELETE",
+        "/mcp",
+        "",
+        &[("Mcp-Session-Id", session_id.as_str())],
+    )
+    .await;
+    assert!(
+        headers.starts_with("HTTP/1.1 200"),
+        "unexpected delete status: {headers}"
+    );
+    let sessions = daemon
+        .store()
+        .list_sessions(10, None)
+        .expect("the sessions are readable");
+    let closed = sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .expect("the HTTP session still exists");
+    assert_eq!(closed.status, "closed");
+    assert!(closed.ended_at.is_some(), "the session has an end time");
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn metrics_tool_reports_counters_and_logs_tail_reads_events() {
+    let daemon = start_daemon(5_000).await;
+    let (responder, _seen) = answer_with_failures(&daemon, "edge:default").await;
+    let session = daemon
+        .mcp()
+        .start_session("stdio", Some("metrics-agent"))
+        .expect("the recording store is available");
+    let success = tools_call_in(
+        &daemon,
+        Some(&session),
+        "browser_click",
+        json!({ "target": "@e1" }),
+    )
+    .await;
+    assert!(
+        !is_error(&success),
+        "unexpected error: {}",
+        content_text(&success)
+    );
+    let since = corvus_record::now_millis();
+    let failure = tools_call_in(
+        &daemon,
+        Some(&session),
+        "browser_click",
+        json!({ "target": "@bad" }),
+    )
+    .await;
+    assert!(is_error(&failure), "the extension reported NOT_FOUND");
+
+    let metrics = tools_call(&daemon, "metrics", json!({})).await;
+    assert!(
+        !is_error(&metrics),
+        "unexpected error: {}",
+        content_text(&metrics)
+    );
+    let metrics = payload(&metrics);
+    assert_eq!(metrics.get("protocol").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        metrics.get("browsers_connected").and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        metrics["by_tool"]["browser_click"]["calls"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        metrics["by_tool"]["browser_click"]["errors"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(metrics["errors_by_code"]["NOT_FOUND"].as_u64(), Some(1));
+    assert!(metrics.get("uptime_ms").and_then(Value::as_u64).is_some());
+    assert!(metrics.get("inflight").and_then(Value::as_u64).is_some());
+    assert!(metrics
+        .get("sessions_total")
+        .and_then(Value::as_i64)
+        .is_some_and(|sessions| sessions >= 1));
+    assert_eq!(
+        metrics["recording"]["enabled"].as_bool(),
+        Some(true),
+        "recording health is part of metrics"
+    );
+    assert!(metrics["recording"]["db_path"].as_str().is_some());
+
+    let logs = tools_call(
+        &daemon,
+        "logs_tail",
+        json!({ "limit": 1000, "since_ms": since }),
+    )
+    .await;
+    assert!(
+        !is_error(&logs),
+        "unexpected error: {}",
+        content_text(&logs)
+    );
+    let logs = payload(&logs);
+    let entries = logs
+        .get("entries")
+        .and_then(Value::as_array)
+        .expect("the log entries");
+    assert!(
+        entries.iter().any(|entry| {
+            entry["fields"]["tool"].as_str() == Some("browser_click")
+                && entry["fields"]["code"].as_str() == Some("NOT_FOUND")
+        }),
+        "the failed tool call is missing from the log entries: {logs}"
+    );
+    assert!(logs.get("dropped").and_then(Value::as_u64).is_some());
+
+    let warnings = tools_call(&daemon, "logs_tail", json!({ "level": "warn" })).await;
+    assert!(
+        !is_error(&warnings),
+        "unexpected error: {}",
+        content_text(&warnings)
+    );
+    for entry in payload(&warnings)["entries"]
+        .as_array()
+        .expect("the warning entries")
+    {
+        let level = entry
+            .get("level")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            level == "warn" || level == "error",
+            "unexpected level {level}"
+        );
+    }
+    let limited = tools_call(&daemon, "logs_tail", json!({ "limit": 1 })).await;
+    let limited = payload(&limited);
+    assert!(limited["entries"].as_array().expect("entries").len() <= 1);
+
+    let invalid = tools_call(&daemon, "logs_tail", json!({ "level": "verbose" })).await;
+    assert!(is_error(&invalid), "an invalid level is a tool error");
+    let text = content_text(&invalid);
+    assert!(text.contains("BAD_ARGS"), "unexpected text: {text}");
+    assert!(
+        text.contains("\"level\":\"verbose\""),
+        "unexpected text: {text}"
+    );
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_http_metrics_endpoint_exposes_prometheus_series() {
+    let daemon = start_daemon(5_000).await;
+    let (responder, _seen) = answer_with_failures(&daemon, "edge:default").await;
+    let success = tools_call(&daemon, "browser_click", json!({ "target": "@e1" })).await;
+    assert!(
+        !is_error(&success),
+        "unexpected error: {}",
+        content_text(&success)
+    );
+    let failure = tools_call(&daemon, "browser_click", json!({ "target": "@bad" })).await;
+    assert!(is_error(&failure), "the extension reported NOT_FOUND");
+
+    let (headers, body) = http_request(daemon.http_addr(), "GET", "/metrics", "").await;
+    assert!(
+        headers.starts_with("HTTP/1.1 200"),
+        "unexpected status line: {headers}"
+    );
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("content-type: text/plain"),
+        "unexpected content type: {headers}"
+    );
+    for expected in [
+        "corvus_uptime_seconds ",
+        "corvus_browsers_connected 1",
+        "corvus_tool_calls_total{tool=\"browser_click\"} 2",
+        "corvus_tool_errors_total{code=\"NOT_FOUND\"} 1",
+        "corvus_sessions_total ",
+        "corvus_steps_total ",
+    ] {
+        assert!(body.contains(expected), "missing {expected} in:\n{body}");
+    }
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+fn header_value(headers: &str, name: &str) -> Option<String> {
+    headers.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_string())
+    })
 }

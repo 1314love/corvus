@@ -57,9 +57,11 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 
 ### Status
 
-M1 is implemented end to end: the daemon, the extension and the MCP server expose the four core tools on three-platform CI. M2 ships 26 tools in two waves: wave 1 added text and HTML extraction, find, hover, press, scroll, select, JavaScript evaluation, waits, history and tab management; wave 2 added browser listing and routing, network capture and interception, downloads and uploads. See [docs/03-roadmap.md](docs/03-roadmap.md) and [docs/02-architecture.md](docs/02-architecture.md).
+M1 is implemented end to end: the daemon, the extension and the MCP server expose the four core tools on three-platform CI. M2 ships 26 tools in two waves: wave 1 added text and HTML extraction, find, hover, press, scroll, select, JavaScript evaluation, waits, history and tab management; wave 2 added browser listing and routing, network capture and interception, downloads and uploads. M3 wave 1 is in progress: recording, replay and observability bring the surface to 32 tools. See [docs/03-roadmap.md](docs/03-roadmap.md) and [docs/02-architecture.md](docs/02-architecture.md).
 
 Network capture is opt-in per tab and keeps a 2000-entry ring. Interception supports block, mock and continue rules. Downloads can be listed and awaited, and uploads set file inputs through CDP, including hidden ones.
+
+Every MCP session records each tools/call to SQLite, with arguments, result, error code and timing. session_list and session_steps read the timeline, session_replay plans or re-executes a range, and session_export writes JSONL. metrics and logs_tail expose counters and recent logs, and GET /metrics serves Prometheus text next to /health.
 
 ### Development
 
@@ -132,9 +134,11 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 
 ### 状态
 
-M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的 CI 上提供四个核心工具。M2 分两波落地，工具面达到 26 个：第一波新增文本与 HTML 提取、查找、悬停、按键、滚动、下拉选择、JS 求值、等待、前进后退与标签管理；第二波新增浏览器列表与路由、网络捕获与拦截、下载与上传。见 [docs/03-roadmap.zh.md](docs/03-roadmap.zh.md) 与 [docs/02-architecture.zh.md](docs/02-architecture.zh.md)。
+M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的 CI 上提供四个核心工具。M2 分两波落地，工具面达到 26 个：第一波新增文本与 HTML 提取、查找、悬停、按键、滚动、下拉选择、JS 求值、等待、前进后退与标签管理；第二波新增浏览器列表与路由、网络捕获与拦截、下载与上传。M3 第一波正在进行：录制、回放与可观测性把工具面带到 32 个。见 [docs/03-roadmap.zh.md](docs/03-roadmap.zh.md) 与 [docs/02-architecture.zh.md](docs/02-architecture.zh.md)。
 
 网络捕获按标签显式开启，每个标签保留 2000 条环形缓冲。拦截支持 block、mock 与 continue 规则；下载可列出并等待完成，上传通过 CDP 设置文件 input，隐藏 input 也可用。
+
+每个 MCP 会话都会把每次 tools/call 连同参数、结果、错误码与耗时记录到 SQLite。session_list 与 session_steps 读取该时间线，session_replay 生成计划或重新执行一段步骤，session_export 导出 JSONL。metrics 与 logs_tail 提供计数器与近期日志，GET /metrics 在 /health 旁输出 Prometheus 文本。
 
 ### 开发
 

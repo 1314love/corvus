@@ -140,7 +140,7 @@ M2 第一波冻结的工具面共 18 个。`browser_navigate`、`page_snapshot`�
 
 ### 5.3 M2 第二波工具面
 
-M2 第二波新增 8 个工具，工具面达到 26 个。下表结果均为成功 MCP 工具结果中的 JSON 对象；失败使用第 8 节的错误分类并置 `isError`。
+M2 第二波新增 8 个工具。下表结果均为成功 MCP 工具结果中的 JSON 对象；失败使用第 8 节的错误分类并置 `isError`。
 
 通用路由与超时：
 
@@ -176,6 +176,29 @@ M2 第二波新增 8 个工具，工具面达到 26 个。下表结果均为成�
 - 未知的十进制 `id` 不会返回 `NOT_FOUND`，最终返回 `TIMEOUT`，`details` 为 `{"waited_ms":...,"id":"..."}`（未给出 `id` 时 `details` 只含 `waited_ms`）。省略 `id` 时，选择本次调用之前 5000 毫秒内新建或开始的下载，从新到旧查找，绝不选择更早的下载；已完成的候选立即返回。
 - `upload_file` 将 `target`（该标签最新快照中的 `@eN` 引用或 CSS 选择器）经 CDP 解析并调用 `DOM.setFileInputFiles`，因此隐藏的文件 input 也能使用；随后派发 `input` 与 `change` 事件。它在设置文件前逐个检查所有本地路径，文件缺失或不可读时返回 `BAD_ARGS`，`details` 为 `{"path":"..."}`。
 - 扩展没有文件访问权限时，浏览器仍可能拒绝 file URL 访问。`target` 不是 `input[type=file]` 时返回 `BAD_ARGS`，`details` 为 `{"reason":"not_a_file_input","tag":"...","input_type":"..."}`。
+
+### 5.4 M3 第一波工具面
+
+M3 第一波新增 6 个工具，工具面达到 32 个。录制始终开启；四个会话工具读取 SQLite 录制库，`metrics` 与 `logs_tail` 读取进程内的可观测性状态。下表结果均为成功 MCP 工具结果中的 JSON 对象；失败使用第 8 节的错误分类并置 `isError`。
+
+| 工具 | 参数（除标注 ? 外必填） | 结果 |
+|---|---|---|
+| `session_list` | `limit?` 1..200 默认 50；`since_ms?` >= 0 | `sessions[]`，元素含 `session_id`、`started_at`、`ended_at`（数字或 null）、`status`、`transport`、`agent`（字符串或 null）、`steps`、`errors`；`total`；按 `started_at` 从新到旧 |
+| `session_steps` | `session_id`；`from_seq?` >= 0 默认 0；`limit?` 1..500 默认 100 | `session_id`；`steps[]`，元素含 `seq`、`ts`、`tool`、`browser_id`（字符串或 null）、`tab_id`（字符串或 null）、`ok`、`error_code`（字符串或 null）、`duration_ms`、`args`、`args_truncated`、`result`、`result_truncated`；`total_steps`；`next_seq` 仅在还有步骤时返回 |
+| `session_replay` | `session_id`；`from_seq?` 默认第一条；`to_seq?` 默认最后一条；`mode?` `dry_run` 或 `live` 默认 `dry_run`；`browser_id?`；`continue_on_error?` 默认 false | `session_id`、`mode`、`total`、`planned[]`（含 `seq`、`tool`、`args`）、`executed[]`（含 `seq`、`tool`、`ok`、`error_code`、`duration_ms`）、`skipped[]`（含 `seq`、`tool`、`reason`）、`stopped_at?`、`error_code?`、`replay_session_id?` |
+| `session_export` | `session_id`；`format?` `jsonl` | `session_id`、`format`、`content`、`bytes`、`truncated` |
+| `metrics` | 无 | `uptime_ms`、`started_at`、`protocol`、`browsers_connected`、`browsers[]`、`sessions_total`、`sessions_active`、`tool_calls_total`、`tool_errors_total`、`by_tool`（`tool` -> `calls`、`errors`、`avg_ms`）、`errors_by_code`、`inflight`、`recording`（`enabled`、`db_path`、`sessions`、`steps`）、`last_call_at_ms?` |
+| `logs_tail` | `limit?` 1..1000 默认 200；`level?` `debug`、`info`、`warn` 或 `error`；`since_ms?` | `entries[]`，元素含 `ts`、`level`、`target`、`message`、`fields`；`dropped` |
+
+**会话与录制。** 一个会话就是一个 MCP 会话：HTTP 使用 `Mcp-Session-Id`，stdio 每个进程生成一个 `s-<uuid v4>` id。每次 `tools/call` 都会被录制，失败调用也不例外，记录解析后的 `browser_id` 与 `tab_id`、耗时、`ok` 与 `error_code`；`args` 与 `result` 以 JSON 文本存储，各自上限 262144 字节，并用 `args_truncated`/`result_truncated` 标记。录制异步执行，数据库错误只记录警告，绝不让工具调用失败。会话在关闭或守护进程停止时以 `closed` 结束；上一进程遗留的活动会话在下次启动时标记为 `abandoned`。
+
+**会话读取。** `session_steps` 按 `seq` 升序返回从 `from_seq` 开始的步骤。存储文本完整且可解析时，`args` 与 `result` 为解析后的 JSON，否则为已存储的前缀字符串；序列化后超过 65536 字节的值返回 null，并带上对应的 `*_truncated` 标记与 `*_bytes` 大小。只有还有步骤时才有 `next_seq`。对 `session_steps`、`session_replay` 与 `session_export`，未知会话 id 返回 `NOT_FOUND`，`details` 为 `{"session_id":"..."}`。
+
+**回放。** `session_replay` 默认 `dry_run`，只生成计划；`live` 通过正常路由器重发步骤并沿用正常工具超时，结果记录到新会话，`agent` 为 `corvus-replay`、`transport` 为 `internal`，id 由 `replay_session_id` 返回。`session_list`、`session_steps`、`session_replay`、`session_export`、`metrics`、`logs_tail` 与 `browser_list` 以 `control_tool` 原因跳过；live 模式下 `tab_close` 与 `tab_switch` 以 `tab_tool` 原因跳过，录制中的 `tab_id` 会被移除，因此步骤作用于活动标签，除非用 `browser_id` 选择浏览器。回放默认在第一个失败步骤停止；`continue_on_error` 为 true 时继续。被回放工具失败属于数据，不是 `session_replay` 的错误（`isError` 为 false）。没有可回放步骤时返回 `BAD_ARGS`，`details.reason` 为 `no_replayable_steps`；live 模式没有已连接浏览器时返回 `TRANSPORT_DOWN`。
+
+**导出与可观测性。** `session_export` 写 JSONL：第一行 `{"type":"session",...}` 含会话全部列，随后每个步骤一行 `{"type":"step",...}`，其中 `args_json` 与 `result_json` 为字符串。内容上限 2097152 字节，被截断时 `truncated` 为 true；`format` 只支持 `jsonl`。`metrics` 计数器是进程生命周期内的原子计数，不重置，`avg_ms` 为截断后的整数毫秒。`logs_tail` 读取 5000 条的内存环形缓冲；`ts` 为 epoch 毫秒，`fields` 最多含 16 个一级原始事件字段，值转为字符串，`dropped` 为启动以来被覆盖的事件数，非法 `level` 返回 `BAD_ARGS`，`details.level` 给出原因。
+
+`GET /metrics` 位于 MCP HTTP 端口、与 `/health` 并列，输出 Prometheus 文本：`corvus_uptime_seconds`、`corvus_browsers_connected`、`corvus_tool_calls_total{tool="..."}`、`corvus_tool_errors_total{code="..."}`、`corvus_sessions_total` 与 `corvus_steps_total`。`/health` 保持现有形状。
 
 ## 6. 扩展设计
 
@@ -214,17 +237,16 @@ M2 第二波新增 8 个工具，工具面达到 26 个。下表结果均为成�
 
 ## 9. 存储
 
-SQLite 位于 ~/.corvus/corvus.db（WAL 模式）。
+SQLite 位于 `~/.corvus/corvus.db`（Windows 为 `%USERPROFILE%\.corvus\corvus.db`），WAL 模式，schema 版本 1 记录在 `schema_meta`。`corvusd serve --db <path>` 覆盖路径，其次读取 `CORVUS_DB_PATH`；父目录会自动创建。
 
 | 表 | 列 |
 |---|---|
-| sessions | id, started_at, ended_at, browser, profile, agent, status |
-| steps | id, session_id, seq, ts, tool, args_json, result_json, error_code, duration_ms |
-| snapshots | id, step_id, url, title, nodes, blob_path |
-| network | id, step_id, url, method, status, ms, req_headers, res_headers, body_path |
-| site_cards | domain, selector, role, success_count, fail_count, last_used, payload |
+| sessions | `id`、`started_at`、`ended_at`、`browser`、`profile`、`agent`、`transport`、`status`、`steps`、`errors` |
+| steps | `id`、`session_id`、`seq`、`ts`、`tool`、`args_json`、`result_json`、`error_code`、`duration_ms`、`browser_id`、`tab_id`、`ok`、`args_truncated`、`result_truncated`；`UNIQUE(session_id, seq)`，并在 `(session_id, seq)` 上建索引 |
 
-大对象（截图、响应体）落在数据库旁边的 ~/.corvus/blobs/<yyyy-mm-dd>/，按保留策略清理（默认 30 天，可配置）。
+启动时，上一进程遗留的活动会话把 `ended_at` 设为当前时间、`status` 设为 `abandoned`；`started_at` 早于 30 天的会话会被清理。
+
+`snapshots`、`network` 与 `site_cards` 不在 schema v1 中创建；它们仍是后续工作，本里程碑不写 blob 目录。
 
 ## 10. 配置
 
@@ -247,6 +269,8 @@ SQLite 位于 ~/.corvus/corvus.db（WAL 模式）。
     [memory]
     enabled = true
     export_format = "jsonl"
+
+`config.toml` 在本里程碑尚未加载。上面的 `[recording]` 块只描述目标形状；录制始终开启，实际控制项是 `corvusd serve --db <path>`、`CORVUS_DB_PATH` 与固定的 30 天保留期。`config.toml` 文件加载随打包一起落地。
 
 按工具覆盖超时：`browser_wait` 为 `args.timeout_ms + 5000` 毫秒、上限 125000 毫秒，`browser_eval` 为 30000 毫秒，`download_wait` 为 `args.timeout_ms + 5000` 毫秒、上限 125000 毫秒，其余工具使用 60000 毫秒默认值；路由器把所有截止时间统一限制在 125000 毫秒以内。
 

@@ -159,7 +159,7 @@ M2 wave 1 ships all 18 tools. The following requirements have an implemented too
 
 ### 4.2 M2 wave 2 traceability
 
-M2 wave 2 adds eight tools for a total of 26. The following requirements now have an implemented path; partial coverage is stated explicitly. Everything not listed remains open.
+M2 wave 2 added eight tools. The following requirements now have an implemented path; partial coverage is stated explicitly. Everything not listed remains open.
 
 - **FR-C5** — `browser_list` reports the live browser set, and every browser-facing tool accepts `browser_id` to route one command to one connected browser. The routing failures are `BAD_ARGS` with `details.reason` `multiple_browsers` when several browsers are connected and no id is given, and `TRANSPORT_DOWN` when none is connected or the id is unknown. Per-browser disable and enable (FR-C6) remain open.
 - **FR-N1** — `net_capture` and `net_log` cover request method, URL, status, MIME, resource type, cache flag, duration, errors and optional headers from a 2000-entry per-tab ring. Response bodies remain open.
@@ -167,7 +167,16 @@ M2 wave 2 adds eight tools for a total of 26. The following requirements now hav
 - **FR-N3** — the `block` action covers request blocking. Throttling and offline emulation remain open.
 - **FR-A6** — `download_list` and `download_wait` cover download tracking and completion; `upload_file` covers file-input upload through CDP, including hidden inputs. Drag-path upload and a returned local download path remain open.
 
-M3 remains: session recording and replay (FR-O1, FR-O2), export (FR-O3), site memory (FR-O4), and metrics and observability (FR-O5). Request and network-idle waits (FR-N4, FR-P5) and the storage and identity family (FR-S1–FR-S4) also remain open.
+### 4.3 M3 wave 1 traceability
+
+M3 wave 1 adds six tools for a total of 32. The following requirements now have an implemented path; partial coverage is stated explicitly. Everything not listed remains open.
+
+- **FR-O1** — Every `tools/call` in an MCP session is recorded with tool, arguments, result, error code, duration and resolved `browser_id`/`tab_id`; `session_list` and `session_steps` read the timeline. Snapshots, screenshots and network events as separate timeline rows remain open.
+- **FR-O2** — `session_replay` plans a recorded range in `dry_run` and re-executes it in `live`, skipping control and tab tools, stopping on the first error unless `continue_on_error` is set, and recording the run as a replay session. Interactive step forward/back control remains open.
+- **FR-O3 (partial)** — `session_export` writes JSONL only; HTML report and Perfetto trace remain open.
+- **FR-O5 (partial)** — `metrics`, `logs_tail` and `GET /metrics` expose counters, a 5000-entry log ring and Prometheus text; a Grafana dashboard remains open.
+
+Still open: site memory (FR-O4), the remaining FR-O1, FR-O2, FR-O3 and FR-O5 scope above, and the storage and identity family (FR-S1–FR-S4). Request and network-idle waits (FR-N4, FR-P5) also remain open.
 
 ## 5. Non-functional requirements
 

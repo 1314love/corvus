@@ -8,11 +8,13 @@
 
 pub mod backend;
 pub mod http;
+pub mod metrics;
 pub mod protocol;
 pub mod stdio;
 pub mod tools;
 
 pub use backend::{BackendFuture, ToolBackend, ToolCall};
 pub use http::McpHttpServer;
+pub use metrics::{CallGuard, Metrics};
 pub use protocol::{McpServer, PROTOCOL_VERSION, SUPPORTED_VERSIONS};
 pub use stdio::serve_stdio;

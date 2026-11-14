@@ -4,6 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use corvus_proto::ErrorBody;
+use corvus_record::SessionContext;
 use serde_json::Value;
 
 /// Boxed future returned by a backend.
@@ -16,6 +17,8 @@ pub struct ToolCall {
     pub name: String,
     /// Arguments, already checked against the JSON schema.
     pub arguments: Value,
+    /// MCP session that produced the call, when the server tracks sessions.
+    pub session: Option<SessionContext>,
 }
 
 /// Executes tool calls.

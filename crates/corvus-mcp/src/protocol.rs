@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use corvus_proto::{ids, ErrorBody, ErrorCode};
+use corvus_proto::{ErrorBody, ErrorCode};
+use corvus_record::{SessionContext, Store};
 
 use crate::backend::{ToolBackend, ToolCall};
+use crate::metrics::Metrics;
 use crate::tools;
 
 /// MCP revision this server implements.
@@ -26,6 +28,8 @@ pub struct McpServer {
     version: String,
     instructions: String,
     health: Arc<dyn Fn() -> Value + Send + Sync>,
+    store: Option<Arc<Store>>,
+    metrics: Arc<Metrics>,
 }
 
 impl McpServer {
@@ -37,6 +41,113 @@ impl McpServer {
             version: env!("CARGO_PKG_VERSION").to_string(),
             instructions: "Corvus drives a real browser through the Corvus extension. Call page_snapshot before browser_click or browser_type and pass a reference from the snapshot as target. Every failure names an error code; retry only when the answer says the failure is retryable.".to_string(),
             health: Arc::new(|| json!({ "status": "ok" })),
+            store: None,
+            metrics: Arc::new(Metrics::new()),
+        }
+    }
+
+    /// Share a counter set with the caller, for example the daemon metrics tool.
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// The process-wide tool counters.
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
+    }
+
+    /// Render Prometheus text using browser and recording counts from health.
+    pub fn metrics_text(&self) -> String {
+        let health = (self.health)();
+        let browsers = health
+            .get("browsers")
+            .and_then(Value::as_array)
+            .map_or(0, |browsers| browsers.len() as u64);
+        let recording = health.get("recording");
+        let sessions = recording
+            .and_then(|recording| recording.get("sessions"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let steps = recording
+            .and_then(|recording| recording.get("steps"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        self.metrics.prometheus(browsers, sessions, steps)
+    }
+
+    /// Attach the recording store used for session bookkeeping.
+    pub fn with_store(mut self, store: Arc<Store>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Open a new recorded session and return its context.
+    pub fn start_session(&self, transport: &str, agent: Option<&str>) -> Option<SessionContext> {
+        let store = self.store.as_ref()?;
+        let session_id = format!("s-{}", uuid::Uuid::new_v4());
+        let context = SessionContext::new(session_id.clone(), transport, agent.map(str::to_string));
+        if let Err(error) = store.start_session(&session_id, transport, agent, None) {
+            tracing::warn!(error = %error, "could not start a recording session");
+            return None;
+        }
+        Some(context)
+    }
+
+    /// Open the session for an initialize request when the body carries one.
+    pub fn initialize_session(&self, raw: &str, transport: &str) -> Option<SessionContext> {
+        let value: Value = serde_json::from_str(raw).ok()?;
+        let is_initialize =
+            |request: &Value| request.get("method").and_then(Value::as_str) == Some("initialize");
+        let request = match &value {
+            Value::Array(items) => items.iter().find(|item| is_initialize(item))?,
+            other if is_initialize(other) => other,
+            _ => return None,
+        };
+        let agent = client_agent(request);
+        self.start_session(transport, agent.as_deref())
+    }
+
+    /// Context for a known session identifier.
+    pub fn session_context(&self, session_id: &str, transport: &str) -> Option<SessionContext> {
+        let store = self.store.as_ref()?;
+        match store.session_exists(session_id) {
+            Ok(true) => Some(SessionContext::new(session_id, transport, None)),
+            Ok(false) => None,
+            Err(error) => {
+                tracing::warn!(error = %error, "could not look up a recording session");
+                None
+            }
+        }
+    }
+
+    /// Close one session.
+    pub fn finish_session(&self, session_id: &str, status: &str) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        if let Err(error) = store.finish_session(session_id, status) {
+            tracing::warn!(error = %error, "could not close a recording session");
+        }
+    }
+
+    /// Close every session that is still open.
+    pub fn close_all_sessions(&self, status: &str) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        match store.list_sessions(u32::MAX, None) {
+            Ok(sessions) => {
+                for session in sessions
+                    .into_iter()
+                    .filter(|session| session.ended_at.is_none())
+                {
+                    if let Err(error) = store.finish_session(&session.id, status) {
+                        tracing::warn!(error = %error, session = %session.id, "could not close a session");
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(error = %error, "could not list sessions to close"),
         }
     }
 
@@ -57,20 +168,17 @@ impl McpServer {
         value
     }
 
-    /// A session identifier to return when the body contains an initialize request.
-    pub fn session_id_for(&self, raw: &str) -> Option<String> {
-        let value: Value = serde_json::from_str(raw).ok()?;
-        let is_initialize =
-            |request: &Value| request.get("method").and_then(Value::as_str) == Some("initialize");
-        let found = match &value {
-            Value::Array(items) => items.iter().any(is_initialize),
-            other => is_initialize(other),
-        };
-        found.then(ids::connection_id)
-    }
-
     /// Turn a raw JSON-RPC message into a raw answer, if one is due.
     pub async fn handle_message(&self, raw: &str) -> Option<String> {
+        self.handle_message_with(raw, None).await
+    }
+
+    /// Handle one raw message inside an optional recorded session.
+    pub async fn handle_message_with(
+        &self,
+        raw: &str,
+        session: Option<&SessionContext>,
+    ) -> Option<String> {
         let value: Value = match serde_json::from_str(raw) {
             Ok(value) => value,
             Err(error) => {
@@ -92,7 +200,7 @@ impl McpServer {
                 }
                 let mut responses = Vec::new();
                 for item in items {
-                    if let Some(response) = self.handle_value(item).await {
+                    if let Some(response) = self.handle_value_with(item, session).await {
                         responses.push(response);
                     }
                 }
@@ -102,12 +210,23 @@ impl McpServer {
                     Some(encode(&Value::Array(responses)))
                 }
             }
-            other => self.handle_value(other).await.map(|value| encode(&value)),
+            other => self
+                .handle_value_with(other, session)
+                .await
+                .map(|value| encode(&value)),
         }
     }
 
-    /// Handle one decoded JSON-RPC value.
+    /// Handle one decoded JSON-RPC value outside any recorded session.
     pub async fn handle_value(&self, value: Value) -> Option<Value> {
+        self.handle_value_with(value, None).await
+    }
+
+    async fn handle_value_with(
+        &self,
+        value: Value,
+        session: Option<&SessionContext>,
+    ) -> Option<Value> {
         let Some(object) = value.as_object() else {
             return Some(error_response(
                 Value::Null,
@@ -143,6 +262,11 @@ impl McpServer {
             }
         };
         let params = object.get("params").cloned().unwrap_or(Value::Null);
+        if method == "initialize" {
+            if let Some(session) = session {
+                self.record_initialize(session, &params);
+            }
+        }
         match method.as_str() {
             "initialize" => Some(success(id, self.initialize(&params))),
             "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => {
@@ -150,7 +274,7 @@ impl McpServer {
             }
             "ping" => Some(success(id, json!({}))),
             "tools/list" => Some(success(id, json!({ "tools": tools::definitions() }))),
-            "tools/call" => Some(success(id, self.call_tool(&params).await)),
+            "tools/call" => Some(success(id, self.call_tool(&params, session).await)),
             other => {
                 if notification {
                     None
@@ -188,7 +312,24 @@ impl McpServer {
         })
     }
 
-    async fn call_tool(&self, params: &Value) -> Value {
+    fn record_initialize(&self, session: &SessionContext, params: &Value) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let agent = params
+            .get("clientInfo")
+            .and_then(|client| client.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "unknown".to_string());
+        if let Err(error) =
+            store.start_session(&session.session_id, &session.transport, Some(&agent), None)
+        {
+            tracing::warn!(error = %error, "could not record the client agent");
+        }
+    }
+
+    async fn call_tool(&self, params: &Value, session: Option<&SessionContext>) -> Value {
         let name = match params.get("name").and_then(Value::as_str) {
             Some(name) if !name.trim().is_empty() => name.to_string(),
             _ => {
@@ -198,20 +339,43 @@ impl McpServer {
                 ))
             }
         };
+        let mut measurement = self.metrics.begin(&name);
         let arguments = params
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
         let arguments = match tools::validate(&name, &arguments) {
             Ok(arguments) => arguments,
-            Err(error) => return tool_error(&error),
+            Err(error) => {
+                measurement.finish(Some(&error));
+                return tool_error(&error);
+            }
         };
-        let call = ToolCall { name, arguments };
+        let call = ToolCall {
+            name,
+            arguments,
+            session: session.cloned(),
+        };
         match self.backend.call(call).await {
-            Ok(result) => tool_success(&result),
-            Err(error) => tool_error(&error),
+            Ok(result) => {
+                measurement.finish(None);
+                tool_success(&result)
+            }
+            Err(error) => {
+                measurement.finish(Some(&error));
+                tool_error(&error)
+            }
         }
     }
+}
+
+fn client_agent(value: &Value) -> Option<String> {
+    value
+        .get("params")
+        .and_then(|params| params.get("clientInfo"))
+        .and_then(|client| client.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn encode(value: &Value) -> String {

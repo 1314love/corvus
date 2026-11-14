@@ -42,6 +42,7 @@ impl McpHttpServer {
                     .delete(mcp_delete),
             )
             .route("/health", get(health))
+            .route("/metrics", get(metrics))
             .route("/", get(banner))
             .with_state(state);
         Ok(Self {
@@ -87,8 +88,17 @@ async fn mcp_post(
     if !origin_allowed(&headers) {
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
-    let session = state.server.session_id_for(&body);
-    match state.server.handle_message(&body).await {
+    let opened = state.server.initialize_session(&body, "http");
+    let existing = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|session_id| state.server.session_context(session_id, "http"));
+    let session = opened.clone().or(existing);
+    match state
+        .server
+        .handle_message_with(&body, session.as_ref())
+        .await
+    {
         Some(text) => {
             let mut response = (
                 StatusCode::OK,
@@ -96,8 +106,8 @@ async fn mcp_post(
                 text,
             )
                 .into_response();
-            if let Some(session) = session {
-                if let Ok(value) = HeaderValue::from_str(&session) {
+            if let Some(session) = opened {
+                if let Ok(value) = HeaderValue::from_str(&session.session_id) {
                     response.headers_mut().insert("mcp-session-id", value);
                 }
             }
@@ -116,11 +126,24 @@ async fn mcp_get() -> Response {
         .into_response()
 }
 
-async fn mcp_delete() -> Response {
+async fn mcp_delete(State(state): State<Arc<HttpState>>, headers: HeaderMap) -> Response {
+    let Some(session_id) = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(header::CONTENT_TYPE, "application/json")],
+            "{\"error\":\"mcp-session-id header required\"}",
+        )
+            .into_response();
+    };
+    state.server.finish_session(&session_id, "closed");
     (
-        StatusCode::METHOD_NOT_ALLOWED,
-        [(header::ALLOW, "POST")],
-        "sessions are not persistent; there is nothing to delete",
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        format!("{{\"closed\":true,\"session_id\":{session_id:?}}}"),
     )
         .into_response()
 }
@@ -135,11 +158,23 @@ async fn health(State(state): State<Arc<HttpState>>) -> Response {
         .into_response()
 }
 
+async fn metrics(State(state): State<Arc<HttpState>>) -> Response {
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        state.server.metrics_text(),
+    )
+        .into_response()
+}
+
 async fn banner() -> Response {
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        "corvus mcp server\n\nPOST JSON-RPC 2.0 messages to /mcp\nGET /health for daemon status\n",
+        "corvus mcp server\n\nPOST JSON-RPC 2.0 messages to /mcp\nGET /health for daemon status\nGET /metrics for Prometheus counters\n",
     )
         .into_response()
 }

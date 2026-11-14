@@ -1,13 +1,14 @@
 //! The command router.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
 use corvus_proto::{ids, Envelope, ErrorBody, ErrorCode, Kind, Meta};
+use corvus_record::{now_millis, SessionContext, StepRecord, StepSink};
 use corvus_transport::{BrowserConnection, Inbound, Registry};
 
 use crate::spec::{self, ToolSpec};
@@ -30,6 +31,8 @@ pub struct CommandRequest {
     pub idempotency_key: Option<String>,
     /// Trace identifier propagated to the browser.
     pub trace_id: Option<String>,
+    /// MCP session that produced the call, used for recording.
+    pub session: Option<SessionContext>,
 }
 
 impl CommandRequest {
@@ -42,6 +45,7 @@ impl CommandRequest {
             timeout_ms: None,
             idempotency_key: None,
             trace_id: None,
+            session: None,
         }
     }
 
@@ -66,6 +70,12 @@ impl CommandRequest {
     /// Attach a trace identifier.
     pub fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
         self.trace_id = Some(trace_id.into());
+        self
+    }
+
+    /// Record the call in the given MCP session.
+    pub fn with_session(mut self, session: SessionContext) -> Self {
+        self.session = Some(session);
         self
     }
 }
@@ -156,6 +166,7 @@ pub struct Router {
     registry: Arc<Registry>,
     config: RouterConfig,
     inner: Inner,
+    step_sink: OnceLock<StepSink>,
 }
 
 impl Router {
@@ -169,7 +180,18 @@ impl Router {
                 gates: Mutex::new(HashMap::new()),
                 idempotency: Mutex::new(IdempotencyState::default()),
             },
+            step_sink: OnceLock::new(),
         })
+    }
+
+    /// Attach the recording writer. Only the first sink wins.
+    pub fn attach_step_sink(&self, sink: StepSink) -> bool {
+        if self.step_sink.set(sink).is_ok() {
+            true
+        } else {
+            tracing::warn!("a recording sink is already attached to the router");
+            false
+        }
     }
 
     /// The registry the router routes into.
@@ -203,16 +225,55 @@ impl Router {
 
     /// Route one command and wait for the browser answer.
     pub async fn dispatch(&self, mut request: CommandRequest) -> CommandResult {
-        let spec = spec::lookup(&request.tool).ok_or_else(|| {
-            ErrorBody::new(ErrorCode::BadArgs, format!("unknown tool {}", request.tool))
-                .with_details(json!({ "tool": request.tool, "known": spec::names() }))
-        })?;
+        let started = Instant::now();
+        let session = request.session.clone();
+        let tool = request.tool.clone();
+        let recorded_args = request.args.clone();
+        let (result, browser_id) = self.dispatch_inner(&mut request).await;
+        if let (Some(session), Some(sink)) = (session.as_ref(), self.step_sink.get()) {
+            let (stored_result, error_code) = match &result {
+                Ok(value) => (Some(value.clone()), None),
+                Err(error) => (None, Some(error.code.as_str().to_string())),
+            };
+            sink.record(StepRecord {
+                session_id: session.session_id.clone(),
+                ts: now_millis(),
+                tool,
+                args: recorded_args,
+                result: stored_result,
+                error_code,
+                duration_ms: started.elapsed().as_millis() as i64,
+                browser_id,
+                tab_id: tab_id_of(&request.args),
+                ok: result.is_ok(),
+            });
+        }
+        result
+    }
+
+    async fn dispatch_inner(
+        &self,
+        request: &mut CommandRequest,
+    ) -> (CommandResult, Option<String>) {
+        let spec = match spec::lookup(&request.tool) {
+            Some(spec) => spec,
+            None => {
+                let error =
+                    ErrorBody::new(ErrorCode::BadArgs, format!("unknown tool {}", request.tool))
+                        .with_details(json!({ "tool": request.tool, "known": spec::names() }));
+                return (Err(error), None);
+            }
+        };
         let argument_browser = take_browser_id(&mut request.args);
         let browser = request.browser.take().or(argument_browser);
-        let connection = self.resolve_browser(browser.as_deref())?;
+        let connection = match self.resolve_browser(browser.as_deref()) {
+            Ok(connection) => connection,
+            Err(error) => return (Err(error), None),
+        };
+        let browser_id = connection.id().to_string();
         if let Some(required) = spec.capability {
             if !connection.supports(required) {
-                return Err(ErrorBody::new(
+                let error = ErrorBody::new(
                     ErrorCode::CapabilityUnavailable,
                     format!(
                         "browser {} does not offer the {} capability",
@@ -224,17 +285,19 @@ impl Router {
                     "browser": connection.id(),
                     "required": required,
                     "available": connection.capabilities(),
-                })));
+                }));
+                return (Err(error), Some(browser_id));
             }
         }
-        match request.idempotency_key.clone() {
-            None => self.execute(connection, spec, &request).await,
+        let result = match request.idempotency_key.clone() {
+            None => self.execute(connection, spec, request).await,
             Some(key) => {
                 let cache_key = format!("{}:{}:{}", connection.id(), request.tool, key);
-                self.execute_once(cache_key, connection, spec, request)
+                self.execute_once(cache_key, connection, spec, request.clone())
                     .await
             }
-        }
+        };
+        (result, Some(browser_id))
     }
 
     fn resolve_browser(&self, browser: Option<&str>) -> Result<Arc<BrowserConnection>, ErrorBody> {
@@ -485,6 +548,12 @@ impl Router {
             tracing::debug!(error = %error, "could not deliver the cancel event");
         }
     }
+}
+
+fn tab_id_of(args: &Value) -> Option<String> {
+    args.get("tab_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn take_browser_id(args: &mut Value) -> Option<String> {

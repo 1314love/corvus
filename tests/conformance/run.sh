@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Corvus M2 MCP conformance checks.
+# Corvus M3 MCP conformance checks.
 #
-# Starts corvusd, waits for the MCP HTTP endpoint on 127.0.0.1:7331, drives
-# initialize / notifications/initialized / tools/list / tools/call with curl,
-# and asserts the frozen M2 contract from docs/02-architecture.md section 5.2.
+# Starts corvusd with an isolated temporary SQLite database, waits for the MCP
+# HTTP endpoint on 127.0.0.1:7331, drives initialize / notifications/initialized
+# / tools/list / tools/call with curl, and asserts the frozen M3 contract from
+# docs/02-architecture.md section 5.3.
 # A stateful mock extension is started when available so positive tool calls
 # exercise the complete daemon -> extension -> daemon path.
 #
-# Coverage: all 26 tools with at least one happy call and one negative per
+# Coverage: all 32 tools with at least one happy call and one negative per
 # family, browser_id routing (one browser, two browsers, ambiguous, unknown),
-# network capture/log/intercept, downloads, uploads, navigation loaded/url and
-# immediate-snapshot checks, default argument normalization in recorded
+# network capture/log/intercept, downloads, uploads, navigation loaded/url,
+# immediate-snapshot checks, recording/list/steps/replay/export, metrics and
+# logs_tail, the /metrics scrape, default argument normalization in recorded
 # envelopes, and a loaded=false navigate that must still succeed.
 #
 # Usage:
@@ -19,11 +21,13 @@
 # Environment overrides:
 #   CORVUSD_BIN        daemon binary to run (default: target/debug/corvusd[.exe])
 #   CORVUSD_ARGS       daemon arguments (default: "serve"; an empty string is retried)
+#   CORVUS_DB          SQLite path for this run (default: <tmp>/corvus-m3.db)
 #   CORVUS_MCP_URL     default http://127.0.0.1:7331/mcp
 #   CORVUS_WS_URL      default ws://127.0.0.1:7330
+#   CORVUS_METRICS_URL default <MCP origin>/metrics
 #   CARGO              cargo binary (default: cargo, then the known Windows path)
 #   EXPECTED_PROTOCOL_VERSION  default 2025-06-18
-#   EXPECTED_TOOLS     comma separated, default the 26 M2 tools
+#   EXPECTED_TOOLS     comma separated, default the 32 M3 tools
 #   KEEP_TMP=1         keep logs even on success
 #
 # Exit codes: 0 all checks passed (skips allowed), 1 one or more checks failed.
@@ -34,8 +38,9 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 MCP_URL=${CORVUS_MCP_URL:-http://127.0.0.1:7331/mcp}
 WS_URL=${CORVUS_WS_URL:-ws://127.0.0.1:7330}
 HEALTH_URL=${CORVUS_HEALTH_URL:-${MCP_URL%/mcp}/health}
+METRICS_URL=${CORVUS_METRICS_URL:-${MCP_URL%/mcp}/metrics}
 EXPECTED_PROTOCOL_VERSION=${EXPECTED_PROTOCOL_VERSION:-2025-06-18}
-EXPECTED_TOOLS=${EXPECTED_TOOLS:-browser_navigate,page_snapshot,browser_click,browser_type,page_text,page_html,page_find,browser_hover,browser_press,browser_scroll,browser_select,browser_eval,browser_wait,browser_history,tab_list,tab_new,tab_close,tab_switch,browser_list,net_capture,net_log,net_clear,net_intercept,download_list,download_wait,upload_file}
+EXPECTED_TOOLS=${EXPECTED_TOOLS:-browser_navigate,page_snapshot,browser_click,browser_type,page_text,page_html,page_find,browser_hover,browser_press,browser_scroll,browser_select,browser_eval,browser_wait,browser_history,tab_list,tab_new,tab_close,tab_switch,browser_list,net_capture,net_log,net_clear,net_intercept,download_list,download_wait,upload_file,session_list,session_steps,session_replay,session_export,metrics,logs_tail}
 export EXPECTED_PROTOCOL_VERSION EXPECTED_TOOLS
 
 USE_MOCK=1
@@ -70,6 +75,8 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/corvus-conformance.XXXXXX") || {
   echo "cannot create a temporary directory" >&2
   exit 1
 }
+CORVUS_DB=${CORVUS_DB:-$TMP/corvus-m3.db}
+export CORVUS_DB_PATH="$CORVUS_DB"
 DAEMON_PID=""
 MOCK_PID=""
 MOCK_B_PID=""
@@ -107,6 +114,9 @@ cleanup() {
   stop_pid "$MOCK_B_PID"
   stop_pid "$MOCK_PID"
   stop_pid "$DAEMON_PID"
+  if [ "$KEEP_TMP" != "1" ]; then
+    rm -f "$CORVUS_DB" "$CORVUS_DB-wal" "$CORVUS_DB-shm"
+  fi
   if [ "$FAILED" -gt 0 ] || [ "$KEEP_TMP" = "1" ]; then
     echo ""
     echo "logs kept in: $TMP"
@@ -213,7 +223,18 @@ if [ -z "$DAEMON_BIN" ]; then
 fi
 
 start_daemon() { # extra args...
-  "$DAEMON_BIN" "$@" >"$TMP/daemon.log" 2>&1 &
+  local args=("$@")
+  local has_db=0
+  local arg
+  for arg in "${args[@]}"; do
+    if [ "$arg" = "--db" ]; then
+      has_db=1
+    fi
+  done
+  if [ "$has_db" = "0" ]; then
+    args+=("--db" "$CORVUS_DB")
+  fi
+  "$DAEMON_BIN" "${args[@]}" >"$TMP/daemon.log" 2>&1 &
   DAEMON_PID=$!
 }
 
@@ -456,6 +477,136 @@ expect_error_detail() { # label tool arguments-json error-code prefix needle...
   fi
 }
 
+SESSION_STEPS_BODY=""
+STEP_SEQ=0
+REPLAY_SESSION=""
+
+expect_session_list() { # label expectation session-id min-steps prefix
+  local label="$1" expectation="$2" session="${3:-}" min="${4:-0}" prefix="$5"
+  CALL_ID=$((CALL_ID + 1))
+  local payload status detail
+  payload=$(printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"session_list","arguments":{}}}' "$CALL_ID")
+  status=$(mcp_post "$payload" "$TMP/$prefix.json" "$TMP/$prefix.headers" "$SESSION")
+  if [ "$status" = "200" ] && detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" session-list "$TMP/$prefix.json" "$expectation" "$session" "$min" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "HTTP $status ${detail:-$(head -c 200 "$TMP/$prefix.json" 2>/dev/null)}"
+  fi
+}
+
+expect_session_steps() { # label session-id min-steps prefix
+  local label="$1" session="$2" min="$3" prefix="$4"
+  CALL_ID=$((CALL_ID + 1))
+  local payload status detail
+  payload=$(printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"session_steps","arguments":{"session_id":"%s","limit":500}}}' "$CALL_ID" "$session")
+  status=$(mcp_post "$payload" "$TMP/$prefix.json" "$TMP/$prefix.headers" "$SESSION")
+  SESSION_STEPS_BODY=""
+  if [ "$status" = "200" ] && detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" steps "$TMP/$prefix.json" "$session" "$min" 2>&1); then
+    SESSION_STEPS_BODY="$TMP/$prefix.json"
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "HTTP $status ${detail:-$(head -c 200 "$TMP/$prefix.json" 2>/dev/null)}"
+  fi
+}
+
+expect_step_in_body() { # label body tool expected-args-json [expected-result-json]
+  local label="$1" body="$2" tool="$3" expected_args="$4" expected_result="${5:-}" detail
+  if detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" step "$body" "$tool" "$expected_args" "$expected_result" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "$detail"
+  fi
+}
+
+expect_step_seq() { # label body tool
+  local label="$1" body="$2" tool="$3" detail
+  STEP_SEQ=0
+  if detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" step-seq "$body" "$tool" 2>&1); then
+    STEP_SEQ="$detail"
+    record PASS "$label" "seq=$STEP_SEQ"
+  else
+    record FAIL "$label" "$detail"
+  fi
+}
+
+expect_session_replay() { # label arguments-json mode tool prefix
+  local label="$1" arguments="$2" replay_mode="$3" tool="$4" prefix="$5"
+  CALL_ID=$((CALL_ID + 1))
+  local payload status detail
+  payload=$(printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"session_replay","arguments":%s}}' "$CALL_ID" "$arguments")
+  status=$(mcp_post "$payload" "$TMP/$prefix.json" "$TMP/$prefix.headers" "$SESSION")
+  if [ "$status" = "200" ] && detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" replay "$TMP/$prefix.json" "$replay_mode" "$tool" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "HTTP $status ${detail:-$(head -c 200 "$TMP/$prefix.json" 2>/dev/null)}"
+  fi
+}
+
+expect_replay_id() { # label body
+  local label="$1" body="$2" detail
+  REPLAY_SESSION=""
+  if detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" replay-id "$body" 2>&1); then
+    REPLAY_SESSION="$detail"
+    record PASS "$label" "replay_session_id=$REPLAY_SESSION"
+  else
+    record FAIL "$label" "$detail"
+  fi
+}
+
+expect_export() { # label session-id prefix
+  local label="$1" session="$2" prefix="$3"
+  CALL_ID=$((CALL_ID + 1))
+  local payload status detail
+  payload=$(printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"session_export","arguments":{"session_id":"%s"}}}' "$CALL_ID" "$session")
+  status=$(mcp_post "$payload" "$TMP/$prefix.json" "$TMP/$prefix.headers" "$SESSION")
+  if [ "$status" = "200" ] && detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" export "$TMP/$prefix.json" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "HTTP $status ${detail:-$(head -c 200 "$TMP/$prefix.json" 2>/dev/null)}"
+  fi
+}
+
+expect_metrics() { # label prefix [error-code...]
+  local label="$1" prefix="$2"
+  shift 2
+  CALL_ID=$((CALL_ID + 1))
+  local payload status detail
+  payload=$(printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"metrics","arguments":{}}}' "$CALL_ID")
+  status=$(mcp_post "$payload" "$TMP/$prefix.json" "$TMP/$prefix.headers" "$SESSION")
+  if [ "$status" = "200" ] && detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" metrics "$TMP/$prefix.json" "$@" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "HTTP $status ${detail:-$(head -c 200 "$TMP/$prefix.json" 2>/dev/null)}"
+  fi
+}
+
+expect_logs() { # label level min-entries prefix
+  local label="$1" level="$2" min="$3" prefix="$4"
+  local arguments='{}'
+  if [ -n "$level" ]; then
+    arguments='{"level":"'$level'","limit":200}'
+  fi
+  CALL_ID=$((CALL_ID + 1))
+  local payload status detail
+  payload=$(printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"logs_tail","arguments":%s}}' "$CALL_ID" "$arguments")
+  status=$(mcp_post "$payload" "$TMP/$prefix.json" "$TMP/$prefix.headers" "$SESSION")
+  if [ "$status" = "200" ] && detail=$(node "$ROOT/tests/conformance/mcp_assert.mjs" logs "$TMP/$prefix.json" "$level" "$min" 2>&1); then
+    record PASS "$label" "$detail"
+  else
+    record FAIL "$label" "HTTP $status ${detail:-$(head -c 200 "$TMP/$prefix.json" 2>/dev/null)}"
+  fi
+}
+
+expect_http_contains() { # label url needle
+  local label="$1" url="$2" needle="$3" status
+  status=$(curl -sS -o "$TMP/http-check.txt" -w '%{http_code}' --max-time 10 "$url" 2>/dev/null || true)
+  if [ "$status" = "200" ] && grep -Fq -- "$needle" "$TMP/http-check.txt"; then
+    record PASS "$label" "HTTP 200 contains $needle"
+  else
+    record FAIL "$label" "HTTP $status missing $needle $(head -c 200 "$TMP/http-check.txt" 2>/dev/null)"
+  fi
+}
+
 INIT_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"'"$EXPECTED_PROTOCOL_VERSION"'","capabilities":{},"clientInfo":{"name":"corvus-conformance","version":"0.1.0"}}}'
 STATUS=$(mcp_post "$INIT_PAYLOAD" "$TMP/init.json" "$TMP/init.headers" "" 0)
 SESSION=$(tr -d '\r' < "$TMP/init.headers" 2>/dev/null | sed -n 's/^[Mm][Cc][Pp]-[Ss][Ee][Ss][Ss][Ii][Oo][Nn]-[Ii][Dd]:[[:space:]]*//p' | head -n 1 || true)
@@ -484,12 +635,25 @@ if [ "$LIST_STATUS" != "200" ]; then
 else
   if OUT=$(node "$ROOT/tests/conformance/mcp_assert.mjs" tools "$TMP/tools.json" 2>&1); then
     NAME_LINE=$(printf '%s\n' "$OUT" | sed -n '1p')
-    record PASS "tools/list exactly 26 M2 tools" "$NAME_LINE"
+    record PASS "tools/list exactly 32 M3 tools" "$NAME_LINE"
     record PASS "tools/list annotation hints" "$(printf '%s\n' "$OUT" | sed -n '2p')"
     record PASS "tools/list input schema shapes" "$(printf '%s\n' "$OUT" | sed -n '3p')"
   else
     record FAIL "tools/list contract" "$OUT"
   fi
+fi
+
+if [ -n "$SESSION" ]; then
+  expect_session_list "session_list shows only the current session at steps 0" initial "$SESSION" 0 "session-list-initial"
+else
+  record SKIP "session_list shows only the current session at steps 0" "initialize returned no Mcp-Session-Id"
+fi
+
+if [ -n "$SESSION" ]; then
+  expect_error_detail "session_replay on a control-only session is BAD_ARGS" session_replay \
+    '{"session_id":"'$SESSION'"}' BAD_ARGS "replay-control-only" "no_replayable_steps"
+else
+  record SKIP "session_replay on a control-only session is BAD_ARGS" "initialize returned no Mcp-Session-Id"
 fi
 
 CALL_PAYLOAD='{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"page_snapshot","arguments":{}}}'
@@ -747,6 +911,51 @@ if [ -f "$TMP/mock-envelopes.jsonl" ]; then
   expect_command_any "tab_close forwards unknown string tab_id" tab_close '{"tab_id":"tab-999"}'
   expect_command_any "tab_new forwards string tab_id request" tab_new '{"url":"http://127.0.0.1:8808/c","active":true}'
   expect_command_any "page_text forwards string tab_id" page_text '{"tab_id":"tab-1"}'
+fi
+
+# --- M3 recording, replay and observability ---------------------------------
+
+if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ]; then
+  expect_session_list "session_list contains this MCP session" contains "$SESSION" 5 "m3-session-list"
+  expect_session_steps "session_steps returns ordered steps" "$SESSION" 10 "m3-session-steps"
+  expect_step_in_body "recorded browser_navigate carries args and result" "$SESSION_STEPS_BODY" \
+    browser_navigate '{"url":"'$PAGE_A'"}' '{"navigated":true,"loaded":true,"url":"'$PAGE_A'"}'
+  expect_step_seq "find the replayable browser_navigate seq" "$SESSION_STEPS_BODY" browser_navigate
+
+  case "$STEP_SEQ" in
+    ''|*[!0-9]*|0)
+      record FAIL "session_replay dry_run plans the session" "no usable browser_navigate seq"
+      record FAIL "session_replay live executes one navigate" "no usable browser_navigate seq"
+      ;;
+    *)
+      expect_session_replay "session_replay dry_run plans the session" \
+        '{"session_id":"'$SESSION'"}' dry_run browser_navigate "m3-replay-dry"
+      expect_session_replay "session_replay live executes one navigate" \
+        '{"session_id":"'$SESSION'","from_seq":'$STEP_SEQ',"to_seq":'$STEP_SEQ',"mode":"live","browser_id":"mock:conformance"}' \
+        live browser_navigate "m3-replay-live"
+      expect_replay_id "live replay returns a replay session id" "$TMP/m3-replay-live.json"
+      if [ -n "$REPLAY_SESSION" ]; then
+        expect_session_list "session_list contains the replay session" contains "$REPLAY_SESSION" 1 "m3-replay-list"
+        expect_session_steps "replay session records its executed step" "$REPLAY_SESSION" 1 "m3-replay-steps"
+      else
+        record SKIP "session_list contains the replay session" "no replay_session_id"
+        record SKIP "replay session records its executed step" "no replay_session_id"
+      fi
+      ;;
+  esac
+
+  expect_export "session_export emits session and step JSONL" "$SESSION" "m3-export"
+  expect_metrics "metrics reports counters and error codes" "m3-metrics" BAD_ARGS TIMEOUT NOT_FOUND
+  expect_http_contains "GET /metrics exposes tool counters" "$METRICS_URL" "corvus_tool_calls_total"
+  expect_http_contains "GET /metrics exposes uptime seconds" "$METRICS_URL" "corvus_uptime_seconds"
+  expect_logs "logs_tail returns startup entries" "" 1 "m3-logs"
+  expect_logs "logs_tail filters level info" "info" 1 "m3-logs-info"
+  expect_bad_args "logs_tail rejects an invalid level" '{"jsonrpc":"2.0","id":45,"method":"tools/call","params":{"name":"logs_tail","arguments":{"level":"verbose"}}}' "bad-logs-level"
+  expect_tool_error "session_steps unknown session is NOT_FOUND" session_steps '{"session_id":"s-does-not-exist"}' \
+    NOT_FOUND "m3-unknown-session"
+else
+  record SKIP "M3 recording and replay" "no mock extension"
+  record SKIP "M3 metrics and logs" "no mock extension"
 fi
 
 if [ "$USE_MOCK" = "1" ]; then
