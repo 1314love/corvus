@@ -68,22 +68,25 @@ v1.4.0 splits the backend into ports-and-adapters crates, adds a REST surface be
 | Version alignment | One 1.4.0 version across the cargo workspace, the extension package and the manifest before the release tag. |
 | Release | 1.4.0 binaries, changelog and bilingual release notes. QA acceptance is recorded in `tests/acceptance/v1.4.0.md`; final CI run 43690906863 and the published-asset hashes are recorded in the release notes; NFR-3 and the Firefox deviation remain open. |
 
-State: 1.4.0 is delivered. The 1.4.0 release shipped with the workspace and extension versioned 1.4.0, and [v1.4.0.md](../tests/acceptance/v1.4.0.md) records PASS for 199 workspace tests in 25 suites, 135 conformance checks and the extension gate. NFR-3 remains unpassed, no live 1.4.0 deployment is claimed, and final CI run 43690906863 and the published-asset hashes are recorded in the release notes. 1.5.0 is the next milestone.
+State: 1.4.0 is delivered and 1.5.0 was delivered on 2026-11-15. The 1.4.0 release shipped with the workspace and extension versioned 1.4.0, and [v1.4.0.md](../tests/acceptance/v1.4.0.md) records PASS for 199 workspace tests in 25 suites, 135 conformance checks and the extension gate. NFR-3 remains unpassed, no live 1.4.0 deployment is claimed, and final CI run 43690906863 and the published-asset hashes are recorded in the release notes. The current release is 1.5.0.
 
-## v1.5.0 next (QA and installer PASS on dirty tree; unreleased)
+## v1.5.0 delivered (2026-11-15)
 
-1.5.0 work is present in the tree, but it is not released and has no date. The cargo workspace, extension package and manifest report 1.5.0; [v1.5.0.md](../tests/acceptance/v1.5.0.md) records QA acceptance PASS for dirty HEAD 73092ea, but no tag or CI run exists for 1.5.0, and the local installer ZIP is not a published asset. The 43-tool surface and its nine categories are unchanged.
+1.5.0 was released on 2026-11-15 from annotated tag `v1.5.0`; the tag object `a6ddc0f3e7b37f9cc29b0ff8c92eff839e05415f` targets `7d0e7c7126ea927a0d5f90df572c5aee31a9a4df` (product commit `d4d01eab7ef87cd9c73ec2f7aef8d633eda3a49a`, metadata fix `7d0e7c7`). It adds snapshot perception v2, compact snapshot diffs and extension i18n, with no new MCP tool; the 43-tool surface and nine categories are unchanged. [v1.5.0.md](../tests/acceptance/v1.5.0.md) records QA PASS on the frozen source tree at HEAD `73092ea`; main CI run `43702442120` passed eight jobs, and GitHub Release `445967405` published the assets.
 
-| Item | Work in the tree | Evidence status |
+| Item | Delivered | Evidence |
 |---|---|---|
-| Perception v2 | `page_snapshot` traverses open shadow roots and same-origin child frames, adds frame paths and `frames` metadata, skips cross-origin frames, budgets `max_nodes` globally and projects boxes to the top viewport. | Code in `corvus-cdp` and the extension runtime. |
+| Perception v2 | `page_snapshot` traverses open shadow roots and same-origin child frames, adds frame paths and `frames` metadata, skips cross-origin frames, budgets `max_nodes` globally and projects boxes to the top viewport. | Code in `corvus-cdp` and the extension runtime; QA PASS. |
 | Compact diffs | `diff` is compact-only and computed once by the application layer from a 64-entry cache keyed by browser, session and tab; markers and baseline reset are documented in [09-tools.md](09-tools.md). | Code in `snapshot_diff.rs`; `browser_batch` shares the path. |
 | Extension i18n | vue-i18n with English and zh-CN catalogs, detection and persistence, reactive switching, and manifest `_locales`. | 14 build files and 41 Vitest tests in eight files measured. |
-| Surface | 43 MCP tools in nine categories; no new tool. | Catalog unchanged. |
-| Version alignment | Cargo workspace, extension package and manifest report 1.5.0. | Keep aligned through the 1.5.0 release. |
-| QA acceptance | 220 workspace tests and 136 conformance checks passed; 43-tool snapshot 23,561 B. | PASS on dirty HEAD 73092ea; installer PASS 98/0; CI and release evidence Pending. |
+| Surface | 43 MCP tools in nine categories; no new tool. | Catalogue unchanged. |
+| Version alignment | Cargo workspace, extension package and manifest are 1.5.0. | Aligned through the release; metadata fix `7d0e7c7`. |
+| QA acceptance | 220 workspace tests and 136 conformance checks passed; 43-tool snapshot 23,561 B. | PASS on frozen HEAD `73092ea`; installer PASS 98/0. |
+| Release | Tag `v1.5.0`, CI `43702442120`, GitHub Release `445967405`; Windows ZIP 18,534,237 B and Linux tarball 19,849,047 B. | Published assets verified; combined `SHA256SUMS` 194 B. |
 
-Measured in the unreleased tree: 220 workspace tests passed on 25 result lines, 136 conformance checks passed, extension build 14 files, 41 Vitest tests in eight files and isolated Playwright 1/1; Windows installer acceptance passed 98 checks and observations with 0 failures on the local ZIP. QA acceptance is PASS on dirty HEAD 73092ea; CI runs, published asset hashes and the GitHub release remain Pending. NFR-3 is still unpassed, no live 1.5.0 deployment is claimed, and the version metadata is now aligned at 1.5.0.
+Measured for the release: 220 workspace tests passed on 25 result lines, 136 conformance checks passed, extension build 14 files, 41 Vitest tests in eight files and isolated Playwright 1/1; Windows installer acceptance passed 98 checks and observations with 0 failures on the distinct local ZIP (18,516,546 B, SHA-256 `2a36e28e42385d473edf058e8ed047a20ebf3cc4638f48fd3b469f80c29e5f5f`). The published assets are the CI rebuilds: Windows 18,534,237 B SHA-256 `e91e2ebce31d99d8753004849777e37277a93acd493cd320edfbda3987baabad`, Linux 19,849,047 B SHA-256 `c1a62be75c2895cd9eef27848b4a304551e2177bd66b9e1730d6150b9657c136`, combined `SHA256SUMS` 194 B SHA-256 `845aae4ee442020a34de4d90661c8cb2e6f83377f226d7a9e6263bdb354f9fbf`. QA and installer were measured on the frozen tree before the release commit. NFR-3 is still unpassed, no live 1.5.0 deployment is claimed, and no Docker registry publication or Kubernetes runtime test is claimed.
+
+**v1.6.0 next (not scoped).** No scope or date is set.
 
 ## Suggested schedule (one main developer + AI pairing)
 

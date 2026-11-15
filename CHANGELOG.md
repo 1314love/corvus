@@ -6,9 +6,9 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
-## 1.5.0 - Unreleased
+## 1.5.0 - 2026-11-15
 
-Unreleased work in the tree. The MCP surface is unchanged at 43 tools in nine categories. Version metadata now reports 1.5.0; QA acceptance and Windows installer acceptance PASS are recorded on a dirty tree, but no 1.5.0 tag or CI run exists and the local installer ZIP is not a published asset.
+1.5.0 was released on 2026-11-15 and is the current release; 1.4.0 is the previous release. The MCP surface is unchanged at 43 tools in nine categories. QA acceptance and Windows installer acceptance passed on the frozen tree; main CI run 43702442120 passed all eight jobs and GitHub Release 445967405 published the Windows, Linux and combined checksum assets.
 
 ### Added
 
@@ -23,6 +23,7 @@ Unreleased work in the tree. The MCP surface is unchanged at 43 tools in nine ca
 - `browser_batch` shares the application-layer snapshot path, so a `page_snapshot` step receives the same diff treatment exactly once.
 - The 43-tool MCP catalogue, nine categories, compact envelope and `browser_batch` surface are unchanged.
 - The rule against reasoning text is now enforced in CI by `scripts/check-cot.mjs`, which scans tracked files and pull request commit messages and fails on a hit.
+- Release evidence: annotated tag `v1.5.0` object `a6ddc0f` targets `7d0e7c7`; main CI `43702442120` passed eight jobs; GitHub Release `445967405` published Windows ZIP 18,534,237 B SHA-256 `e91e2ebc...`, Linux tarball 19,849,047 B SHA-256 `c1a62be7...`, and combined `SHA256SUMS` 194 B SHA-256 `845aae4e...`.
 
 ## 1.4.0 - 2026-11-15
 
@@ -208,9 +209,9 @@ First public release.
 
 ## 中文
 
-## 1.5.0 - 未发布
+## 1.5.0 - 2026-11-15
 
-工作树中的未发布工作。MCP 面保持 43 个工具、九个类别不变。版本元数据现为 1.5.0；QA 验收与 Windows 安装包验收已在脏工作树上 PASS，但不存在 1.5.0 标签或 CI 运行，本地安装包 ZIP 也不是已发布产物。
+1.5.0 于 2026-11-15 发布，为当前版本；1.4.0 为上一版本。MCP 面保持 43 个工具、九个类别不变。QA 验收与 Windows 安装包验收在冻结的工作树上通过；主 CI 运行 43702442120 的八个任务全部通过，GitHub 发布 445967405 已发布 Windows、Linux 与合并校验和产物。
 
 ### 新增
 
@@ -225,6 +226,7 @@ First public release.
 - `browser_batch` 共用应用层快照路径，因此 `page_snapshot` 步骤只按同一差异规则处理一次。
 - 43 工具 MCP 目录、九个类别、紧凑信封与 `browser_batch` 面保持不变。
 - 禁止推理文本的规则改为 CI 机械执行：`scripts/check-cot.mjs` 扫描仓库文件与拉取请求的提交信息，命中即失败。
+- 发布证据：附注标签 `v1.5.0` 指向 `a6ddc0f` 与 `7d0e7c7`；主 CI `43702442120` 通过八个任务；GitHub 发布 `445967405` 已发布 Windows ZIP 18,534,237 B SHA-256 `e91e2ebc...`、Linux tar 包 19,849,047 B SHA-256 `c1a62be7...`，以及合并 `SHA256SUMS` 194 B SHA-256 `845aae4e...`。
 
 ## 1.4.0 - 2026-11-15
 

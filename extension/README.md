@@ -5,7 +5,7 @@ The shipped extension is built from TypeScript and Vue 3 sources. There is no
 remote code and no inline script. Content scripts stay framework-free, and
 `build/extension` is the directory to load or package.
 
-Status: this document describes the unreleased 1.5.0 work in the tree. The extension package, manifest and build check now report 1.5.0; QA acceptance PASS is recorded in [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md) on a dirty tree, while package and release evidence remain absent.
+Status: this document describes the 1.5.0 release. The extension package, manifest and build check report 1.5.0, which is the current published release; 1.4.0 is previous. QA acceptance PASS is recorded in [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md), and the release is published as GitHub Release 445967405.
 
 The visible surfaces are one read-only popup status card and a small options page.
 The popup shows the connection dot and state, browser id, extension version,
@@ -263,7 +263,7 @@ Hello and hello_ack:
   "browser": "edge:7f3a91c0d2b4e6f8",
   "args": {
     "profile": "7f3a91c0d2b4e6f8",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "capabilities": ["dom", "scripting", "debugger", "cdp"],
     "cdpEndpoint": "auto"
   }
@@ -278,7 +278,7 @@ Hello and hello_ack:
   "browser": "edge:default",
   "args": {
     "daemon": "corvus",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "protocol": 1,
     "capabilities": ["dom", "scripting", "debugger", "cdp"],
     "limits": { "max_timeout_ms": 125000, "default_timeout_ms": 60000, "max_inflight": 64, "max_snapshot_nodes": 20000 }
@@ -297,7 +297,7 @@ chrome.storage.local. Extension APIs cannot read the real profile name.
 ## Tool contract
 
 There are forty-three MCP tool names in the current surface. This extension
-handles the twenty-five browser-facing names it has always served; in 1.4.0 all
+handles the twenty-five browser-facing names it has always served; in 1.5.0 all
 of them are also available over CDP, so the extension-only set is empty. The
 eight CDP-only names (browser_dialog, browser_emulate, browser_cookies,
 browser_console, cdp_status, cdp_targets, cdp_send and cdp_events) and the ten

@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-Status: 1.4.0 is the current published release: a ports-and-adapters backend, the unchanged 43-tool MCP surface, a REST `/api/v1` surface with optional JWT authentication, and the TypeScript and Vue 3 extension. The v1.4.0 acceptance report records a passing release matrix. The tree also contains unreleased v1.5.0 work: extended snapshot perception, compact snapshot diffs and extension internationalization; the workspace, extension package and manifest now report 1.5.0, with a v1.5.0 QA acceptance PASS on the dirty tree and no v1.5 release yet. Audience: engineers.
+Status: 1.5.0 is the current published release, published on 2026-11-15 from tag `v1.5.0`; 1.4.0 is the previous release. The 1.5.0 release keeps the ports-and-adapters backend and the unchanged 43-tool MCP surface, and adds snapshot perception v2, compact snapshot diffs and extension internationalization. QA PASS is recorded in [v1.5.0.md](../tests/acceptance/v1.5.0.md), main CI run 43702442120 passed and GitHub Release 445967405 published the assets. Audience: engineers.
 
 ## 1. Constraints that shape the design
 
@@ -284,9 +284,9 @@ OpenAPI JSON is served at `/api-docs/openapi.json` and Swagger UI at `/docs`. Bo
 
 **Persistence.** The recording adapter uses SeaORM over SQLite and `sea-orm-migration`. `SCHEMA_VERSION` remains 1, and the baseline migration creates the same `sessions` and `steps` tables plus `schema_meta`, so an existing 1.3.0 database opens without a data migration and remains readable by a 1.3.0 binary. For an existing non-empty database that has no migration history, the daemon runs `VACUUM INTO <db>.backup-<millis>.db` before the migration; failure aborts startup. The pool uses one connection, WAL, `synchronous=NORMAL`, foreign keys and a 5-second busy timeout. A single recorder task drains an unbounded write queue; reads and session bookkeeping run on a dedicated record thread. Startup marks previously active sessions `abandoned`, prunes sessions older than 30 days, and truncates stored arguments and results at 262144 bytes on a UTF-8 boundary.
 
-### 5.9 Snapshot perception v2, compact diffs and extension i18n (v1.5.0, unreleased)
+### 5.9 Snapshot perception v2, compact diffs and extension i18n (v1.5.0)
 
-This section describes work present in the tree but not released as 1.5.0; the workspace metadata reports 1.5.0.
+This section describes the released 1.5.0 surface. QA PASS was recorded on the frozen source tree at HEAD 73092ea; the release tag targets `7d0e7c7` on top of product commit `d4d01ea`. Main CI run 43702442120 passed eight jobs and GitHub Release 445967405 published the assets.
 
 **Snapshot perception v2.** `page_snapshot` now traverses open shadow roots and same-origin child frames. The top document has an empty frame path; child frames use document-order paths such as `f0`, `f0.0` and `f1`. Compact lines inside a child frame append `frame="<path>"`, and JSON nodes carry `frame` only when the path is non-empty. When child frames exist the result adds `frames: {total, included, skipped: [{frame, url, reason}]}` with a reason of `cross_origin`, `unavailable` or `geometry_unavailable`; a cross-origin frame is skipped and never read. Bounding boxes are projected into the top viewport, and `max_nodes` is one budget across every included document. On CDP, `snapshot_tool` in `crates/corvus-cdp/src/tools.rs` walks the frame tree and relies on the accessibility tree for open shadow DOM; the extension path in `extension/src/content/runtime.ts` performs the same traversal.
 
@@ -294,7 +294,7 @@ This section describes work present in the tree but not released as 1.5.0; the w
 
 **Extension internationalization.** The Vue UI uses vue-i18n 11.4.20 with 64-key English and Simplified Chinese catalogues under `extension/src/ui/shared/i18n/`. Locale detection uses `chrome.i18n.getUILanguage()` and `navigator.language` (`zh*` maps to `zh-CN`, everything else to English); an explicit choice is persisted under `corvus.locale`, switches reactively without a reload, and sets `document.documentElement.lang`. The manifest declares `default_locale: en` and mirrors the catalogs in `_locales/en` and `_locales/zh_CN`.
 
-This work is unreleased: no 1.5.0 release or published asset exists, although [v1.5.0.md](../tests/acceptance/v1.5.0.md) records QA PASS on dirty HEAD 73092ea and the cargo workspace, extension package and manifest report 1.5.0.
+The 1.5.0 release is published: annotated tag `v1.5.0` object `a6ddc0f3e7b37f9cc29b0ff8c92eff839e05415f` targets `7d0e7c7`, and GitHub Release 445967405 carries the Windows, Linux and combined-checksum assets. See [v1.5.0.md](../tests/acceptance/v1.5.0.md) and the [release notes](release-notes/v1.5.0.md).
 
 ## 6. Extension design
 

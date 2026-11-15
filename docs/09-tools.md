@@ -2,9 +2,9 @@
 
 [English](09-tools.md) | [中文](09-tools.zh.md)
 
-Status: 1.4.0. Audience: MCP client authors, REST client authors and tool users.
+Status: 1.5.0 is the current published release, released on 2026-11-15; 1.4.0 is previous. Audience: MCP client authors, REST client authors and tool users.
 
-Corvus exposes 43 MCP tools in nine categories. Thirty-three tools operate on a browser through either the extension or a direct loopback CDP connection; ten tools are answered by the daemon. The tool names, input schemas and result shapes in this reference describe 1.4.0. The MCP surface is unchanged from 1.3.0: 1.4.0 adds no tools. The same 43-tool catalogue and executor are also available over the REST surface at `/api/v1/tools` and `/api/v1/tools/call`; the envelope in section 1 is MCP-specific.
+Corvus exposes 43 MCP tools in nine categories. Thirty-three tools operate on a browser through either the extension or a direct loopback CDP connection; ten tools are answered by the daemon. The tool names, input schemas and result shapes in this reference describe 1.5.0. The MCP surface is unchanged from 1.3.0: 1.4.0 added no tools and 1.5.0 adds none. The same 43-tool catalogue and executor are also available over the REST surface at `/api/v1/tools` and `/api/v1/tools/call`; the envelope in section 1 is MCP-specific.
 
 ## 1. MCP result envelope
 
@@ -286,4 +286,4 @@ The release-candidate benchmark measured compact output against the JSON compati
 
 Token counts use the benchmark's tokenizer estimate. The 1.5.0 QA report measures the default brief `tools/list` at 20,493 B (array 20,449 B) for 43 tools and full detail at 37,372 B (array 37,328 B); the release notes cite that report.
 
-Version: 1.4.0 is the current published release. The tree also contains unreleased v1.5.0 work with source metadata at 1.5.0: snapshot perception v2 and compact diffs, documented above. Tool catalogues and schemas were checked against the tree; the MCP catalogue is unchanged from 1.3.0 and still has 43 tools in nine categories. No 1.5.0 release or published asset exists yet; QA acceptance PASS is recorded in [v1.5.0.md](../tests/acceptance/v1.5.0.md) at dirty HEAD 73092ea.
+Version: 1.5.0 is the current published release, released on 2026-11-15; 1.4.0 is previous. QA acceptance PASS is recorded in [v1.5.0.md](../tests/acceptance/v1.5.0.md), and the release is published as GitHub Release 445967405 with main CI run 43702442120. Tool catalogues and schemas were checked against the tree; the MCP catalogue is unchanged from 1.3.0 and still has 43 tools in nine categories.

@@ -68,22 +68,25 @@ v1.4.0 把后端拆成端口与适配器 crate，在 MCP 之外增加 REST 面�
 | 版本对齐 | 发布打标签前，cargo 工作区、扩展 package 与 manifest 统一为 1.4.0。 |
 | 发布 | 1.4.0 二进制、变更日志与双语发布说明。QA 验收记录在 `tests/acceptance/v1.4.0.md`；最终 CI 运行 43690906863 与已发布资产哈希已记录在发布说明中；NFR-3 与 Firefox 偏差仍未关闭。 |
 
-现状：1.4.0 已交付。1.4.0 发布时 cargo 工作区与扩展均为 1.4.0，[v1.4.0.md](../tests/acceptance/v1.4.0.md) 记录了 199 个 workspace 测试（25 个套件）、135 项一致性检查与扩展门禁的 PASS。NFR-3 仍未通过，不宣称已有 1.4.0 实机部署，最终 CI 运行 43690906863 与已发布资产哈希已记录在发布说明中。下一里程碑为 1.5.0。
+现状：1.4.0 已交付，1.5.0 已于 2026-11-15 交付。1.4.0 发布时 cargo 工作区与扩展均为 1.4.0，[v1.4.0.md](../tests/acceptance/v1.4.0.md) 记录了 199 个 workspace 测试（25 个套件）、135 项一致性检查与扩展门禁的 PASS。NFR-3 仍未通过，不宣称已有 1.4.0 实机部署，最终 CI 运行 43690906863 与已发布资产哈希已记录在发布说明中。当前版本为 1.5.0。
 
-## v1.5.0 下一步（脏工作树 QA PASS；未发布）
+## v1.5.0 已交付（2026-11-15）
 
-工作树中已有 1.5.0 的工作，但尚未发布，也没有日期。cargo 工作区、扩展 package 与 manifest 报告 1.5.0；[v1.5.0.md](../tests/acceptance/v1.5.0.md) 记录了脏工作树 HEAD 73092ea 上的 QA 验收 PASS，但 1.5.0 没有标签或 CI 运行，本地安装包 ZIP 也不是已发布产物。43 工具面与九个类别保持不变。
+1.5.0 于 2026-11-15 由附注标签 `v1.5.0` 发布；标签对象 `a6ddc0f3e7b37f9cc29b0ff8c92eff839e05415f` 指向 `7d0e7c7126ea927a0d5f90df572c5aee31a9a4df`（产品提交 `d4d01eab7ef87cd9c73ec2f7aef8d633eda3a49a`，元数据修复 `7d0e7c7`）。它新增快照感知 v2、紧凑快照差异与扩展国际化，不新增 MCP 工具；43 工具面与九个类别保持不变。[v1.5.0.md](../tests/acceptance/v1.5.0.md) 记录了冻结源树 HEAD `73092ea` 上的 QA PASS；主 CI 运行 `43702442120` 通过八个任务，GitHub 发布 `445967405` 发布了产物。
 
-| 项目 | 工作树中的内容 | 证据状态 |
+| 项目 | 已交付 | 证据 |
 |---|---|---|
-| 感知 v2 | `page_snapshot` 遍历开放 shadow root 与同源子 frame，增加 frame 路径与 `frames` 元数据，跳过跨源 frame，全局预算 `max_nodes`，并把包围盒投影到顶层视口。 | `corvus-cdp` 与扩展运行时代码。 |
+| 感知 v2 | `page_snapshot` 遍历开放 shadow root 与同源子 frame，增加 frame 路径与 `frames` 元数据，跳过跨源 frame，全局预算 `max_nodes`，并把包围盒投影到顶层视口。 | `corvus-cdp` 与扩展运行时代码；QA PASS。 |
 | 紧凑差异 | `diff` 仅用于紧凑输出，由应用层按浏览器、会话与标签页为键的 64 项缓存计算一次；前缀与基线重置见 [09-tools.zh.md](09-tools.zh.md)。 | `snapshot_diff.rs` 中的代码；`browser_batch` 共用该路径。 |
 | 扩展国际化 | vue-i18n、英文与 zh-CN 目录、检测与持久化、响应式切换，以及 manifest `_locales`。 | 已实测 14 个构建文件与 8 个文件中的 41 个 Vitest 测试。 |
 | 表面 | 43 个 MCP 工具、九个类别；无新增工具。 | 目录未变。 |
-| 版本对齐 | cargo 工作区、扩展 package 与 manifest 报告 1.5.0。 | 在 1.5.0 发布前保持对齐。 |
-| QA 验收 | 220 个 workspace 测试与 136 项一致性检查通过；43 工具快照 23,561 B。 | 脏工作树 HEAD 73092ea 上 PASS；安装包 PASS 98/0；CI 与发布证据 Pending。 |
+| 版本对齐 | cargo 工作区、扩展 package 与 manifest 均为 1.5.0。 | 发布时对齐；元数据修复 `7d0e7c7`。 |
+| QA 验收 | 220 个 workspace 测试与 136 项一致性检查通过；43 工具快照 23,561 B。 | 冻结 HEAD `73092ea` 上 PASS；安装包 PASS 98/0。 |
+| 发布 | 标签 `v1.5.0`、CI `43702442120`、GitHub 发布 `445967405`；Windows ZIP 18,534,237 B，Linux tar 包 19,849,047 B。 | 已发布产物已验证；合并 `SHA256SUMS` 194 B。 |
 
-已测量于未发布工作树：25 条结果行上 220 个 workspace 测试通过、136 项一致性检查通过、扩展构建 14 个文件、8 个文件中的 41 个 Vitest 测试、隔离 Playwright 1/1；Windows 安装包验收在本地 ZIP 上 98 项检查与观察、0 失败。QA 验收在脏工作树 HEAD 73092ea 上 PASS；CI 运行、已发布资产哈希与 GitHub 发布仍为 Pending。NFR-3 仍未通过，不宣称任何 1.5.0 实机部署，版本元数据现已对齐到 1.5.0。
+发布实测：25 条结果行上 220 个 workspace 测试通过、136 项一致性检查通过、扩展构建 14 个文件、8 个文件中的 41 个 Vitest 测试、隔离 Playwright 1/1；Windows 安装包验收在独立的本地 ZIP 上 98 项检查与观察、0 失败（18,516,546 B，SHA-256 `2a36e28e42385d473edf058e8ed047a20ebf3cc4638f48fd3b469f80c29e5f5f`）。已发布产物是 CI 重建产物：Windows 18,534,237 B SHA-256 `e91e2ebce31d99d8753004849777e37277a93acd493cd320edfbda3987baabad`，Linux 19,849,047 B SHA-256 `c1a62be75c2895cd9eef27848b4a304551e2177bd66b9e1730d6150b9657c136`，合并 `SHA256SUMS` 194 B SHA-256 `845aae4ee442020a34de4d90661c8cb2e6f83377f226d7a9e6263bdb354f9fbf`。QA 与安装包验收在发布提交前、冻结树上测得。NFR-3 仍未通过，不宣称任何 1.5.0 实机部署，也不宣称任何 Docker 镜像仓库发布或 Kubernetes 运行时测试。
+
+**v1.6.0 下一步（尚未定义范围）。** 未设定范围或日期。
 
 ## 建议排期（以 1 名主力 + AI 结对估算）
 
