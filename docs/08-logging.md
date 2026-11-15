@@ -2,7 +2,7 @@
 
 [English](08-logging.md) | [中文](08-logging.zh.md)
 
-Status: 1.4.0. Audience: operators reading daemon output and developers adding events.
+Status: 1.6.0; logging behavior is unchanged since 1.4.0. Audience: operators reading daemon output and developers adding events.
 
 Corvus logs through `tracing` only. One subscriber pipeline fans out to three sinks, so the console, the file and the `logs_tail` tool show the same records under the same field names.
 

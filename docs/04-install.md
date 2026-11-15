@@ -13,7 +13,7 @@ Corvus is one local daemon (`corvusd`), one CLI (`corvus`) and one browser exten
 | Linux package | `/opt/corvus` | `install-linux.sh` writes `/etc/systemd/system/corvus.service` |
 | Linux foreground | `$XDG_DATA_HOME/corvus` or `~/.local/share/corvus` | `corvusd serve` |
 | Docker / Kubernetes | `/data` | container entrypoint or Kubernetes manifest |
-| macOS from source | `~/Library/Application Support/Corvus` | `corvusd serve`; no packaged installer in 1.4.0 |
+| macOS from source | `~/Library/Application Support/Corvus` | `corvusd serve`; no packaged installer in 1.6.0 |
 
 One root contains every backend file:
 
@@ -111,9 +111,9 @@ The extension has no pairing step. Its optional options page sets the daemon Web
 Download or copy the tarball, extract it into a directory, then verify and install:
 
 ```bash
-mkdir -p corvus-1.4.0-linux-x86_64
-tar -xzf corvus-1.4.0-linux-x86_64.tar.gz -C corvus-1.4.0-linux-x86_64
-cd corvus-1.4.0-linux-x86_64
+mkdir -p corvus-1.6.0-linux-x86_64
+tar -xzf corvus-1.6.0-linux-x86_64.tar.gz -C corvus-1.6.0-linux-x86_64
+cd corvus-1.6.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -231,7 +231,7 @@ curl -fsS http://127.0.0.1:7331/api/v1/tools \
   -H "authorization: Bearer <access_token>"
 ```
 
-Access tokens last 900 seconds; refresh tokens last 30 days, are stored hashed, rotate on use and are revoked by logout. Accounts and refresh tokens are held in memory only: restarting the daemon resets sessions and any changes made through the API, though the bootstrap account is recreated from the startup flags. There is no user-management UI or persistent account store in 1.4.0.
+Access tokens last 900 seconds; refresh tokens last 30 days, are stored hashed, rotate on use and are revoked by logout. Accounts and refresh tokens are held in memory only: restarting the daemon resets sessions and any changes made through the API, though the bootstrap account is recreated from the startup flags. There is no user-management UI or persistent account store in 1.6.0.
 
 **Auth scope limitation:** the bearer guard covers `/api/v1` only. Inside it, `/api/v1/health`, `/api/v1/auth/login` and `/api/v1/auth/refresh` are exempt. `/mcp`, the legacy `/health` and `/metrics`, `/api-docs/openapi.json` and `/docs` are outside the guard and stay unauthenticated even when local auth is on, as does the extension WebSocket. Enabling REST auth does not make a non-loopback MCP endpoint safe; use a trusted proxy that protects every port.
 
@@ -263,7 +263,7 @@ systemctl status corvus.service
 /opt/corvus/bin/corvus doctor
 ```
 
-The installers stop the service, replace `bin/` and `extension/`, rewrite the service parameters, and start the service again. The database, logs and configuration are not deleted. On 1.4.0 startup against an existing database, the recorder writes a `VACUUM INTO` backup next to the database before applying the schema version 1 baseline; a backup failure aborts startup, so keep your own copy as well. Reload the extension and its open tabs when extension files changed. Docker and Kubernetes upgrades are covered in [05-deployment.md](05-deployment.md).
+The installers stop the service, replace `bin/` and `extension/`, rewrite the service parameters, and start the service again. The database, logs and configuration are not deleted. On startup against an existing database (since 1.4.0), the recorder writes a `VACUUM INTO` backup next to the database before applying the schema version 1 baseline; a backup failure aborts startup, so keep your own copy as well. Reload the extension and its open tabs when extension files changed. Docker and Kubernetes upgrades are covered in [05-deployment.md](05-deployment.md).
 
 ## Uninstall
 

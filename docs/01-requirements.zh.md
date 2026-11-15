@@ -122,6 +122,8 @@
 
 ## 4. MCP 工具矩阵（目标 >= 60）
 
+截至 1.6.0，已交付面为九类 43 个工具；1.7.0 工作树新增未发布的第 44 个工具 `browser_screenshot`。下列名称是原始目标矩阵，不是已交付目录。
+
 感知：page_snapshot, page_text, page_html, page_screenshot, page_pdf, page_console, page_network, page_accessibility, page_links, page_forms, page_find, page_wait, page_observe
 
 动作：browser_navigate, browser_back, browser_forward, browser_reload, browser_click, browser_type, browser_press, browser_hover, browser_drag, browser_select, browser_scroll, browser_focus, browser_upload, browser_download, browser_eval, browser_highlight
@@ -226,6 +228,24 @@ v1.4.0 不新增 MCP 工具：1.3.0 的 43 个工具、九个类别、紧凑单�
 - **持久化。** `corvus-record` 使用 SeaORM 与 `sea-orm-migration`，`schema_version` 为 1。1.3.0 数据库无需数据迁移即可打开；在既有文件上执行基线迁移前，守护进程先写 `VACUUM INTO` 备份，备份失败则中止启动。存储保持 WAL、单写入连接、5 秒 busy timeout、30 天会话保留与 262144 字节载荷截断。
 - **扩展。** 扩展由 TypeScript 与 Vue 3 源码经三次 Vite 构建，产出可加载的 `extension/build/extension` 目录。弹窗与设置页使用 Vue 3、Pinia 与 Naive UI；Service Worker、内容脚本与 offscreen 文档保持无框架 TypeScript，并使用类型化 RPC。MV3 manifest 声明十项权限与 ESM Service Worker，构建会检查预期文件与 manifest 结构。
 - **NFR-3（未完成）与 NFR-6（未变化）。** 1.4.0 不能宣称通过 72 小时压测；此前在约八小时停止后，计划中的运行仍未完成。Firefox 仍不受支持；受支持浏览器为 Edge 120+、Chrome 120+ 与最新 Brave。
+
+### 4.9 v1.5.0 感知与国际化需求覆盖
+
+v1.5.0 不新增 MCP 工具：九类 43 工具面不变。本次变更集中在快照感知与扩展界面。
+
+- **感知 v2。** `page_snapshot` 遍历开放 shadow root 与同源子 frame，增加文档顺序 frame 路径与 `frames` 元数据；跨源 frame DOM 永不读取，`max_nodes` 是全部已包含文档共用的一个预算，包围盒投影到顶层视口。
+- **紧凑差异。** `diff` 只支持紧凑格式，由应用层基于以浏览器、会话与标签为键的 64 条缓存计算一次；`browser_batch` 共用同一路径。
+- **扩展国际化。** Vue 界面使用 vue-i18n，提供英文与 zh-CN 目录，检测并持久化语言，支持响应式切换；manifest 声明 `_locales`。
+- **证据。** [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md) 记录 PASS：220 个 workspace 测试、136 项 conformance、8 个文件 41 个 Vitest 测试与 Playwright 1/1；CI 43702442120 与 GitHub Release 445967405 发布资产。NFR-3 仍未通过。
+
+### 4.10 v1.6.0 守护策略需求覆盖
+
+v1.6.0 不新增 MCP 工具：九类 43 工具面与紧凑信封不变；brief `tools/list` 为 20,493 字节，`detail: "full"` 为 37,496 字节。新增由守护进程执行的可选本地策略。
+
+- **策略文件。** 严格 JSON，最大 65,536 字节，`version` 必须为 1，不允许未知字段；可选 `read_only`、`allow_tools`、`deny_tools`、`allowed_hosts`、`block_private_network`、`redact_secrets` 与 `content_boundary`。用 `--guardrails <PATH>` 或 `CORVUS_GUARDRAILS` 加载；任何非法策略都会中止启动。
+- **执行点。** 检查在 `RouterBackend::call` 派发前、`browser_batch` 每一步与 `session_replay` 中运行；`browser_navigate` 与 `tab_new` 的参数在派发前受门禁，导航结果再检查一次。拒绝使用第 11 个错误码 `POLICY_DENIED`，`retryable: false`，REST 返回 403。
+- **内容处理。** `browser_cookies` 脱敏值；`page_text`、`page_html` 与紧凑 `page_snapshot` 文本包裹不可信内容边界；密码输入保持掩码。
+- **证据。** [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md) 记录 PASS：237 个 workspace 测试、137 项 conformance、10 个文件 55 个 Vitest 测试、14 文件 490,393 字节扩展构建与 Playwright 1/1；一条 Low `browser_type` 发现，无 High/Medium。CI 43716832915 与 GitHub Release 446071476 发布资产。NFR-3 仍未通过。
 
 ## 5. 非功能需求
 

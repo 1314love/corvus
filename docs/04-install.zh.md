@@ -13,7 +13,7 @@ Corvus 由一个本地守护进程（`corvusd`）、一个命令行客户端（`
 | Linux 安装包 | `/opt/corvus` | `install-linux.sh` 写入 `/etc/systemd/system/corvus.service` |
 | Linux 前台 | `$XDG_DATA_HOME/corvus` 或 `~/.local/share/corvus` | `corvusd serve` |
 | Docker / Kubernetes | `/data` | 容器入口或 Kubernetes 清单 |
-| macOS 源码运行 | `~/Library/Application Support/Corvus` | `corvusd serve`；1.4.0 不提供安装包 |
+| macOS 源码运行 | `~/Library/Application Support/Corvus` | `corvusd serve`；1.6.0 不提供安装包 |
 
 一个根目录容纳全部后端文件：
 
@@ -111,9 +111,9 @@ corvusd.exe serve --home "<HomeDir>" --ws-port <WsPort> --http-port <HttpPort>
 下载或复制 tar 包，解压到一个目录，然后校验并安装：
 
 ```bash
-mkdir -p corvus-1.4.0-linux-x86_64
-tar -xzf corvus-1.4.0-linux-x86_64.tar.gz -C corvus-1.4.0-linux-x86_64
-cd corvus-1.4.0-linux-x86_64
+mkdir -p corvus-1.6.0-linux-x86_64
+tar -xzf corvus-1.6.0-linux-x86_64.tar.gz -C corvus-1.6.0-linux-x86_64
+cd corvus-1.6.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -231,7 +231,7 @@ curl -fsS http://127.0.0.1:7331/api/v1/tools \
   -H "authorization: Bearer <access_token>"
 ```
 
-访问令牌有效期 900 秒；刷新令牌有效期 30 天，以哈希保存，每次使用都会轮换，登出即撤销。账号与刷新令牌只保存在内存中：重启守护进程会重置会话与所有经 API 做的修改，不过引导账号会按启动参数重新创建。1.4.0 没有用户管理界面，也没有持久化账号存储。
+访问令牌有效期 900 秒；刷新令牌有效期 30 天，以哈希保存，每次使用都会轮换，登出即撤销。账号与刷新令牌只保存在内存中：重启守护进程会重置会话与所有经 API 做的修改，不过引导账号会按启动参数重新创建。1.6.0 没有用户管理界面，也没有持久化账号存储。
 
 **认证范围限制：**bearer 守卫只覆盖 `/api/v1`。在其中，`/api/v1/health`、`/api/v1/auth/login` 与 `/api/v1/auth/refresh` 豁免。`/mcp`、旧版 `/health` 与 `/metrics`、`/api-docs/openapi.json` 与 `/docs` 都在守卫之外，即使开启本地认证也保持无认证；扩展 WebSocket 同样如此。启用 REST 认证并不能让非回环的 MCP 端点变安全；必须使用保护所有端口的可信代理。
 
@@ -263,7 +263,7 @@ systemctl status corvus.service
 /opt/corvus/bin/corvus doctor
 ```
 
-安装脚本会停止服务、替换 `bin/` 与 `extension/`、重写服务参数，然后重新启动服务。数据库、日志与配置不会被删除。1.4.0 首次在既有数据库上启动时，录制模块会先用 `VACUUM INTO` 在数据库旁写一份备份，再应用 schema 版本 1 基线；备份失败会中止启动，因此仍建议自行保留副本。扩展文件有变化时，重新加载扩展与已打开的标签页。Docker 与 Kubernetes 升级见 [05-deployment.zh.md](05-deployment.zh.md)。
+安装脚本会停止服务、替换 `bin/` 与 `extension/`、重写服务参数，然后重新启动服务。数据库、日志与配置不会被删除。自 1.4.0 起，在既有数据库上启动时，录制模块会先用 `VACUUM INTO` 在数据库旁写一份备份，再应用 schema 版本 1 基线；备份失败会中止启动，因此仍建议自行保留副本。扩展文件有变化时，重新加载扩展与已打开的标签页。Docker 与 Kubernetes 升级见 [05-deployment.zh.md](05-deployment.zh.md)。
 
 ## 卸载
 

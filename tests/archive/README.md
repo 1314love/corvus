@@ -9,7 +9,7 @@ Everything in this folder was superseded. It is kept for audit only and describe
 - `acceptance/`: the M1 to M4 and M4-perf playbooks, English and Chinese pairs.
 - `report/`: the M1 to M4 report templates and the 26-tool live report.
 
-Current verification lives in [../acceptance/v1.4.0.md](../acceptance/v1.4.0.md), `tests/conformance/run.sh`, `tests/perf/` and `tests/report/v1.4.0-*`; the 1.2.0 and 1.3.0 reports stay as history.
+Current verification lives in [../acceptance/v1.6.0.md](../acceptance/v1.6.0.md), the draft [../acceptance/v1.7.0.md](../acceptance/v1.7.0.md), `tests/conformance/run.sh`, `tests/perf/` and `tests/report/v1.6.0-*`; older reports stay as history.
 
 ## 中文
 
@@ -18,4 +18,4 @@ Current verification lives in [../acceptance/v1.4.0.md](../acceptance/v1.4.0.md)
 - `acceptance/`：M1 至 M4 及 M4-perf 验收手册，中英成对。
 - `report/`：M1 至 M4 报告模板，以及 26 工具时期的实测报告。
 
-当前验证见 [../acceptance/v1.4.0.md](../acceptance/v1.4.0.md)、`tests/conformance/run.sh`、`tests/perf/` 与 `tests/report/v1.4.0-*`；1.2.0 与 1.3.0 报告仅作历史。
+当前验证见 [../acceptance/v1.6.0.md](../acceptance/v1.6.0.md)、草案 [../acceptance/v1.7.0.md](../acceptance/v1.7.0.md)、`tests/conformance/run.sh`、`tests/perf/` 与 `tests/report/v1.6.0-*`；更早的报告仅作历史。

@@ -127,6 +127,8 @@ person using the browser, not like a robot asking for permission before every cl
 
 ## 4. MCP tool matrix (target >= 60)
 
+The delivered surface is 43 tools in nine categories as of 1.6.0, with `browser_screenshot` as an unreleased 44th tool in the 1.7.0 tree; the names below are the original target matrix, not the shipped catalogue.
+
 Perception: page_snapshot, page_text, page_html, page_screenshot, page_pdf, page_console, page_network, page_accessibility, page_links, page_forms, page_find, page_wait, page_observe
 
 Action: browser_navigate, browser_back, browser_forward, browser_reload, browser_click, browser_type, browser_press, browser_hover, browser_drag, browser_select, browser_scroll, browser_focus, browser_upload, browser_download, browser_eval, browser_highlight
@@ -231,6 +233,24 @@ v1.4.0 adds no MCP tools: the 1.3.0 surface of 43 tools in nine categories, the 
 - **Persistence.** `corvus-record` uses SeaORM and `sea-orm-migration` with `schema_version` 1. A 1.3.0 database opens without a data migration; before the baseline migration runs on an existing file the daemon writes a `VACUUM INTO` backup, and a failed backup aborts startup. The store keeps WAL, a single writer connection, a 5-second busy timeout, 30-day session retention and 262144-byte payload truncation.
 - **Extension.** The extension is built from TypeScript and Vue 3 sources with three Vite passes, producing the loadable `extension/build/extension` tree. The popup and options page use Vue 3, Pinia and Naive UI; the service worker, content script and offscreen document stay framework-free TypeScript with typed RPC. The MV3 manifest declares ten permissions and an ESM service worker, and the build checks the expected files and manifest shape.
 - **NFR-3 (not completed) and NFR-6 (unchanged).** 1.4.0 is not 72-hour soak certified; the planned run remains incomplete after the earlier stop at about eight hours. Firefox remains unsupported; supported browsers are Edge 120+, Chrome 120+ and current Brave.
+
+### 4.9 v1.5.0 perception and i18n traceability
+
+v1.5.0 adds no MCP tools: the 43-tool surface in nine categories is unchanged. It changes snapshot perception and the extension UI.
+
+- **Perception v2.** `page_snapshot` traverses open shadow roots and same-origin child frames, adds document-order frame paths and `frames` metadata, never reads cross-origin frame DOM, applies one `max_nodes` budget across included documents and projects boxes into the top viewport.
+- **Compact diffs.** `diff` is compact-only and computed once by the application layer from a 64-entry cache keyed by browser, session and tab; `browser_batch` shares the same path.
+- **Extension i18n.** The Vue UI uses vue-i18n with English and zh-CN catalogs, detects and persists the locale and switches reactively; the manifest declares `_locales`.
+- **Evidence.** [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md) records PASS for 220 workspace tests, 136 conformance checks, 41 Vitest tests in eight files and Playwright 1/1; CI run 43702442120 and GitHub Release 445967405 published the assets. NFR-3 remains unpassed.
+
+### 4.10 v1.6.0 guardrails traceability
+
+v1.6.0 adds no MCP tools: the 43-tool surface in nine categories and the compact envelope are unchanged; brief `tools/list` is 20,493 bytes and `detail: "full"` is 37,496 bytes. It adds an optional local policy enforced by the daemon.
+
+- **Policy file.** Strict JSON, at most 65,536 bytes, `version` exactly 1, no unknown fields; optional `read_only`, `allow_tools`, `deny_tools`, `allowed_hosts`, `block_private_network`, `redact_secrets` and `content_boundary`. Load with `--guardrails <PATH>` or `CORVUS_GUARDRAILS`; any invalid policy aborts startup.
+- **Enforcement.** Checks run before dispatch in `RouterBackend::call`, in every `browser_batch` step and in `session_replay`; `browser_navigate` and `tab_new` arguments are gated before dispatch and re-checked on navigation results. Denials use `POLICY_DENIED` as the 11th error code with `retryable: false`, and REST returns 403.
+- **Content handling.** `browser_cookies` redacts values; `page_text`, `page_html` and compact `page_snapshot` text are wrapped in untrusted-content boundaries; password inputs stay masked.
+- **Evidence.** [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md) records PASS for 237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files, a 14-file/490,393-byte extension build and Playwright 1/1, with one Low `browser_type` finding and no High or Medium. CI run 43716832915 and GitHub Release 446071476 published the assets. NFR-3 remains unpassed.
 
 ## 5. Non-functional requirements
 
