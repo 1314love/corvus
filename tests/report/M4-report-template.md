@@ -55,7 +55,7 @@ bash tests/conformance/run.sh
 | Total checks | `<N>` |
 | Mock envelopes | `<N>` (reference M4 run: 53) |
 | Tools asserted | 32 |
-| Schema snapshot | `tests/conformance/schema-snapshot.m3.json` matches |
+| Schema snapshot | `tests/conformance/schema-snapshot.v1.3.0.json` matches |
 | Parallel different-tab check | `<PASS/FAIL>`; wall `<ms>` for delay `<ms>` |
 | Same-tab serial check | `<PASS/FAIL>`; start gap `<ms>` |
 | Cancellation check | `<PASS/FAIL>`; first response `<ms>` |
@@ -94,7 +94,7 @@ Record the manual evidence directory and the key files.
 | # | Tool / check | Exact argument (trimmed) | Observed proving field | Pass |
 |---|--------------|--------------------------|------------------------|------|
 | 1 | `tools/list` | no arguments | 32 names; sorted list matches section 2 | `<yes/no>` |
-| 2 | schema check | M3 snapshot | `schema snapshot matches 32 tools` | `<yes/no>` |
+| 2 | schema check | v1.3.0 snapshot | `schema snapshot matches 43 tools` | `<yes/no>` |
 | 3 | `tab_list` | `{}` | active tab `<PREV_TAB>`; saved as `tabs-before.json` | `<yes/no>` |
 | 4 | `tab_new` | `{"url":"http://127.0.0.1:8808/m2","active":true}` | `tab_id=<QA_TAB_A>`, `loaded=true` | `<yes/no>` |
 | 5 | `tab_new` | same URL | `tab_id=<QA_TAB_B>`, `loaded=true` | `<yes/no>` |
@@ -137,10 +137,10 @@ contract but catch a regression caused by cancellation bookkeeping.
 | 4 | Follow-up after cancel | `page_text` 502 same session | Normal tool result | `<text length>` | `<yes/no>` |
 | 5 | Same-tab overlap attempt | `browser_wait` 403/404 one tab | Second starts at/after first end | `gap <ms>` | `<yes/no>` |
 | 6 | Different-tab concurrency | `browser_wait` 401/402 two tabs | Intervals overlap; wall near one wait | `wall <ms>` | `<yes/no>` |
-| 7 | Schema drift | `tools/list` vs M3 snapshot | 32 tools; no changed schema | `<drift list>` | `<yes/no>` |
+| 7 | Schema drift | `tools/list` vs v1.3.0 snapshot | 43 tools; no changed schema | `<drift list>` | `<yes/no>` |
 | 8 | Wrong session for cancel | notification with another/missing session | Rejected or not applied; original not cancelled | `<observed>` | `<yes/no/n.a.>` |
-| 9 | Unknown tool | `tools/call` name `not_a_tool` | `BAD_ARGS`; 32 tools remain | `<code>` | `<yes/no>` |
-| 10 | Cancel after disconnect | close test session; cancel 501 | No effect; reconnect still 32 tools | `<observed>` | `<yes/no/n.a.>` |
+| 9 | Unknown tool | `tools/call` name `not_a_tool` | `BAD_ARGS`; 43 tools remain | `<code>` | `<yes/no>` |
+| 10 | Cancel after disconnect | close test session; cancel 501 | No effect; reconnect still 43 tools | `<observed>` | `<yes/no/n.a.>` |
 
 For case 8, do not create a second client session against a production daemon.
 If the environment has only one session, mark it `n.a.` and reference the
@@ -214,6 +214,6 @@ deleted while the mock holds it open, and schema comparison must read
 | QA sign-off | `<name, date>` |
 | Lead acceptance | `<name, date>` |
 
-A PASS requires the cancellation row, both scheduling rows, and the 32-tool
+A PASS requires the cancellation row, both scheduling rows, and the 43-tool
 schema row to pass. A single S1 defect fails the report regardless of the other
 rows.

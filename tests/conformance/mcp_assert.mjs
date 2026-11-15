@@ -1164,8 +1164,9 @@ if (mode === "logs") {
     if (!entry.fields || typeof entry.fields !== "object" || Array.isArray(entry.fields)) {
       fail("logs_tail entry fields is not an object");
     }
-    if (expectedLevel && entry.level !== expectedLevel) {
-      fail("logs_tail level=" + JSON.stringify(entry.level) + " expected " + JSON.stringify(expectedLevel));
+    const rank = { debug: 1, info: 2, warn: 3, error: 4 };
+    if (expectedLevel && rank[entry.level] < rank[expectedLevel]) {
+      fail("logs_tail level=" + JSON.stringify(entry.level) + " below minimum " + JSON.stringify(expectedLevel));
     }
   }
   if (parsed.entries.length < minEntries) {

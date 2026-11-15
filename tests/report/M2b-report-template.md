@@ -86,7 +86,7 @@ section 3 came from mocks, not from this browser.
 ## 5. Real-browser happy path
 
 Record each checkpoint once. Result is the parsed text payload or
-`structuredContent`; latency is client-side `curl %{time_total}` in
+JSON parsed from `content[0].text`; latency is client-side `curl %{time_total}` in
 milliseconds.
 
 | # | tool | request arguments | key result fields (expected) | observed result | latency (ms) | evidence | PASS/FAIL |

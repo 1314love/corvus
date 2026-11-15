@@ -38,7 +38,7 @@ evidence uses `M2b-report-template.md`; M2a uses `M2a-report-template.md`.
 | Fixture serves `/m2` |  | curl status line |
 | Extension loads unpacked and connects |  | screenshot-extensions.png |
 | `/health` lists the browser with `dom`, `scripting` and `debugger` |  | health-after.json |
-| `tools/list` returns exactly 32 names with the six M3 tools |  | tools-list.json |
+| `tools/list` returns exactly 43 names with the six M3 tools |  | tools-list.json |
 | `tests/conformance/run.sh` exits 0 |  | conformance.log |
 
 ## 3. Conformance evidence
@@ -51,9 +51,9 @@ not a real browser. Use isolated ports such as 29330/29331.
 | item | observed |
 |---|---|
 | Build | `CARGO_TARGET_DIR=target/qa-m3-final cargo build --offline -p corvusd --bin corvusd` exit 0, `49.77` s |
-| Result | `RESULT: 127 passed, 0 failed, 0 skipped`, exit 0 |
+| Result | `RESULT: 135 passed, 0 failed, 0 skipped`, exit 0 |
 | Health | version `0.1.0`, protocol `2025-06-18`, ws `127.0.0.1:29330`, http `127.0.0.1:29331` |
-| `tools/list` | exactly 32 frozen names, four boolean annotations, frozen schemas, optional `browser_id` on every tool |
+| `tools/list` | exactly 43 frozen names, four boolean annotations, frozen schemas, optional `browser_id` on every tool |
 | Recording | after initialize, `session_list` shows only the current session with steps 0; after calls the same session has positive steps; `session_steps` reports ordered steps |
 | Replay dry run | `executed=[]`; control tools in `skipped` with reason `control_tool` |
 | Replay live | one recorded safe step executes and returns `replay_session_id`; the replay session records its steps |
@@ -90,7 +90,7 @@ section 3 came from a mock, not from this browser.
 ## 5. Real-browser happy path
 
 Record each checkpoint once. Result is the parsed text payload or
-`structuredContent`; latency is client-side `curl %{time_total}` in
+JSON parsed from `content[0].text`; latency is client-side `curl %{time_total}` in
 milliseconds. Use your own tab; never drive client tabs.
 
 | # | tool | request arguments | key result fields (expected) | observed result | latency (ms) | evidence | PASS/FAIL |
