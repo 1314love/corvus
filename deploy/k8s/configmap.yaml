@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: corvus-config
+  namespace: corvus
+  labels:
+    app.kubernetes.io/name: corvus
+data:
+  RUST_LOG: info

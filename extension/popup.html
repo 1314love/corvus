@@ -27,6 +27,7 @@
     dt { color: #6b7280; }
     dd { margin: 0; overflow-wrap: anywhere; }
     .mono { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    a { color: #2563eb; }
     .note {
       margin: 0;
       padding-top: 8px;
@@ -48,9 +49,12 @@
       <dd id="extension-version">unknown</dd>
       <dt>Capabilities</dt>
       <dd id="capabilities">dom, scripting, debugger</dd>
+      <dt>Daemon</dt>
+      <dd><span id="daemon-url" class="mono">ws://127.0.0.1:7330</span> <a id="change-daemon" href="#">Change</a></dd>
     </dl>
     <p id="debugger-note" class="note">The debugger channel is managed automatically by the service worker.</p>
   </main>
+  <script src="daemon_url.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

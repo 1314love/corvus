@@ -188,6 +188,16 @@ M4 wave 1 adds no tools. It adds the scope gate and MCP cancellation to the exis
 
 Still open: no batch scheduling API for FR-T3; cancellation is cooperative and does not roll back applied effects; FR-O1 still lacks snapshot, screenshot and network timeline rows. The remaining M2 and M3 gaps in sections 4.1-4.3 are unchanged.
 
+### 4.5 v1.1.0 deployment traceability
+
+v1.1.0 is a deployment-release slice. It adds no MCP tools and keeps the 32-tool surface unchanged.
+
+- **Single-root layout** — Every backend file now lives under `--home <dir>` or `CORVUS_HOME`: `bin/`, `data/corvus.db`, `logs/`, `config/` and `extension/`. The database resolves as `--db`, then the configured home root, then `CORVUS_DB_PATH`, then the platform default. `doctor` reports the active database path, schema version, session and step counts. This is the operational foundation for FR-S1-FR-S4, not their completion; the storage and identity family remains open.
+- **NFR-5 (partial)** — The Windows installer uses one `%ProgramData%\Corvus` root and the Linux package uses `/opt/corvus` with a systemd unit. Linux packaging is x86_64 only. macOS still has no packaged installer in this release; arm64 Linux packages remain open.
+- **Deployment packaging** — A Docker amd64 image and Kubernetes manifests put the same single root at `/data`. Packaging and container checks run in CI; they are not a hosted service.
+- **NFR-3 (not completed)** — The clean 72-hour soak started 2026-11-14T14:41:37Z and was stopped at the client's request after about eight hours (last checkpoint 8 at 2026-11-14T22:41:37Z). The planned 72-hour run will not be completed. Shorter soak runs are evidence only. NFR-3 is not passed and 1.1.0 is not 72-hour soak certified.
+- **NFR-6 (recorded deviation)** — Firefox remains unsupported. The supported browsers are Edge 120+, Chrome 120+ and current Brave; Firefox support is not claimed by this release.
+
 ## 5. Non-functional requirements
 
 | ID | Category | Requirement |

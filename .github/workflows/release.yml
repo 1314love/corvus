@@ -1,0 +1,222 @@
+name: Release
+
+# Tag push v* publishes a release. workflow_dispatch requires a tag and can dry-run.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, for example v1.1.0'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build, verify and assemble assets without creating or updating a release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  linux:
+    name: Linux package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Linux package
+        run: bash scripts/package-linux.sh
+
+      - name: Verify Linux archive and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find dist -maxdepth 1 -name 'corvus-*-linux-x86_64.tar.gz' -print -quit)"
+          test -n "$archive"
+          tar -tzf "$archive" > /tmp/corvus-linux-archive.txt
+          for entry in VERSION SHA256SUMS bin/corvusd bin/corvus install-linux.sh uninstall-linux.sh systemd/corvus.service extension/manifest.json; do
+            grep -qx "$entry" /tmp/corvus-linux-archive.txt
+          done
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          tar -xzf "$archive" -C "$verify_dir"
+          (cd "$verify_dir" && sha256sum -c SHA256SUMS)
+          echo "linux archive: $archive"
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: corvus-linux
+          path: dist/corvus-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows package
+    runs-on: windows-latest
+    env:
+      CORVUS_CARGO_OFFLINE: '0'
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Windows package
+        shell: bash
+        run: bash scripts/package.sh
+
+      - name: Verify Windows archive and checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Get-ChildItem dist -Filter 'corvus-*-windows-x64.zip' | Select-Object -First 1
+          if (-not $archive) { throw 'Windows archive not found' }
+          $verify = Join-Path $env:RUNNER_TEMP 'corvus-windows-verify'
+          if (Test-Path -LiteralPath $verify) { Remove-Item -LiteralPath $verify -Recurse -Force }
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $verify -Force
+          Push-Location $verify
+          try {
+            Get-Content SHA256SUMS | ForEach-Object {
+              $parts = $_ -split '\s+', 2
+              if ($parts.Count -ne 2) { throw "invalid checksum line: $_" }
+              $expected = $parts[0].ToLowerInvariant()
+              $actual = (Get-FileHash -LiteralPath $parts[1] -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actual -ne $expected) { throw "checksum mismatch: $($parts[1])" }
+            }
+          } finally {
+            Pop-Location
+          }
+          Write-Host "windows archive: $($archive.FullName)"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: corvus-windows
+          path: dist/corvus-*-windows-x64.zip
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [linux, windows]
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Check bilingual release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          case "$tag" in
+            v[0-9A-Za-z._-]*) ;;
+            *) echo "::error::RELEASE_TAG must start with v"; exit 1 ;;
+          esac
+          en="docs/release-notes/${tag}.md"
+          zh="docs/release-notes/${tag}.zh.md"
+          for file in "$en" "$zh"; do
+            if [ ! -s "$file" ]; then
+              echo "::error::missing or empty release notes: $file"
+              exit 1
+            fi
+          done
+          {
+            printf '## English\n\n'
+            cat "$en"
+            printf '\n\n---\n\n## Chinese\n\n'
+            cat "$zh"
+          } > release-body.md
+          wc -c release-body.md
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: corvus-linux
+          path: artifacts/linux
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: corvus-windows
+          path: artifacts/windows
+
+      - name: Verify archives and build combined SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          linux_archive="$(find artifacts/linux -maxdepth 1 -name 'corvus-*-linux-x86_64.tar.gz' -print -quit)"
+          windows_archive="$(find artifacts/windows -maxdepth 1 -name 'corvus-*-windows-x64.zip' -print -quit)"
+          test -n "$linux_archive"
+          test -n "$windows_archive"
+          cp "$linux_archive" "$windows_archive" release-assets/
+          linux_verify="$(mktemp -d)"
+          windows_verify="$(mktemp -d)"
+          trap 'rm -rf "$linux_verify" "$windows_verify"' EXIT
+          tar -xzf "$linux_archive" -C "$linux_verify"
+          (cd "$linux_verify" && sha256sum -c SHA256SUMS)
+          unzip -q "$windows_archive" -d "$windows_verify"
+          (cd "$windows_verify" && sha256sum -c SHA256SUMS)
+          combined="corvus-${RELEASE_TAG}-SHA256SUMS"
+          (
+            cd release-assets
+            sha256sum "$(basename "$linux_archive")" "$(basename "$windows_archive")" > "$combined"
+            sha256sum -c "$combined"
+            cat "$combined"
+          )
+
+      - name: Publish or update GitHub Release
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG}"
+          assets=(
+            "release-assets/$(basename "$(find release-assets -maxdepth 1 -name 'corvus-*-linux-x86_64.tar.gz' -print -quit)")"
+            "release-assets/$(basename "$(find release-assets -maxdepth 1 -name 'corvus-*-windows-x64.zip' -print -quit)")"
+            "release-assets/corvus-${tag}-SHA256SUMS"
+          )
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "Corvus $tag" --notes-file release-body.md
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" --title "Corvus $tag" --notes-file release-body.md
+          fi
+          echo "release: $tag"
+
+      - name: Dry run summary
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        shell: bash
+        run: |
+          echo "Dry run: archives verified and release assets assembled; no release was created or updated."
+          ls -l release-assets

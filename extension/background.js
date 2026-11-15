@@ -1,12 +1,14 @@
 'use strict';
 
+importScripts('daemon_url.js');
+
 /**
  * Corvus service worker.
  *
  * Responsibilities:
  *  - own the protocol envelope handling described in docs/02-architecture.md section 4;
  *  - create a hello envelope, store the browser id assigned by hello_ack;
- *  - dispatch command envelopes to the eighteen M2 tools and always answer them;
+ *  - dispatch command envelopes to the twenty-six M2/M2b tools and always answer them;
  *  - create and supervise the offscreen document that holds the WebSocket;
  *  - run a thirty second alarm watchdog that restarts a dead socket;
  *  - expose a read-only connection and capability view to the popup.
@@ -20,7 +22,7 @@ const MIN_TIMEOUT_MS = 250;
 const MAX_TIMEOUT_MS = 125000;
 const COMMAND_TIMEOUT_PAD_MS = 1500;
 
-const WS_URL = 'ws://127.0.0.1:7330';
+const DAEMON_URL_HELPER = self.CorvusDaemonUrl;
 const OFFSCREEN_URL = 'offscreen.html';
 const OFFSCREEN_REASON = 'BLOBS';
 const ALARM_WATCHDOG = 'corvus.watchdog';
@@ -45,6 +47,7 @@ const STORAGE = {
   connection: 'corvus.connection',
   profile: 'corvus.profile',
   browserId: 'corvus.browserId',
+  daemonUrl: DAEMON_URL_HELPER.STORAGE_KEY,
 };
 
 const RETRYABLE = {
@@ -100,6 +103,7 @@ const TOOL_NAMES = [
 
 const state = {
   status: 'disconnected',
+  wsUrl: DAEMON_URL_HELPER.DEFAULT_DAEMON_URL,
   browserId: null,
   daemonVersion: null,
   limits: null,
@@ -250,7 +254,7 @@ function fromContentError(error) {
 // ---------------------------------------------------------------------------
 
 async function loadState() {
-  const stored = await chrome.storage.local.get([STORAGE.connection, STORAGE.browserId, STORAGE.profile]);
+  const stored = await chrome.storage.local.get([STORAGE.connection, STORAGE.browserId, STORAGE.profile, STORAGE.daemonUrl]);
 
   if (typeof stored[STORAGE.browserId] === 'string' && stored[STORAGE.browserId].trim()) {
     state.browserId = stored[STORAGE.browserId].trim();
@@ -271,7 +275,10 @@ async function loadState() {
   if (connection && typeof connection === 'object' && typeof connection.status === 'string') {
     state.status = normalizeStatus(connection.status);
   }
-  log('state loaded', state.status, state.profileToken);
+
+  const daemonUrl = DAEMON_URL_HELPER.normalize(stored[STORAGE.daemonUrl]);
+  state.wsUrl = daemonUrl || DAEMON_URL_HELPER.DEFAULT_DAEMON_URL;
+  log('state loaded', state.status, state.profileToken, state.wsUrl);
 }
 
 const stateReady = loadState().catch((error) => {
@@ -314,7 +321,7 @@ function buildUiState() {
     browserId: state.browserId,
     daemonVersion: state.daemonVersion,
     lastError: state.lastError,
-    wsUrl: WS_URL,
+    wsUrl: state.wsUrl || DAEMON_URL_HELPER.DEFAULT_DAEMON_URL,
     version: chrome.runtime.getManifest().version,
     capabilities: computeCapabilities(),
     debuggerChannel: {
@@ -501,7 +508,7 @@ function handleDaemonEvent(frame) {
     return;
   }
   if (name === 'resume') {
-    void sendToOffscreen({ type: 'corvus.connect', reason: 'daemon_resume' }).catch(() => {});
+    void sendToOffscreen({ type: 'corvus.connect', url: state.wsUrl, reason: 'daemon_resume' }).catch(() => {});
     return;
   }
   log('ignoring daemon event', name);
@@ -3075,10 +3082,14 @@ async function watchdogTick() {
       return;
     }
     const status = await sendToOffscreen({ type: 'corvus.status_request' });
+    if (status && typeof status.url === 'string') {
+      const reportedUrl = DAEMON_URL_HELPER.normalize(status.url);
+      if (reportedUrl) state.wsUrl = reportedUrl;
+    }
     const reported = status && typeof status.status === 'string' ? normalizeStatus(status.status) : 'disconnected';
     updateStatus(reported, status && status.lastError ? status.lastError : null);
     if (reported !== 'connected') {
-      await sendToOffscreen({ type: 'corvus.connect', reason: 'watchdog' });
+      await sendToOffscreen({ type: 'corvus.connect', url: state.wsUrl, reason: 'watchdog' });
     }
   } catch (error) {
     const message = describeError(error);
@@ -3100,8 +3111,12 @@ async function doBoot(reason) {
   }
 
   try {
-    await sendToOffscreen({ type: 'corvus.connect', reason: reason || 'boot' });
+    await sendToOffscreen({ type: 'corvus.connect', url: state.wsUrl, reason: reason || 'boot' });
     const status = await sendToOffscreen({ type: 'corvus.status_request' });
+    if (status && typeof status.url === 'string') {
+      const reportedUrl = DAEMON_URL_HELPER.normalize(status.url);
+      if (reportedUrl) state.wsUrl = reportedUrl;
+    }
     if (status && typeof status.status === 'string') {
       updateStatus(normalizeStatus(status.status), status.lastError ? status.lastError : null);
     }
@@ -3128,6 +3143,10 @@ function handleOffscreenMessage(message) {
   if (!message || typeof message !== 'object') return;
   switch (message.type) {
     case 'status':
+      if (typeof message.url === 'string') {
+        const reportedUrl = DAEMON_URL_HELPER.normalize(message.url);
+        if (reportedUrl) state.wsUrl = reportedUrl;
+      }
       updateStatus(message.status, message.lastError ? message.lastError : null);
       return;
     case 'socket_open':
@@ -3150,9 +3169,12 @@ function handleOffscreenMessage(message) {
 async function handleUiMessage(message) {
   switch (message.type) {
     case 'corvus.get_state':
+      await stateReady;
+      state.wsUrl = await DAEMON_URL_HELPER.readDaemonUrl();
       return { ok: true, state: buildUiState() };
     case 'corvus.reconnect':
-      await sendToOffscreen({ type: 'corvus.connect', reason: 'ui' });
+      await stateReady;
+      await sendToOffscreen({ type: 'corvus.connect', url: state.wsUrl, reason: 'ui' });
       return { ok: true, state: buildUiState() };
     default:
       return { ok: false, error: 'unknown ui message' };
@@ -3188,6 +3210,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   return false;
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  const change = changes[STORAGE.daemonUrl];
+  if (!change) return;
+
+  const next = change.newValue === undefined
+    ? DAEMON_URL_HELPER.DEFAULT_DAEMON_URL
+    : DAEMON_URL_HELPER.normalize(change.newValue);
+  if (!next) {
+    log('ignoring invalid daemon URL storage change');
+    return;
+  }
+
+  state.wsUrl = next;
+  void sendToOffscreen({ type: 'corvus.connect', url: next, reason: 'storage' }).catch((error) => {
+    log('daemon URL reconnect failed', describeError(error));
+  });
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -3226,7 +3267,7 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 self.addEventListener('online', () => {
-  void sendToOffscreen({ type: 'corvus.connect', reason: 'network_online' }).catch(() => {});
+  void sendToOffscreen({ type: 'corvus.connect', url: state.wsUrl, reason: 'network_online' }).catch(() => {});
 });
 
 void boot('service_worker_start');

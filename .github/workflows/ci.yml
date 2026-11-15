@@ -47,3 +47,177 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  linux-package:
+    name: Linux package and systemd unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Linux package
+        run: bash scripts/package-linux.sh
+
+      - name: Verify archive, checksums and unit
+        run: |
+          set -euo pipefail
+          archive="$(find dist -maxdepth 1 -name 'corvus-*-linux-x86_64.tar.gz' -print -quit)"
+          test -n "$archive"
+          version="$(tar -xOf "$archive" VERSION)"
+          test -n "$version"
+          echo "package version: $version"
+          tar -tzf "$archive" > /tmp/corvus-archive-list.txt
+          for entry in VERSION SHA256SUMS bin/corvusd bin/corvus install-linux.sh uninstall-linux.sh systemd/corvus.service extension/manifest.json; do
+            grep -qx "$entry" /tmp/corvus-archive-list.txt
+          done
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          tar -xzf "$archive" -C "$verify_dir"
+          (cd "$verify_dir" && sha256sum -c SHA256SUMS)
+          sudo groupadd --system corvus 2>/dev/null || true
+          sudo useradd --system --gid corvus --no-create-home --shell /usr/sbin/nologin corvus 2>/dev/null || true
+          sudo mkdir -p /opt/corvus/bin /opt/corvus/logs
+          sudo install -m 0755 "$verify_dir/bin/corvusd" /opt/corvus/bin/corvusd
+          sed \
+            -e "s|@CORVUS_HOME@|/opt/corvus|g" \
+            -e "s|@CORVUS_USER@|corvus|g" \
+            -e "s|@CORVUS_GROUP@|corvus|g" \
+            -e "s|@CORVUS_WS_PORT@|7330|g" \
+            -e "s|@CORVUS_HTTP_PORT@|7331|g" \
+            "$verify_dir/systemd/corvus.service" > /tmp/corvus.service
+          sudo systemd-analyze verify /tmp/corvus.service
+
+      - name: Check released binaries on Debian bookworm
+        run: |
+          set -euo pipefail
+          archive="$(find dist -maxdepth 1 -name 'corvus-*-linux-x86_64.tar.gz' -print -quit)"
+          test -n "$archive"
+          compat_dir="$(mktemp -d)"
+          trap 'rm -rf "$compat_dir"' EXIT
+          tar -xzf "$archive" -C "$compat_dir"
+          docker run --rm -v "$compat_dir:/release:ro" debian:bookworm-slim /release/bin/corvusd --version
+          docker run --rm -v "$compat_dir:/release:ro" debian:bookworm-slim /release/bin/corvus --version
+
+  docker:
+    name: Docker image and runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t corvus:test .
+
+      - name: Check corvusd version
+        run: |
+          set -euo pipefail
+          version="$(docker run --rm --entrypoint /usr/local/bin/corvusd corvus:test --version)"
+          echo "$version"
+          echo "$version" | grep -q '1.1.0'
+
+      - name: Run container and verify health and tools
+        run: |
+          set -euo pipefail
+          container="corvus-ci-$GITHUB_RUN_ID"
+          volume="corvus-ci-data-$GITHUB_RUN_ID"
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "container logs:"
+              docker logs "$container" 2>&1 || true
+            fi
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          docker volume create "$volume" >/dev/null
+          docker run -d --name "$container" \
+            -p 127.0.0.1:17331:7331 \
+            -v "$volume:/data" \
+            corvus:test >/dev/null
+          ready=""
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:17331/health -o /tmp/corvus-health.json 2>/dev/null; then
+              ready="yes"
+              break
+            fi
+            sleep 1
+          done
+          test -n "$ready"
+          grep -Eq '"version"[[:space:]]*:[[:space:]]*"1\.1\.0"' /tmp/corvus-health.json
+          echo "health: $(cat /tmp/corvus-health.json)"
+          headers="$(mktemp)"
+          init_body="$(mktemp)"
+          tools_body="$(mktemp)"
+          curl -fsS -D "$headers" -o "$init_body" -X POST http://127.0.0.1:17331/mcp \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -H 'MCP-Protocol-Version: 2025-06-18' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}'
+          session="$(sed -n 's/^[Mm]cp-[Ss]ession-[Ii]d: *//p' "$headers" | tr -d '\r' | tail -n 1)"
+          test -n "$session"
+          curl -fsS -o /dev/null -X POST http://127.0.0.1:17331/mcp \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -H 'MCP-Protocol-Version: 2025-06-18' \
+            -H "Mcp-Session-Id: $session" \
+            --data '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+          curl -fsS -o "$tools_body" -X POST http://127.0.0.1:17331/mcp \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -H 'MCP-Protocol-Version: 2025-06-18' \
+            -H "Mcp-Session-Id: $session" \
+            --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          python3 - "$tools_body" <<'PY'
+          import json
+          import sys
+
+          raw = open(sys.argv[1], "r", encoding="utf-8").read().strip()
+          payload = None
+          if raw.startswith("{") or raw.startswith("["):
+              payload = json.loads(raw)
+          else:
+              for line in raw.splitlines():
+                  line = line.strip()
+                  if line.startswith("data:"):
+                      data = line[5:].strip()
+                      if data and data != "[DONE]":
+                          payload = json.loads(data)
+                          break
+          if payload is None:
+              raise SystemExit("no JSON-RPC payload in tools/list response")
+          tools = payload.get("result", {}).get("tools", [])
+          names = [tool.get("name") for tool in tools]
+          print("tool count:", len(names))
+          if len(names) != 32:
+              raise SystemExit("expected 32 tools, got " + str(len(names)))
+          PY
+
+  k8s:
+    name: Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.30.0
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz -o /tmp/kubeconform.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+
+      - name: Render and validate manifests
+        run: |
+          set -euo pipefail
+          kubectl kustomize deploy/k8s > /tmp/corvus-k8s.yaml
+          test -s /tmp/corvus-k8s.yaml
+          kubeconform -strict -summary -kubernetes-version 1.30.0 /tmp/corvus-k8s.yaml

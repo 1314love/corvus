@@ -2,12 +2,12 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：M1 至 M4 第一波已实现；M4 第二波与 M5 进行中。读者：工程实现者。
+状态：1.1.0 交付 M1 至 M4 的后端能力，并加入单根目录打包、Linux 安装包、Docker 与 Kubernetes 部署。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
 1. **必须驱动用户正在使用的那个浏览器。** 不重启、不建独立 profile、不加远程调试开关。因此纯 CDP 方案被排除：扩展是唯一的入口。
-2. **零审批、零配对、零页面。** 任何需要人点一下的流程都算缺陷。
+2. **零审批、零配对、无必需设置页。** 扩展开箱即用；可选设置页只用于覆盖守护进程 URL。
 3. **连接就是产品。** MV3 的 Service Worker 空闲约 30 秒即被回收，设计必须假定浏览器一侧对长连接是敌意的。
 4. **多浏览器、多 profile、并发。** 一个守护进程、N 个扩展、互相独立的会话。
 5. **一切可观测。** 每条命令及其页面上下文事后都必须能回放。
@@ -23,7 +23,7 @@
     |  mcp-server  -> 工具注册表 -> 路由器 -> 会话运行时              |
     |  传输中枢（ws / native-messaging / long-poll）                  |
     |  录制器（sqlite + jsonl + trace）                              |
-    |  站点记忆（sqlite）   指标（prometheus）   健康检查             |
+    |  录制（sqlite）       指标（prometheus）   健康检查             |
     +--------------------------------------------------------------+
         |  分帧 JSON 信封，走 WS（主通道）
         v
@@ -32,7 +32,7 @@
         v
     浏览器
 
-进程模型：每个用户会话一个 corvusd（Windows/macOS/Linux 上注册为服务），每个浏览器 profile 一个扩展，另有一个 CLI 客户端 corvus。
+进程模型：每个用户会话一个 corvusd（Windows 与 Linux 上注册为服务，macOS 以前台方式运行），每个浏览器 profile 一个扩展，另有一个 CLI 客户端 corvus。
 
 ## 3. crate 划分
 
@@ -41,13 +41,12 @@
 | corvus-proto | 线格式：信封、命令、响应、错误分类、版本协商 |
 | corvus-mcp | MCP 服务端：工具注册表、JSON-RPC、stdio 与 streamable-http 传输 |
 | corvus-transport | WS 服务端、native-messaging 宿主、long-poll 兜底、浏览器注册表 |
-| corvus-runtime | 命令路由、按浏览器的队列、超时、幂等、取消 |
-| corvus-record | 会话录制、SQLite schema、trace 写出、回放引擎 |
-| corvus-memory | 站点卡片、选择器启发式、导入导出 |
+| corvus-runtime | 命令路由、按标签的通道、超时、幂等、取消 |
+| corvus-record | 会话录制、SQLite schema、步骤存储、回放支撑 |
 | corvusd | 守护进程二进制：装配、服务生命周期、配置 |
 | corvus | CLI：doctor、serve、attach、replay、bench、打印配置 |
 
-关键依赖：tokio、axum、tower、serde、serde_json、rusqlite（bundled）、tracing、tracing-subscriber、thiserror、clap、uuid、dashmap、arc-swap。
+关键依赖：tokio、axum、serde、serde_json、rusqlite（bundled）、tracing、tracing-subscriber、tracing-appender、thiserror、clap、uuid。
 
 ## 4. 线协议
 
@@ -212,13 +211,13 @@ M4 第一波不新增工具。它改变路由器调度调用的方式，以及�
 
 ## 6. 扩展设计
 
-三个上下文，零页面：
+三个运行时上下文与两个小型界面：
 
 1. **Service Worker**：命令分发、tabs API、scripting、debugger 挂载/卸载、下载。
 2. **内容脚本**：DOM 快照、点击与输入合成、等待、变更观察。
 3. **offscreen 文档**：WebSocket 持有者（Service Worker 无法可靠持有长连接）、保活、重连循环。
 
-弹窗只读：一个连接状态点加一行状态文字，没有任何控件。debugger 能力在握手中始终声明，需要 CDP 的工具按需挂载；只有浏览器拒绝挂载时该通道才不可用。
+弹窗只读：一个连接状态点加一行状态文字，没有任何控件。设置页是可选的，只把守护进程 WebSocket URL（`ws://` 或 `wss://`，默认 `ws://127.0.0.1:7330`）保存在 `corvus.daemonUrl`，不参与命令链路。debugger 能力在握手中始终声明，需要 CDP 的工具按需挂载；只有浏览器拒绝挂载时该通道才不可用。
 
 重连策略：指数退避加抖动（250ms 起，顶到 8s），网络恢复事件立即重试，30 秒一次 alarm 兜底，守护进程重启时主动下发 resume 消息。
 
@@ -246,9 +245,20 @@ M4 第一波不新增工具。它改变路由器调度调用的方式，以及�
 | INTERNAL | 缺陷；携带 trace id | 否 |
 | CANCELLED | 浏览器应答前命令已被取消 | 否 |
 
-## 9. 存储
+## 9. 存储与文件布局
 
-SQLite 位于 `~/.corvus/corvus.db`（Windows 为 `%USERPROFILE%\.corvus\corvus.db`），WAL 模式，schema 版本 1 记录在 `schema_meta`。`corvusd serve --db <path>` 覆盖路径，其次读取 `CORVUS_DB_PATH`；父目录会自动创建。
+守护进程把所有后端文件放在一个根目录下，由 `--home <dir>` 或 `CORVUS_HOME` 选择。平台默认值：Windows 为 `%LOCALAPPDATA%\Corvus`，Linux 为 `$XDG_DATA_HOME/corvus`（回退到 `~/.local/share/corvus`），macOS 为 `~/Library/Application Support/Corvus`。Windows 安装器把服务根目录设为 `%ProgramData%\Corvus`，Linux 安装包使用 `/opt/corvus`，Docker 镜像与 Kubernetes 清单使用 `/data`。
+
+    <root>/
+      bin/            corvusd、corvus
+      data/corvus.db  SQLite 录制库
+      logs/           corvusd.log.YYYY-MM-DD（UTC）及可选服务输出文件
+      config/         预留给文件配置
+      extension/      已解包的扩展
+
+解析顺序：`--db <path>` 优先；否则已配置的 `--home`/`CORVUS_HOME` 选择 `<root>/data/corvus.db`；两者都没有时仍读取 `CORVUS_DB_PATH`，最后才是平台默认数据库。相对根目录按进程工作目录转为绝对路径。`corvusd serve` 创建 `data/`、`logs/`、`config/`，不创建 `bin/` 或 `extension/`。文件日志默认写入 `<root>/logs/corvusd.log.YYYY-MM-DD`，按 UTC 每日轮转；`--log-file` 覆盖路径，`--no-log-file` 关闭文件输出。服务与容器布局见 [05-deployment.zh.md](05-deployment.zh.md)。
+
+录制库为 SQLite，WAL 模式，schema 版本 1 记录在 `schema_meta`。
 
 | 表 | 列 |
 |---|---|
@@ -261,44 +271,38 @@ SQLite 位于 `~/.corvus/corvus.db`（Windows 为 `%USERPROFILE%\.corvus\corvus.
 
 ## 10. 配置
 
-~/.corvus/config.toml：
+本版本不加载 `config.toml`，所有设置来自命令行参数与环境变量：
 
-    [daemon]
-    http_port = 7331
-    ws_port = 7330
-    bind = "127.0.0.1"
+| 设置 | 控制项 | 默认值 |
+|---|---|---|
+| 监听地址 | `corvusd serve --bind`、`corvus serve --bind` | `127.0.0.1` |
+| WebSocket 端口 | `--ws-port` | 7330 |
+| MCP HTTP 端口 | `--http-port` | 7331 |
+| 根目录 | `--home`、`CORVUS_HOME` | 平台默认值 |
+| 数据库 | `--db`，其次根目录，再次 `CORVUS_DB_PATH` | `<root>/data/corvus.db` |
+| 文件日志 | `--log-file`、`--no-log-file` | `<root>/logs/corvusd.log` |
+| 日志过滤 | `RUST_LOG` | `info` |
+| MCP 传输 | `--stdio`，或 HTTP 的 `/mcp` | HTTP |
 
-    [recording]
-    enabled = true
-    mode = "structured"      # structured | full
-    retention_days = 30
-
-    [tools]
-    paginate_over_bytes = 65536
-    default_timeout_ms = 60000
-
-    [memory]
-    enabled = true
-    export_format = "jsonl"
-
-`config.toml` 在本里程碑尚未加载。上面的 `[recording]` 块只描述目标形状；录制始终开启，实际控制项是 `corvusd serve --db <path>`、`CORVUS_DB_PATH` 与固定的 30 天保留期。`config.toml` 文件加载随打包一起落地。
+录制始终开启，保留期固定 30 天。`corvus config --client <name> --transport stdio|http [--home <dir>]` 在 stdout 输出可直接粘贴的 `mcpServers` JSON，位置提示写到 stderr；stdio 形式在给出 `--home` 时把它写入参数，HTTP 形式指向 `http://127.0.0.1:7331/mcp`。
 
 按工具覆盖超时：`browser_wait` 为 `args.timeout_ms + 5000` 毫秒、上限 125000 毫秒，`browser_eval` 为 30000 毫秒，`download_wait` 为 `args.timeout_ms + 5000` 毫秒、上限 125000 毫秒，其余工具使用 60000 毫秒默认值；路由器把所有截止时间统一限制在 125000 毫秒以内。
 
 ## 11. 构建与 CI
 
-- cargo workspace，edition 2021，MSRV 由 rust-toolchain.toml 固定。
-- CI 矩阵：windows-latest、macos-latest、ubuntu-22.04，各自跑 fmt、clippy -D warnings、cargo test。
-- 扩展：esbuild 打包，无框架；体积预算 1MB；manifest key 固定，保证扩展 id 跨机器稳定。
-- 发布：交叉编译产物加校验和，Release 说明由规范化提交信息生成。
+- cargo workspace，edition 2021，`Cargo.toml` 与 `rust-toolchain.toml` 固定 Rust 1.90 为 MSRV。
+- CI 矩阵：windows-latest、macos-latest、ubuntu-latest，各自运行 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace`。
+- 打包任务：`scripts/package-linux.sh` 构建 x86_64 tar.gz 并校验 systemd 单元；Docker 任务构建镜像、检查版本与 `/health`，并断言工具面为 32 个。
+- 扩展：手写 MV3，无打包器；manifest key 固定，保证扩展 id 跨机器稳定。
+- 发布：平台安装包附 `SHA256SUMS`；1.1.0 不提供 macOS 安装包。
 
 ## 12. 安全姿态
 
-刻意为之：没有权限弹窗、没有白名单、没有逐动作确认。信任边界是操作系统用户账号：守护进程只监听回环地址，并用每机唯一的密钥认证扩展，密钥存放在系统钥匙串（Windows DPAPI、macOS Keychain、libsecret）。
+刻意为之：没有权限弹窗、没有白名单、没有逐动作确认，也没有任何认证或配对密钥。信任边界是操作系统用户账号：浏览器传输与 MCP HTTP 服务只监听回环地址，根目录文件权限保护录制库。任何能访问 7330 或 7331 端口的本机进程都能驱动已连接的浏览器，因此绝不要把这两个端口暴露到回环之外。
 
 已考虑的威胁：
 
-- 同机其他用户：回环绑定 + 每用户密钥 + 文件权限。
+- 同机其他用户：回环绑定 + 每用户根目录权限。
 - 恶意网页：内容脚本绝不把页面可控字符串当代码执行；所有选择器与脚本都来自守护进程。
 - 扩展供应链：固定 manifest key，发布产物签名。
 
@@ -308,10 +312,13 @@ SQLite 位于 `~/.corvus/corvus.db`（Windows 为 `%USERPROFILE%\.corvus\corvus.
 
     corvus/
       crates/corvus-proto, corvus-mcp, corvus-transport, corvus-runtime,
-             corvus-record, corvus-memory, corvusd, corvus
+             corvus-record, corvusd, corvus
       extension/
-        manifest.json, background.js, content.js, offscreen.html, popup.html
+        manifest.json, background.js, content.js, offscreen.html,
+        popup.html, popup.js, options.html, options.js, daemon_url.js
+      deploy/docker/, deploy/k8s/
+      packaging/windows/, packaging/systemd/
       docs/
-      tests/e2e/
+      tests/
       scripts/
       .github/workflows/

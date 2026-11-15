@@ -4,19 +4,23 @@ A Manifest V3 extension that bridges the local Corvus daemon and this browser.
 Every file in this directory is shipped as is: there is no bundler, no npm
 package, no build step, no remote code and no inline script.
 
-The only visible surface is one popup: a read-only status card with a connection
-dot, connection details, and one line noting that the debugger channel is managed
-automatically. It has no controls.
+The visible surfaces are one read-only popup status card and a small options page.
+The popup shows the connection dot and state, browser id, extension version,
+capabilities, the configured daemon URL and a Change link to the options page.
+The options page edits the daemon URL and can reset it to the default. Everything
+else runs without a page.
 
 ## Files
 
 | File | Role |
 | --- | --- |
-| manifest.json | MV3 manifest: permissions, content script, service worker, popup. |
+| manifest.json | MV3 manifest: permissions, content script, service worker, popup and options page. |
 | background.js | Service worker: protocol envelopes, command routing, tab resolution, content-script injection, network capture, downloads, uploads, the managed debugger channel and the watchdog alarm. |
-| offscreen.html / offscreen.js | Offscreen document: owns the only WebSocket, reconnects with backoff, relays frames to the service worker. |
+| daemon_url.js | Shared daemon URL validation and chrome.storage.local helpers; loaded by the worker, offscreen document, popup and options page. |
+| offscreen.html / offscreen.js | Offscreen document: owns the only WebSocket to the configured daemon URL, reconnects with backoff, relays frames to the service worker. |
 | content.js | Content script: page-scoped tools inside the page (snapshot, text, HTML, find, click, type, hover, press, scroll, select, wait probes, upload target resolution). |
-| popup.html / popup.js | Read-only status card: connection dot and state, browser id, version, capabilities. |
+| popup.html / popup.js | Read-only status card: connection dot and state, browser id, version, capabilities, configured daemon URL and a Change link. |
+| options.html / options.js | Daemon URL settings: connection status, editable URL, Save, Reset to default and inline validation. |
 | README.md | This document. |
 
 ## Message flow
@@ -24,8 +28,9 @@ automatically. It has no controls.
 1. The service worker starts on install, on browser start and on every worker
    wake-up. It loads the stored state, creates the thirty second alarm
    corvus.watchdog and ensures the offscreen document exists.
-2. The offscreen document owns the WebSocket to ws://127.0.0.1:7330. When the
-   socket opens it asks the service worker for a hello envelope and sends it.
+2. The offscreen document owns the WebSocket to the configured daemon URL
+   (default ws://127.0.0.1:7330, stored under corvus.daemonUrl). When the socket
+   opens it asks the service worker for a hello envelope and sends it.
 3. The daemon answers with hello_ack. The service worker stores the assigned
    browser id in chrome.storage.local under corvus.browserId, stores the daemon
    version, and marks the connection as connected. The popup dot turns green.
@@ -90,6 +95,23 @@ Cancellation:
   does not change any success shape, schema, timeout default or error code for a
   command that is not cancelled.
 
+## Daemon URL
+
+The extension dials ws://127.0.0.1:7330 by default. The URL is stored in
+chrome.storage.local under corvus.daemonUrl and is read by the service worker,
+the offscreen document, the popup and the options page.
+
+- Open the toolbar popup and click Change, or open the extension options page.
+- Enter a ws:// or wss:// URL with a host and an optional port. Paths, query
+  strings, fragments, credentials and other schemes are rejected inline.
+- Save writes the normalized URL and reconnects immediately. Reset to default
+  removes the stored value and reconnects to ws://127.0.0.1:7330.
+- The offscreen document closes the old socket, resets the reconnect backoff and
+  dials the new URL. The watchdog and online events keep using the stored URL.
+- Use the local default for a daemon on this machine. To reach a daemon on
+  another host, expose it through a trusted tunnel and use a wss:// URL; do not
+  expose the plain ws:// socket to an untrusted network.
+
 ## Envelope
 
 All frames use protocol version 1 and the envelope fields from the architecture
@@ -147,14 +169,14 @@ Hello and hello_ack:
 ~~~json
 { "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello",
   "browser": "edge:7f3a91c0d2b4e6f8",
-  "args": { "profile": "7f3a91c0d2b4e6f8", "version": "0.1.0",
+  "args": { "profile": "7f3a91c0d2b4e6f8", "version": "1.1.0",
             "capabilities": ["dom", "scripting", "debugger"] } }
 ~~~
 
 ~~~json
 { "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello_ack",
   "browser": "edge:default",
-  "args": { "daemon": "corvus", "version": "0.1.0", "protocol": 1,
+  "args": { "daemon": "corvus", "version": "1.1.0", "protocol": 1,
             "capabilities": ["dom", "scripting", "debugger"],
             "limits": { "max_timeout_ms": 125000, "default_timeout_ms": 60000,
                         "max_inflight": 64, "max_snapshot_nodes": 20000 } } }
@@ -578,16 +600,19 @@ registry to resolve browser_id for the other tools.
 
 ## Loading unpacked
 
-1. Start the Corvus daemon so ws://127.0.0.1:7330 is listening.
+1. Start the Corvus daemon so ws://127.0.0.1:7330 is listening, or plan to set a
+   different URL from the options page after loading.
 2. Open the browser extensions page, enable developer mode and choose "Load
    unpacked". Select this directory, the one containing manifest.json.
-3. The extension has no options page and no side panel. Open the toolbar popup
-   to see the read-only status card: connection dot and state, browser id,
-   extension version, advertised capabilities, and the automatic debugger
-   channel note.
+3. There is no side panel. Open the toolbar popup to see the read-only status
+   card: connection dot and state, browser id, extension version, advertised
+   capabilities, configured daemon URL and the automatic debugger channel note.
+   Click Change in the popup, or open the extension options page, to edit the
+   daemon URL. Save writes the URL and reconnects immediately; Reset to default
+   removes the stored URL.
 4. If the daemon was not running when the extension loaded, start it and wait
-   for the watchdog (at most 30 s), or reopen the popup and use the automatic
-   reconnect. The status card turns green when hello_ack has been processed.
+   for the watchdog (at most 30 s), or reopen the options page. The status card
+   turns green when hello_ack has been processed.
 5. The extension id differs between browsers unless the manifest pins it with a
    key. This directory does not ship key material, so the daemon must not depend
    on a fixed extension id.

@@ -655,11 +655,17 @@ pub fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Resolve the database path: explicit flag, then CORVUS_DB_PATH, then the
-/// per-user default under .corvus.
+/// Resolve the database path: an explicit path, then CORVUS_HOME, then
+/// CORVUS_DB_PATH, then the per-user default.
+///
+/// A configured home owns the database, so CORVUS_DB_PATH is ignored while
+/// CORVUS_HOME is set. The daemon applies the same precedence for `--home`.
 pub fn resolve_path(explicit: Option<PathBuf>) -> PathBuf {
     if let Some(path) = explicit {
         return path;
+    }
+    if configured_home_root().is_some() {
+        return default_path();
     }
     if let Ok(path) = std::env::var("CORVUS_DB_PATH") {
         if !path.trim().is_empty() {
@@ -669,13 +675,45 @@ pub fn resolve_path(explicit: Option<PathBuf>) -> PathBuf {
     default_path()
 }
 
-/// The per-user default database path.
+/// The per-user default database path under the Corvus home.
 pub fn default_path() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
+    let root = home_root().unwrap_or_else(|| PathBuf::from(".").join(".corvus"));
+    root.join("data").join("corvus.db")
+}
+
+/// Resolve the platform Corvus home. Keep this in sync with
+/// `crates/corvusd/src/home.rs`; corvus-record must not depend on corvusd.
+fn configured_home_root() -> Option<PathBuf> {
+    non_empty_var("CORVUS_HOME")
+}
+
+fn home_root() -> Option<PathBuf> {
+    if let Some(root) = configured_home_root() {
+        return Some(root);
+    }
+    if cfg!(windows) {
+        return non_empty_var("LOCALAPPDATA")
+            .map(|path| path.join("Corvus"))
+            .or_else(|| non_empty_var("USERPROFILE").map(|path| path.join(".corvus")));
+    }
+    if cfg!(target_os = "macos") {
+        return non_empty_var("HOME").map(|path| {
+            path.join("Library")
+                .join("Application Support")
+                .join("Corvus")
+        });
+    }
+    non_empty_var("XDG_DATA_HOME")
+        .map(|path| path.join("corvus"))
+        .or_else(|| {
+            non_empty_var("HOME").map(|path| path.join(".local").join("share").join("corvus"))
+        })
+}
+
+fn non_empty_var(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".corvus").join("corvus.db")
 }
 
 #[cfg(test)]
@@ -781,6 +819,46 @@ mod tests {
         assert!(truncated);
         assert!(text.len() <= MAX_PAYLOAD_BYTES);
         assert!(std::str::from_utf8(text.as_bytes()).is_ok());
+    }
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct SavedEnv(&'static str, Option<std::ffi::OsString>);
+
+    impl SavedEnv {
+        fn capture(key: &'static str) -> Self {
+            Self(key, std::env::var_os(key))
+        }
+    }
+
+    impl Drop for SavedEnv {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(value) => std::env::set_var(self.0, value),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_path_prefers_configured_home_over_the_database_environment() {
+        let _env_lock = lock(&ENV_LOCK);
+        let _home = SavedEnv::capture("CORVUS_HOME");
+        let _database = SavedEnv::capture("CORVUS_DB_PATH");
+        std::env::remove_var("CORVUS_HOME");
+        std::env::set_var("CORVUS_DB_PATH", "environment-corvus.db");
+        assert_eq!(resolve_path(None), PathBuf::from("environment-corvus.db"));
+        std::env::set_var("CORVUS_HOME", "configured-corvus-home");
+        assert_eq!(
+            resolve_path(None),
+            PathBuf::from("configured-corvus-home")
+                .join("data")
+                .join("corvus.db")
+        );
+        assert_eq!(
+            resolve_path(Some(PathBuf::from("explicit-corvus.db"))),
+            PathBuf::from("explicit-corvus.db")
+        );
     }
 
     #[test]

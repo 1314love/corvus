@@ -1,0 +1,42 @@
+[Unit]
+Description=Corvus browser hub daemon
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@CORVUS_USER@
+Group=@CORVUS_GROUP@
+WorkingDirectory=@CORVUS_HOME@
+ExecStart=@CORVUS_HOME@/bin/corvusd serve --bind 127.0.0.1 --home @CORVUS_HOME@ --ws-port @CORVUS_WS_PORT@ --http-port @CORVUS_HTTP_PORT@ --log-file @CORVUS_HOME@/logs/corvusd.log
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=20
+KillSignal=SIGTERM
+Environment=RUST_LOG=info
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@CORVUS_HOME@
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=corvusd
+
+[Install]
+WantedBy=multi-user.target

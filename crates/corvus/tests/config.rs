@@ -133,6 +133,47 @@ fn defaults_are_generic_stdio_with_the_current_executable() {
 }
 
 #[test]
+fn stdio_snippets_can_pin_a_corvus_home() {
+    let home = std::env::temp_dir().join("corvus-config-pinned-home");
+    let home_text = home.display().to_string();
+    let captured = run(&[
+        "config",
+        "--client",
+        "generic",
+        "--transport",
+        "stdio",
+        "--home",
+        &home_text,
+    ]);
+    assert!(
+        captured.stderr.trim().is_empty(),
+        "generic output must not print a hint: {:?}",
+        captured.stderr
+    );
+    let value = json_output(&captured.stdout);
+    assert_eq!(
+        value["mcpServers"]["corvus"]["args"],
+        json!(["serve", "--stdio", "--home", home_text])
+    );
+
+    let http = run(&[
+        "config",
+        "--client",
+        "generic",
+        "--transport",
+        "http",
+        "--home",
+        &home_text,
+    ]);
+    let value = json_output(&http.stdout);
+    assert_eq!(
+        sorted_keys(&value["mcpServers"]["corvus"]),
+        vec!["url"],
+        "HTTP snippets stay address based"
+    );
+}
+
+#[test]
 fn unknown_clients_and_transports_are_rejected() {
     for args in [
         ["config", "--client", "vim"].as_slice(),

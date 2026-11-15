@@ -5,18 +5,21 @@
  *
  * The service worker owns all state. This page only renders a snapshot: the
  * connection dot and state, the assigned browser id, the extension version, the
- * advertised capabilities and one line explaining the debugger channel. It has
- * no controls and never changes state.
+ * advertised capabilities, the configured daemon URL and one line explaining the
+ * debugger channel. The only control is a link that opens the options page.
  */
 
 const CONNECTION_KEY = 'corvus.connection';
 const DEFAULT_CAPABILITIES = 'dom, scripting, debugger';
+const DEFAULT_DAEMON_URL = self.CorvusDaemonUrl ? self.CorvusDaemonUrl.DEFAULT_DAEMON_URL : 'ws://127.0.0.1:7330';
 
 const dotElement = document.getElementById('status-dot');
 const statusElement = document.getElementById('status-text');
 const browserIdElement = document.getElementById('browser-id');
 const versionElement = document.getElementById('extension-version');
 const capabilitiesElement = document.getElementById('capabilities');
+const daemonUrlElement = document.getElementById('daemon-url');
+const changeDaemonElement = document.getElementById('change-daemon');
 const debuggerNoteElement = document.getElementById('debugger-note');
 
 function text(value, fallback) {
@@ -44,6 +47,9 @@ function render(uiState, connection) {
   capabilitiesElement.textContent = capabilities;
   capabilitiesElement.title = capabilities;
 
+  daemonUrlElement.textContent = text(state.wsUrl, DEFAULT_DAEMON_URL);
+  daemonUrlElement.title = daemonUrlElement.textContent;
+
   debuggerNoteElement.textContent = 'The debugger channel is managed automatically by the service worker.';
 }
 
@@ -67,6 +73,15 @@ async function refresh() {
 
   render(uiState, connection);
 }
+
+changeDaemonElement.addEventListener('click', (event) => {
+  event.preventDefault();
+  if (typeof chrome.runtime.openOptionsPage === 'function') {
+    chrome.runtime.openOptionsPage();
+    return;
+  }
+  window.open(chrome.runtime.getURL('options.html'), '_blank');
+});
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;

@@ -60,6 +60,28 @@ pub async fn inspect_with_db(
     http_port: u16,
     db_path: Option<PathBuf>,
 ) -> DoctorReport {
+    inspect_with_paths(bind, ws_port, http_port, db_path, None).await
+}
+
+/// Probe the configured ports and report the recording state resolved from a
+/// Corvus home and an optional database override.
+pub async fn inspect_with_home(
+    bind: IpAddr,
+    ws_port: u16,
+    http_port: u16,
+    db_path: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> DoctorReport {
+    inspect_with_paths(bind, ws_port, http_port, db_path, home).await
+}
+
+async fn inspect_with_paths(
+    bind: IpAddr,
+    ws_port: u16,
+    http_port: u16,
+    db_path: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> DoctorReport {
     let ws_addr = SocketAddr::new(bind, ws_port);
     let http_addr = SocketAddr::new(bind, http_port);
     let ws_reachable =
@@ -68,7 +90,9 @@ pub async fn inspect_with_db(
             .map(|result| result.is_ok())
             .unwrap_or(false);
     let health = probe_health(http_addr).await;
-    let db_path = corvus_record::resolve_path(db_path);
+    let db_path = crate::home::resolve_database(db_path, home)
+        .map(|(_, path)| path)
+        .unwrap_or_else(|_| corvus_record::resolve_path(None));
     let mut report = DoctorReport {
         version: env!("CARGO_PKG_VERSION"),
         protocol: corvus_proto::PROTOCOL_VERSION,

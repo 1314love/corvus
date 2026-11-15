@@ -2,7 +2,10 @@
 //! command router and the MCP server.
 
 pub mod doctor;
+pub mod home;
+pub mod logging;
 pub mod logs;
+pub mod signals;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -71,6 +74,8 @@ pub struct DaemonConfig {
     /// Recording database path; when absent the environment or user data
     /// directory is used.
     pub db_path: Option<PathBuf>,
+    /// Corvus home; when absent CORVUS_HOME or the platform default is used.
+    pub home: Option<PathBuf>,
 }
 
 impl Default for DaemonConfig {
@@ -81,6 +86,7 @@ impl Default for DaemonConfig {
             http_port: DEFAULT_HTTP_PORT,
             router: RouterConfig::default(),
             db_path: None,
+            home: None,
         }
     }
 }
@@ -627,6 +633,7 @@ pub struct Daemon {
     mcp: Arc<McpServer>,
     store: Arc<Store>,
     metrics: Arc<Metrics>,
+    home: home::HomeLayout,
     recorder: Recorder,
     ws_addr: SocketAddr,
     http_addr: SocketAddr,
@@ -640,7 +647,11 @@ impl Daemon {
     pub async fn start(config: DaemonConfig) -> std::io::Result<Self> {
         logs::ensure_installed();
         let metrics = Arc::new(Metrics::new());
-        let db_path = corvus_record::resolve_path(config.db_path.clone());
+        let (layout, db_path) = home::resolve_database(config.db_path.clone(), config.home.clone())
+            .map_err(|error| std::io::Error::other(format!("corvus home: {error}")))?;
+        layout
+            .ensure()
+            .map_err(|error| std::io::Error::other(format!("corvus home: {error}")))?;
         let store = Store::open(&db_path)
             .map_err(|error| std::io::Error::other(format!("recording store: {error}")))?;
         let store = Arc::new(store);
@@ -727,6 +738,7 @@ impl Daemon {
             mcp,
             store,
             metrics,
+            home: layout,
             recorder,
             ws_addr,
             http_addr,
@@ -768,6 +780,11 @@ impl Daemon {
     /// The recording store.
     pub fn store(&self) -> &Arc<Store> {
         &self.store
+    }
+
+    /// The resolved Corvus home.
+    pub fn home(&self) -> &home::HomeLayout {
+        &self.home
     }
 
     /// The process-wide tool counters.

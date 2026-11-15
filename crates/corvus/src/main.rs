@@ -1,12 +1,11 @@
 //! corvus: command line interface for the Corvus daemon.
 
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use corvusd::home::HomeLayout;
 use corvusd::{Daemon, DaemonConfig};
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
@@ -55,12 +54,19 @@ enum Transport {
 }
 
 /// Build the mcpServers JSON document for one transport.
-fn config_snippet(transport: Transport, command: &str) -> String {
+fn config_snippet(transport: Transport, command: &str, home: Option<&Path>) -> String {
     let entry = match transport {
-        Transport::Stdio => serde_json::json!({
-            "command": command,
-            "args": ["serve", "--stdio"]
-        }),
+        Transport::Stdio => {
+            let mut args = vec!["serve".to_string(), "--stdio".to_string()];
+            if let Some(home) = home.filter(|path| !path.as_os_str().is_empty()) {
+                args.push("--home".to_string());
+                args.push(home.display().to_string());
+            }
+            serde_json::json!({
+                "command": command,
+                "args": args
+            })
+        }
         Transport::Http => serde_json::json!({
             "url": "http://127.0.0.1:7331/mcp"
         }),
@@ -82,6 +88,9 @@ enum Command {
         /// Recording database path to inspect
         #[arg(long)]
         db: Option<PathBuf>,
+        /// Corvus home directory
+        #[arg(long)]
+        home: Option<PathBuf>,
     },
     /// Run the daemon in the foreground
     Serve {
@@ -94,6 +103,9 @@ enum Command {
         /// Recording database path
         #[arg(long)]
         db: Option<PathBuf>,
+        /// Corvus home directory
+        #[arg(long)]
+        home: Option<PathBuf>,
         #[arg(long)]
         stdio: bool,
     },
@@ -108,18 +120,12 @@ enum Command {
         /// Positional transport kept for compatibility
         #[arg(value_enum, hide = true)]
         legacy_transport: Option<Transport>,
+        /// Corvus home directory to pin in the snippet
+        #[arg(long)]
+        home: Option<PathBuf>,
     },
     /// Show daemon and protocol version
     Version,
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(corvusd::logs::global().clone())
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .init();
 }
 
 #[tokio::main]
@@ -131,8 +137,10 @@ async fn main() -> anyhow::Result<()> {
             ws_port,
             http_port,
             db,
+            home,
         } => {
-            let report = corvusd::doctor::inspect_with_db(bind, ws_port, http_port, db).await;
+            let report =
+                corvusd::doctor::inspect_with_home(bind, ws_port, http_port, db, home).await;
             print!("{}", corvusd::doctor::render(&report));
         }
         Command::Serve {
@@ -140,18 +148,21 @@ async fn main() -> anyhow::Result<()> {
             ws_port,
             http_port,
             db,
+            home,
             stdio,
         } => {
-            init_tracing();
+            let layout = HomeLayout::resolve(home.clone())?;
+            let _logging = corvusd::logging::init(Some(layout.log_path()), layout.root());
             let daemon = Daemon::start(DaemonConfig {
                 bind,
                 ws_port,
                 http_port,
                 db_path: db,
+                home,
                 ..DaemonConfig::default()
             })
             .await?;
-            println!(
+            eprintln!(
                 "corvus serving websocket on {} and MCP on http://{}/mcp",
                 daemon.ws_addr(),
                 daemon.http_addr()
@@ -161,10 +172,12 @@ async fn main() -> anyhow::Result<()> {
                     result = corvus_mcp::serve_stdio(std::sync::Arc::clone(daemon.mcp())) => {
                         result?;
                     }
-                    _ = tokio::signal::ctrl_c() => {}
+                    result = corvusd::signals::shutdown() => {
+                        result?;
+                    }
                 }
             } else {
-                tokio::signal::ctrl_c().await?;
+                corvusd::signals::shutdown().await?;
             }
             daemon.shutdown().await;
         }
@@ -172,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
             client,
             transport,
             legacy_transport,
+            home,
         } => {
             let command = std::env::current_exe()
                 .map(|path| path.display().to_string())
@@ -180,7 +194,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(hint) = client.location_hint() {
                 eprintln!("{hint}");
             }
-            println!("{}", config_snippet(transport, &command));
+            println!("{}", config_snippet(transport, &command, home.as_deref()));
         }
         Command::Version => println!(
             "corvus {} (protocol {})",
@@ -219,7 +233,7 @@ mod tests {
     }
 
     fn snippet_value(transport: Transport) -> Value {
-        let snippet = config_snippet(transport, "/opt/corvus");
+        let snippet = config_snippet(transport, "/opt/corvus", None);
         serde_json::from_str(&snippet).expect("stdout is a single JSON document")
     }
 
@@ -241,10 +255,12 @@ mod tests {
                         client,
                         transport,
                         legacy_transport,
+                        home,
                     } => {
                         assert_eq!(client, expected_client);
                         assert_eq!(transport, expected_transport);
                         assert_eq!(legacy_transport, None);
+                        assert_eq!(home, None);
                     }
                     _ => panic!("expected the config subcommand"),
                 }
@@ -260,10 +276,12 @@ mod tests {
                 client,
                 transport,
                 legacy_transport,
+                home,
             } => {
                 assert_eq!(client, Client::Generic);
                 assert_eq!(transport, Transport::Stdio);
                 assert_eq!(legacy_transport, None);
+                assert_eq!(home, None);
             }
             _ => panic!("expected the config subcommand"),
         }
@@ -277,10 +295,12 @@ mod tests {
                 client,
                 transport,
                 legacy_transport,
+                home,
             } => {
                 assert_eq!(client, Client::Generic);
                 assert_eq!(transport, Transport::Stdio);
                 assert_eq!(legacy_transport, Some(Transport::Http));
+                assert_eq!(home, None);
             }
             _ => panic!("expected the config subcommand"),
         }
@@ -306,6 +326,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn stdio_snippet_pins_the_supplied_home_and_http_stays_unchanged() {
+        let home = std::env::temp_dir().join("corvus-home-snippet");
+        let snippet = config_snippet(Transport::Stdio, "/opt/corvus", Some(home.as_path()));
+        let value: Value =
+            serde_json::from_str(&snippet).expect("stdout is a single JSON document");
+        assert_eq!(
+            value["mcpServers"]["corvus"]["args"],
+            serde_json::json!(["serve", "--stdio", "--home", home.display().to_string()])
+        );
+        let http = config_snippet(Transport::Http, "/opt/corvus", Some(home.as_path()));
+        let value: Value = serde_json::from_str(&http).expect("stdout is a single JSON document");
+        assert_eq!(object_keys(&value["mcpServers"]["corvus"]), vec!["url"]);
+        assert_eq!(
+            value["mcpServers"]["corvus"]["url"],
+            "http://127.0.0.1:7331/mcp"
+        );
     }
 
     #[test]

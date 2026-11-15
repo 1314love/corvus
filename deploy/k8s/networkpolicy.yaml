@@ -1,0 +1,41 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: corvus
+  namespace: corvus
+  labels:
+    app.kubernetes.io/name: corvus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: corvus
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              corvus.io/allow-client: "true"
+          podSelector:
+            matchLabels:
+              corvus.io/client: "true"
+      ports:
+        - protocol: TCP
+          port: 7330
+        - protocol: TCP
+          port: 7331
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

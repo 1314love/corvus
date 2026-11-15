@@ -6,6 +6,34 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
+## 1.1.0 - 2026-11-15
+
+Deployment release. The 32-tool MCP surface is unchanged. Every backend file now lives under one root, and a Linux package, an amd64 Docker image and Kubernetes manifests join the Windows installer.
+
+### Added
+
+- `--home <dir>` on `corvusd serve`, `corvus serve` and both doctor commands; `CORVUS_HOME` selects the same root. The layout is `bin/`, `data/corvus.db`, `logs/`, `config/` and `extension/`; `--db` still overrides the database path.
+- Daily rolling file logging at `logs/corvusd.log.YYYY-MM-DD` (UTC). `--log-file` overrides the path, `--no-log-file` disables it, and stderr plus the in-memory log ring are unchanged.
+- A Linux x86_64 release tarball with `install-linux.sh`, `uninstall-linux.sh`, a systemd unit and `SHA256SUMS`.
+- An amd64 Docker image and Kubernetes manifests, covered by the release-gate CI checks.
+- `corvus config --home <dir>` pins stdio snippets to that root; HTTP snippets are unchanged.
+- Doctor reports the database path, schema version, session and step counts, uptime and tool-call totals.
+- The extension options page stores a custom `ws://` or `wss://` daemon URL.
+
+### Changed
+
+- The Windows installer defaults to `%ProgramData%\Corvus`. `-InstallDir`, `-DataDir` and `-ExtensionDir` remain as deprecated aliases that must resolve inside the home root.
+- A 1.0.0 `%USERPROFILE%\.corvus` tree is migrated to `<HomeDir>\migration\userprofile-corvus`; set `-KeepLegacyData` to keep the old tree in place.
+- `corvus serve` writes its startup notice to stderr so `--stdio` keeps stdout clean.
+
+### Known limitations
+
+- The clean NFR-3 72-hour soak started 2026-11-14T14:41:37Z and was stopped at the client's request after about eight hours (last checkpoint 8 at 2026-11-14T22:41:37Z). The planned 72-hour run will not be completed. NFR-3 is not passed in 1.1.0.
+- Firefox 121+ is unsupported. The NFR-6 deviation remains open.
+- Linux packaging is x86_64 only; macOS has no packaged installer in this release.
+- The daemon has no authentication. Keep ports 7330 and 7331 on loopback; a remote `wss://` endpoint needs a trusted tunnel.
+- The Docker image and Kubernetes manifests are release-gate CI checks only; no registry image or hosted deployment is part of this release.
+
 ## 1.0.0 - 2026-11-14
 
 First stable release. Scope: 32 MCP tools over stdio and streamable HTTP, per-tab scheduling, MCP request cancellation, session recording, replay and export, metrics and logs, the Windows installer, and the client configuration generator. Release validation covered Edge, Chrome for Testing 157.0.8103.78 and Brave Browser 157.1.99.57.
@@ -57,6 +85,34 @@ First public release.
 ---
 
 ## 中文
+
+## 1.1.0 - 2026-11-15
+
+部署版本。32 个 MCP 工具面保持不变。所有后端文件归入单一根目录，Linux 安装包、amd64 Docker 镜像与 Kubernetes 清单同 Windows 安装器一起发布。
+
+### 新增
+
+- `corvusd serve`、`corvus serve` 与两个 doctor 命令支持 `--home <dir>`；`CORVUS_HOME` 选择同一个根目录。布局为 `bin/`、`data/corvus.db`、`logs/`、`config/` 与 `extension/`；`--db` 仍可覆盖数据库路径。
+- 每日滚动文件日志位于 `logs/corvusd.log.YYYY-MM-DD`（UTC）。`--log-file` 覆盖路径，`--no-log-file` 关闭文件日志；stderr 与内存日志环保持不变。
+- Linux x86_64 发布 tar 包，包含 `install-linux.sh`、`uninstall-linux.sh`、systemd unit 与 `SHA256SUMS`。
+- amd64 Docker 镜像与 Kubernetes 清单，由发布门禁的 CI 检查覆盖。
+- `corvus config --home <dir>` 让 stdio 片段固定使用该根目录；HTTP 片段不变。
+- doctor 报告数据库路径、schema 版本、会话与步骤数量、运行时长与工具调用总量。
+- 扩展设置页可保存自定义 `ws://` 或 `wss://` 守护进程地址。
+
+### 变更
+
+- Windows 安装器默认使用 `%ProgramData%\Corvus`。`-InstallDir`、`-DataDir` 与 `-ExtensionDir` 保留为已弃用别名，且必须解析到根目录内部。
+- 1.0.0 的 `%USERPROFILE%\.corvus` 目录会迁移到 `<HomeDir>\migration\userprofile-corvus`；设置 `-KeepLegacyData` 可保留旧目录。
+- `corvus serve` 的启动提示改写到 stderr，使 `--stdio` 的 stdout 保持干净。
+
+### 已知限制
+
+- 干净的 NFR-3 72 小时压测于 2026-11-14T14:41:37Z 启动，在客户要求下于约八小时后停止（最后检查点 8：2026-11-14T22:41:37Z）。计划中的 72 小时运行不会完成。1.1.0 未通过 NFR-3。
+- 暂不支持 Firefox 121+。NFR-6 偏差仍未关闭。
+- Linux 打包仅支持 x86_64；macOS 在本版本没有打包安装器。
+- 守护进程没有认证层。7330 与 7331 必须保持在回环地址；远程 `wss://` 端点需要可信隧道。
+- Docker 镜像与 Kubernetes 清单只属于发布门禁的 CI 检查；本版本不包含镜像仓库发布或托管部署。
 
 ## 1.0.0 - 2026-11-14
 

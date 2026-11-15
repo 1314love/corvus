@@ -19,7 +19,8 @@
 
 (() => {
   const PROTOCOL_VERSION = 1;
-  const WS_URL = 'ws://127.0.0.1:7330';
+  const DAEMON_URL = self.CorvusDaemonUrl;
+  const DEFAULT_DAEMON_URL = DAEMON_URL.DEFAULT_DAEMON_URL;
 
   const BACKOFF_MIN_MS = 250;
   const BACKOFF_MAX_MS = 8000;
@@ -41,6 +42,7 @@
   let lastStatus = 'disconnected';
   let lastError = null;
   let helloInFlight = false;
+  let currentUrl = DEFAULT_DAEMON_URL;
 
   function now() {
     return Date.now();
@@ -89,7 +91,7 @@
   function reportStatus(status, error) {
     lastStatus = status;
     lastError = error || null;
-    post({ type: 'status', status, lastError, url: WS_URL, at: now() });
+    post({ type: 'status', status, lastError, url: currentUrl, at: now() });
     log('status', status, lastError || '');
   }
 
@@ -136,7 +138,29 @@
     }
   }
 
-  function connect(reason) {
+  function connect(reason, url) {
+    if (typeof url === 'string' && url.trim()) {
+      const normalized = DAEMON_URL.normalize(url);
+      if (!normalized) {
+        log('ignoring invalid daemon URL', url);
+        return;
+      }
+      if (normalized !== currentUrl) {
+        currentUrl = normalized;
+        clearReconnectTimer();
+        attempt = 0;
+        if (socket) {
+          const previous = socket;
+          socket = null;
+          try {
+            previous.close(4001, 'daemon URL changed');
+          } catch (error) {
+            log('old socket close failed', describeError(error));
+          }
+        }
+      }
+    }
+
     const state = socket ? socket.readyState : WebSocket.CLOSED;
     if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) return;
 
@@ -145,7 +169,7 @@
 
     let next;
     try {
-      next = new WebSocket(WS_URL);
+      next = new WebSocket(currentUrl);
     } catch (error) {
       reportStatus('disconnected', describeError(error));
       scheduleReconnect('constructor_failed');
@@ -176,10 +200,10 @@
     });
 
     next.addEventListener('close', (event) => {
-      onSocketClosed(event);
+      onSocketClosed(event, next);
     });
 
-    log('dialing', WS_URL, '(' + (reason || 'manual') + ')');
+    log('dialing', currentUrl, '(' + (reason || 'manual') + ')');
   }
 
   function onSocketMessage(event) {
@@ -208,7 +232,8 @@
     log('ignoring inbound frame kind', frame.kind);
   }
 
-  function onSocketClosed(event) {
+  function onSocketClosed(event, closedSocket) {
+    if (closedSocket && closedSocket !== socket) return;
     const code = event && typeof event.code === 'number' ? event.code : 0;
     const reason = event && event.reason ? String(event.reason) : '';
     const detail = code === 0 && !reason ? 'closed' : 'code=' + code + (reason ? ' reason=' + reason : '');
@@ -301,17 +326,21 @@
         sendResponse({ ok: sendFrame(message.frame) });
         return false;
       case 'corvus.connect':
-        connect(message.reason || 'service worker');
-        sendResponse({ ok: true, status: lastStatus });
+        connect(message.reason || 'service worker', message.url);
+        sendResponse({ ok: true, status: lastStatus, url: currentUrl });
         return false;
       case 'corvus.status_request':
-        sendResponse({ ok: true, status: lastStatus, lastError, attempt, url: WS_URL });
+        sendResponse({ ok: true, status: lastStatus, lastError, attempt, url: currentUrl });
         return false;
       default:
         sendResponse({ ok: false, error: 'unknown offscreen message' });
         return false;
     }
   });
+
+  // chrome.storage is not available in the offscreen document. The service
+  // worker owns the storage listener and forwards corvus.connect with the new
+  // URL; boot only reads the current value through the guarded helper.
 
   self.addEventListener('online', () => {
     log('network is online; dialing immediately');
@@ -324,10 +353,20 @@
     log('network is offline');
   });
 
+  async function boot() {
+    try {
+      currentUrl = await DAEMON_URL.readDaemonUrl();
+    } catch (error) {
+      log('daemon URL read failed', describeError(error));
+      currentUrl = DEFAULT_DAEMON_URL;
+    }
+    connect('offscreen_boot');
+  }
+
   // Keep the worker warm from the first moment the document exists, then dial.
   post({ type: 'keepalive', at: now() });
   keepaliveTimer = setInterval(() => {
     post({ type: 'keepalive', at: now() });
   }, SW_KEEPALIVE_MS);
-  connect('offscreen_boot');
+  void boot();
 })();

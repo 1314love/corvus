@@ -1,0 +1,25 @@
+name: corvus
+
+services:
+  corvus:
+    image: corvus:1.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:7330:7330"
+      - "127.0.0.1:7331:7331"
+    volumes:
+      - corvus-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+volumes:
+  corvus-data:

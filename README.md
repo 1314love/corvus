@@ -24,7 +24,7 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 | Principle | What it means in the product |
 |---|---|
 | No friction | zero approval dialogs, zero pairing steps, zero setup wizards |
-| No surface | no side panel, no settings page; only a read-only status popup showing connection state, browser id, version and capabilities |
+| Minimal surface | a read-only status popup showing connection state, browser id, version and capabilities, plus an optional options page that stores the daemon URL |
 | No dropout | connection is a first-class subsystem: multi-transport, watchdog, resume across restarts |
 | No ceiling | every operation the browser can perform becomes a tool, not a curated subset |
 | No blind spots | every command, snapshot and request is recorded and replayable |
@@ -43,9 +43,9 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
                                                                              |
                                                        Edge / Chrome / Brave (one extension per connected browser)
 
-- **corvusd** - the daemon: MCP server, transport hub, command router, session recorder, site memory.
-- **corvus** - the CLI: doctor, serve, attach, session replay, bench.
-- **extension** - MV3, no UI pages beyond the status popup. The popup is a read-only status card (connection, browser id, version, capabilities); the debugger channel is advertised up front and attached automatically when a command needs it.
+- **corvusd** - the daemon: MCP server, transport hub, command router, session recorder and metrics.
+- **corvus** - the CLI: doctor, serve, config and version.
+- **extension** - MV3 with a read-only status popup and an optional options page for a custom `ws://` or `wss://` daemon URL. The popup shows connection, browser id, version and capabilities; the debugger channel is advertised up front and attached automatically when a command needs it.
 
 ### Feature surface (target)
 
@@ -57,7 +57,7 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 
 ### Status
 
-M1 is implemented end to end: the daemon, the extension and the MCP server expose the four core tools on three-platform CI. M2 ships 26 tools in two waves: wave 1 added text and HTML extraction, find, hover, press, scroll, select, JavaScript evaluation, waits, history and tab management; wave 2 added browser listing and routing, network capture and interception, downloads and uploads. M3 wave 1 is in progress: recording, replay and observability bring the surface to 32 tools. See [docs/03-roadmap.md](docs/03-roadmap.md) and [docs/02-architecture.md](docs/02-architecture.md).
+1.1.0 ships the full 32-tool surface over stdio and streamable HTTP. The daemon records every call, per-tab lanes let independent tabs run concurrently, and any in-flight MCP request can be cancelled. Windows has a service installer; Linux x86_64 has a tarball with systemd; an amd64 Docker image and Kubernetes manifests are release-gate checks covered by CI. All backend files live under one root selected by `--home` or `CORVUS_HOME`: binaries, `data/corvus.db`, logs, config and the extension. The clean 72-hour NFR-3 soak was stopped at the client's request after about eight hours, so NFR-3 is not passed and 1.1.0 is not 72-hour soak certified. See [docs/03-roadmap.md](docs/03-roadmap.md), [docs/02-architecture.md](docs/02-architecture.md) and [docs/05-deployment.md](docs/05-deployment.md).
 
 Network capture is opt-in per tab and keeps a 2000-entry ring. Interception supports block, mock and continue rules. Downloads can be listed and awaited, and uploads set file inputs through CDP, including hidden ones.
 
@@ -72,11 +72,23 @@ binaries into `dist/` with checksums. Process, review gates and release cadence:
 
 ### Install
 
-`scripts/install-windows.ps1` registers the daemon as a Windows service, and `scripts/uninstall-windows.ps1`
-removes it. Build the release bundle with `scripts/package.sh`; install, extension load and the five-minute
-walkthrough are in [docs/04-install.md](docs/04-install.md).
+Windows: `scripts/install-windows.ps1` registers the daemon as a service under `%ProgramData%\Corvus`, and
+`scripts/uninstall-windows.ps1` removes it. Build the bundle with `scripts/package.sh`.
 
-Supported browsers: Edge, Chrome and Brave (Chromium 120+). Firefox is not supported.
+Linux x86_64: run `scripts/package-linux.sh`, verify `SHA256SUMS`, then run `sudo ./install-linux.sh`. The
+package installs under `/opt/corvus` with a systemd unit.
+
+Docker and Kubernetes: the amd64 image and manifests are described in
+[docs/05-deployment.md](docs/05-deployment.md). The examples keep ports 7330 and 7331 on loopback. The daemon
+has no authentication, so never expose them publicly.
+
+Extension: load the unpacked `extension/` directory; the optional options page stores a custom `ws://` or
+`wss://` daemon URL. A remote `wss://` endpoint still needs a trusted tunnel. Full install, extension loading,
+upgrade and the five-minute walkthrough are in [docs/04-install.md](docs/04-install.md).
+
+Supported platforms: Windows 10+ and Linux x86_64 packages; macOS runs from source with no packaged
+installer. Supported browsers: Edge, Chrome and Brave (Chromium 120+). Firefox is not supported (recorded
+NFR-6 deviation).
 
 ### Docs
 
@@ -84,6 +96,8 @@ Supported browsers: Edge, Chrome and Brave (Chromium 120+). Firefox is not suppo
 - [Requirements](docs/01-requirements.md) - functional and non-functional requirements
 - [Architecture](docs/02-architecture.md) - components, protocols, data model
 - [Roadmap](docs/03-roadmap.md) - milestones and acceptance tasks
+- [Deployment](docs/05-deployment.md) - Windows service, Linux systemd, Docker and Kubernetes
+- [Release notes 1.1.0](docs/release-notes/v1.1.0.md) - what ships, evidence and limitations
 - [Language policy](docs/LANGUAGE.md) - how the bilingual editions are maintained
 
 ### License
@@ -111,7 +125,7 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 | 理念 | 在产品里的含义 |
 |---|---|
 | 零摩擦 | 没有审批弹窗、没有配对步骤、没有安装向导 |
-| 零界面 | 没有侧边栏、没有设置页；只有一个只读状态弹窗，展示连接状态、浏览器 ID、版本与能力 |
+| 最小界面 | 一个只读状态弹窗展示连接状态、浏览器 ID、版本与能力，另有一个可选设置页保存守护进程地址 |
 | 永不掉线 | 连接是一等子系统：多传输、看门狗、重启后自动恢复 |
 | 能力不设上限 | 浏览器能做的每一件事都成为工具，而不是精选子集 |
 | 全可观测 | 每条命令、每次快照、每个请求都可记录、可回放 |
@@ -130,9 +144,9 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
                                                                                |
                                                          Edge / Chrome / Brave (one extension per connected browser)
 
-- **corvusd**：守护进程。MCP 服务端、传输中枢、命令路由、会话录制、站点记忆。
-- **corvus**：命令行。doctor、serve、attach、会话回放、bench。
-- **扩展**：MV3，除状态弹窗外没有其他界面。弹窗只读展示连接状态、浏览器 ID、版本与能力；debugger 通道始终声明，命令需要时自动挂载。
+- **corvusd**：守护进程。MCP 服务端、传输中枢、命令路由、会话录制与指标。
+- **corvus**：命令行。doctor、serve、config、version。
+- **扩展**：MV3，包含只读状态弹窗与可选设置页，后者用于保存自定义 `ws://` 或 `wss://` 守护进程地址。弹窗展示连接状态、浏览器 ID、版本与能力；debugger 通道始终声明，命令需要时自动挂载。
 
 ### 能力面（目标）
 
@@ -144,7 +158,7 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 
 ### 状态
 
-M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的 CI 上提供四个核心工具。M2 分两波落地，工具面达到 26 个：第一波新增文本与 HTML 提取、查找、悬停、按键、滚动、下拉选择、JS 求值、等待、前进后退与标签管理；第二波新增浏览器列表与路由、网络捕获与拦截、下载与上传。M3 第一波正在进行：录制、回放与可观测性把工具面带到 32 个。见 [docs/03-roadmap.zh.md](docs/03-roadmap.zh.md) 与 [docs/02-architecture.zh.md](docs/02-architecture.zh.md)。
+1.1.0 已交付完整的 32 工具面，覆盖 stdio 与 streamable HTTP。守护进程记录每次调用，按标签通道让独立标签并行执行，任何进行中的 MCP 请求都可取消。Windows 提供服务安装器；Linux x86_64 提供带 systemd 的 tar 包；amd64 Docker 镜像与 Kubernetes 清单属于由 CI 覆盖的发布门禁检查。所有后端文件都位于 `--home` 或 `CORVUS_HOME` 指定的单一根目录下：二进制、`data/corvus.db`、日志、配置与扩展。干净的 72 小时 NFR-3 压测在客户要求下于约八小时后停止，因此 1.1.0 未通过 NFR-3，也不能宣称通过 72 小时压测。见 [docs/03-roadmap.zh.md](docs/03-roadmap.zh.md)、[docs/02-architecture.zh.md](docs/02-architecture.zh.md) 与 [docs/05-deployment.zh.md](docs/05-deployment.zh.md)。
 
 网络捕获按标签显式开启，每个标签保留 2000 条环形缓冲。拦截支持 block、mock 与 continue 规则；下载可列出并等待完成，上传通过 CDP 设置文件 input，隐藏 input 也可用。
 
@@ -158,10 +172,21 @@ M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的
 
 ### 安装
 
-`scripts/install-windows.ps1` 把守护进程注册为 Windows 服务，`scripts/uninstall-windows.ps1` 负责卸载。
-用 `scripts/package.sh` 构建发布包；完整安装、扩展加载与五分钟流程见 [docs/04-install.zh.md](docs/04-install.zh.md)。
+Windows：`scripts/install-windows.ps1` 把守护进程安装为 `%ProgramData%\Corvus` 下的服务，
+`scripts/uninstall-windows.ps1` 负责卸载。用 `scripts/package.sh` 构建发布包。
 
-支持的浏览器：Edge、Chrome 与 Brave（Chromium 120+）。暂不支持 Firefox。
+Linux x86_64：运行 `scripts/package-linux.sh`，校验 `SHA256SUMS` 后执行 `sudo ./install-linux.sh`。
+安装包默认放在 `/opt/corvus` 并注册 systemd unit。
+
+Docker 与 Kubernetes：amd64 镜像与清单见 [docs/05-deployment.zh.md](docs/05-deployment.zh.md)。
+示例中的 7330 与 7331 只绑定回环地址。守护进程没有认证层，绝不能把这些端口暴露到公网。
+
+扩展：加载未打包的 `extension/` 目录；可选设置页可保存自定义 `ws://` 或 `wss://` 守护进程地址。
+远程 `wss://` 端点仍需要可信隧道。完整安装、扩展加载、升级与五分钟流程见
+[docs/04-install.zh.md](docs/04-install.zh.md)。
+
+支持平台：Windows 10+ 与 Linux x86_64 安装包；macOS 仅支持源码运行，没有打包安装器。
+支持浏览器：Edge、Chrome 与 Brave（Chromium 120+）。不支持 Firefox（已记录的 NFR-6 偏差）。
 
 ### 文档
 
@@ -169,6 +194,8 @@ M1 已端到端落地：守护进程、扩展与 MCP 服务端在三个平台的
 - [需求规格](docs/01-requirements.zh.md) —— 功能与非功能需求
 - [架构](docs/02-architecture.zh.md) —— 组件、协议、数据模型
 - [路线图](docs/03-roadmap.zh.md) —— 里程碑与验收任务
+- [部署](docs/05-deployment.zh.md) —— Windows 服务、Linux systemd、Docker 与 Kubernetes
+- [1.1.0 发布说明](docs/release-notes/v1.1.0.zh.md) —— 交付内容、证据与限制
 - [语言政策](docs/LANGUAGE.md) —— 双语版本如何维护
 
 ### 许可

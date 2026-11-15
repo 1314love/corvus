@@ -4,7 +4,8 @@
 #
 # Runs the release build, then copies the daemon and CLI binaries, the browser
 # extension, a VERSION file and a SHA256SUMS manifest into dist/. The build is
-# offline: the local cargo cache is the only dependency source.
+# offline by default; set CORVUS_CARGO_OFFLINE=0 to let Cargo use the network in
+# a release workflow.
 #
 # Usage: scripts/package.sh
 # Exit:  0 packaged, non-zero on any build, copy or checksum failure.
@@ -55,8 +56,26 @@ if [ ! -f "$repo_root/extension/manifest.json" ]; then
     exit 1
 fi
 
+if [ ! -f "$repo_root/packaging/windows/nssm.exe" ]; then
+    echo "error: packaging/windows/nssm.exe is missing" >&2
+    exit 1
+fi
+
 rm -rf "$dist_dir/extension"
 cp -R "$repo_root/extension" "$dist_dir/extension"
+cp "$repo_root/packaging/windows/nssm.exe" "$dist_dir/nssm.exe"
+
+if [ ! -f "$repo_root/scripts/install-windows.ps1" ] || [ ! -f "$repo_root/scripts/uninstall-windows.ps1" ]; then
+    echo "error: scripts/install-windows.ps1 and scripts/uninstall-windows.ps1 are required" >&2
+    exit 1
+fi
+if [ ! -f "$repo_root/packaging/windows/README.md" ]; then
+    echo "error: packaging/windows/README.md is missing" >&2
+    exit 1
+fi
+cp "$repo_root/scripts/install-windows.ps1" "$dist_dir/install-windows.ps1"
+cp "$repo_root/scripts/uninstall-windows.ps1" "$dist_dir/uninstall-windows.ps1"
+cp "$repo_root/packaging/windows/README.md" "$dist_dir/NSSM-README.md"
 
 printf '%s\n' "$version" > "$dist_dir/VERSION"
 
@@ -91,7 +110,7 @@ hash_file() {
 sums_file="$dist_dir/SHA256SUMS"
 : > "$sums_file"
 
-files=("corvusd$exe_suffix" "corvus$exe_suffix" "VERSION")
+files=("corvusd$exe_suffix" "corvus$exe_suffix" "nssm.exe" "install-windows.ps1" "uninstall-windows.ps1" "NSSM-README.md" "VERSION")
 while IFS= read -r rel; do
     files+=("$rel")
 done < <(cd "$dist_dir" && find extension -type f | LC_ALL=C sort)
@@ -137,6 +156,10 @@ CORVUS_DIST_DIR="$dist_win" CORVUS_ZIP_PATH="$zip_win" "$ps_command" -NoProfile 
   \$items = @(
     (Join-Path \$dist 'corvusd.exe'),
     (Join-Path \$dist 'corvus.exe'),
+    (Join-Path \$dist 'nssm.exe'),
+    (Join-Path \$dist 'install-windows.ps1'),
+    (Join-Path \$dist 'uninstall-windows.ps1'),
+    (Join-Path \$dist 'NSSM-README.md'),
     (Join-Path \$dist 'VERSION'),
     (Join-Path \$dist 'SHA256SUMS'),
     (Join-Path \$dist 'extension')

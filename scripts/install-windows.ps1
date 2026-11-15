@@ -1,18 +1,22 @@
-# Install or upgrade Corvus as a Windows service.
+# Install or upgrade Corvus as a Windows service under one home directory.
 #
 # Run from an elevated PowerShell. The script is idempotent: it stops a
-# running service, copies the release binaries and extension, updates the
-# service configuration, and starts the service again.
+# running service, copies the release binaries and extension, migrates an old
+# per-user database once, updates the service configuration, and starts the
+# service again. Everything the service owns lives under -HomeDir. The only
+# external entry is the nssm service registration.
 [CmdletBinding()]
 param(
     [string]$ServiceName = "Corvus",
-    [string]$InstallDir = (Join-Path $env:USERPROFILE ".corvus\bin"),
-    [string]$DataDir = (Join-Path $env:USERPROFILE ".corvus"),
-    [string]$ExtensionDir = (Join-Path $env:USERPROFILE ".corvus\extension"),
+    [string]$HomeDir = (Join-Path $env:ProgramData "Corvus"),
+    [string]$InstallDir = "",
+    [string]$DataDir = "",
+    [string]$ExtensionDir = "",
     [string]$NssmPath = "",
     [string]$DistDir = "",
-    [int]$WsPort = 0,
-    [int]$HttpPort = 0
+    [int]$WsPort = 7330,
+    [int]$HttpPort = 7331,
+    [switch]$KeepLegacyData
 )
 
 Set-StrictMode -Version Latest
@@ -36,6 +40,130 @@ function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-PathUnder {
+    param([string]$Candidate, [string]$Root)
+    $candidatePath = $Candidate.TrimEnd([char]'\')
+    $rootPath = $Root.TrimEnd([char]'\')
+    if ($candidatePath.Equals($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    return $candidatePath.StartsWith($rootPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-NoReparsePoint {
+    param([string]$Path)
+    $current = $Path
+    while ($true) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) {
+                Stop-WithError "HomeDir must not contain a reparse point: $current"
+            }
+        }
+        $parent = Split-Path -Parent $current
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent.Equals($current, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $current = $parent
+        if ([string]::IsNullOrWhiteSpace($current)) {
+            break
+        }
+    }
+}
+
+function Assert-SafeHome {
+    param([string]$Path)
+    $full = (Get-AbsolutePath $Path).TrimEnd([char]'\')
+    $driveRoot = [System.IO.Path]::GetPathRoot($full).TrimEnd([char]'\')
+    if ($full -eq $driveRoot) {
+        Stop-WithError "HomeDir must not be a drive root: $full"
+    }
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $tempRoots = @()
+    foreach ($temp in @([System.IO.Path]::GetTempPath(), $env:TEMP)) {
+        if (-not [string]::IsNullOrWhiteSpace($temp)) {
+            $tempRoots += (Get-AbsolutePath $temp).TrimEnd([char]'\')
+        }
+    }
+    $isTemp = $false
+    foreach ($tempRoot in $tempRoots) {
+        if (Test-PathUnder -Candidate $full -Root $tempRoot) {
+            $isTemp = $true
+        }
+    }
+    $exactProtected = @(
+        $env:ProgramData,
+        $env:USERPROFILE,
+        $env:WINDIR,
+        $env:ProgramFiles,
+        [Environment]::GetEnvironmentVariable("ProgramFiles(x86)"),
+        [System.IO.Path]::GetTempPath(),
+        $env:TEMP,
+        $repoRoot
+    )
+    foreach ($candidate in $exactProtected) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        $resolved = (Get-AbsolutePath $candidate).TrimEnd([char]'\')
+        if ($full.Equals($resolved, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Stop-WithError "HomeDir must not be $resolved"
+        }
+    }
+    if ((Test-PathUnder -Candidate $repoRoot -Root $full) -or (Test-PathUnder -Candidate $full -Root $repoRoot)) {
+        Stop-WithError "HomeDir must not contain or live inside the repository: $repoRoot"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) {
+        $programData = (Get-AbsolutePath $env:ProgramData).TrimEnd([char]'\')
+        if (Test-PathUnder -Candidate $full -Root $programData) {
+            $relative = $full.Substring($programData.Length).TrimStart([char]'\')
+            $hasSeparator = $relative.Contains([System.IO.Path]::DirectorySeparatorChar.ToString())
+            if ($hasSeparator -or -not $relative.StartsWith("Corvus", [System.StringComparison]::OrdinalIgnoreCase)) {
+                Stop-WithError "HomeDir under ProgramData must be ProgramData\Corvus or a direct Corvus* child: $full"
+            }
+        }
+    }
+    $systemRoots = @($env:WINDIR, $env:ProgramFiles, [Environment]::GetEnvironmentVariable("ProgramFiles(x86)"))
+    foreach ($root in $systemRoots) {
+        if ([string]::IsNullOrWhiteSpace($root)) {
+            continue
+        }
+        $resolved = (Get-AbsolutePath $root).TrimEnd([char]'\')
+        if (Test-PathUnder -Candidate $full -Root $resolved) {
+            Stop-WithError "HomeDir must not be under $resolved"
+        }
+    }
+    if (-not $isTemp -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $profile = (Get-AbsolutePath $env:USERPROFILE).TrimEnd([char]'\')
+        if (Test-PathUnder -Candidate $full -Root $profile) {
+            Stop-WithError "HomeDir must not be under the user profile: $full"
+        }
+    }
+    Assert-NoReparsePoint -Path $full
+    return $full
+}
+
+function Resolve-LegacySubdir {
+    param(
+        [string]$Name,
+        [string]$Value,
+        [string]$Canonical,
+        [bool]$WasBound
+    )
+    if (-not $WasBound) {
+        return $Canonical
+    }
+    $resolved = (Get-AbsolutePath $Value).TrimEnd([char]'\')
+    if (-not (Test-PathUnder -Candidate $resolved -Root $HomeDir) -or
+        $resolved.Equals($HomeDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "$Name is a deprecated alias and must be a subdirectory of HomeDir ($HomeDir); got $resolved. Use -HomeDir instead."
+    }
+    if (-not $resolved.Equals($Canonical, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "$Name is deprecated; the fixed layout uses $Canonical"
+    }
+    return $Canonical
 }
 
 function Invoke-Nssm {
@@ -66,6 +194,29 @@ function Wait-ServiceStatus {
     return $false
 }
 
+function Get-ServiceImagePath {
+    param([string]$Name)
+    $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name"
+    $item = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+    if ($null -eq $item -or [string]::IsNullOrWhiteSpace([string]$item.ImagePath)) {
+        return ""
+    }
+    return [string]$item.ImagePath
+}
+
+function Wait-ServiceGone {
+    param([string]$Name, [int]$TimeoutSeconds)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+        if ($null -eq $service) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
 function Show-LogTail {
     param([string]$Path)
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
@@ -79,37 +230,34 @@ if (-not (Test-Administrator)) {
 if ($ServiceName -notmatch '^[A-Za-z0-9_.-]+$' -or $ServiceName.Length -gt 64) {
     Stop-WithError "ServiceName must contain only letters, digits, dot, underscore and hyphen"
 }
-if ($WsPort -lt 0 -or $WsPort -gt 65535) {
-    Stop-WithError "WsPort must be between 0 and 65535"
+if ($WsPort -lt 1 -or $WsPort -gt 65535) {
+    Stop-WithError "WsPort must be between 1 and 65535"
 }
-if ($HttpPort -lt 0 -or $HttpPort -gt 65535) {
-    Stop-WithError "HttpPort must be between 0 and 65535"
+if ($HttpPort -lt 1 -or $HttpPort -gt 65535) {
+    Stop-WithError "HttpPort must be between 1 and 65535"
 }
 
-$InstallDir = (Get-AbsolutePath $InstallDir).TrimEnd([char]'\')
-$DataDir = (Get-AbsolutePath $DataDir).TrimEnd([char]'\')
-$ExtensionDir = (Get-AbsolutePath $ExtensionDir).TrimEnd([char]'\')
+$HomeDir = Assert-SafeHome $HomeDir
+$binDir = Join-Path $HomeDir "bin"
+$dataDir = Join-Path $HomeDir "data"
+$logsDir = Join-Path $HomeDir "logs"
+$configDir = Join-Path $HomeDir "config"
+$extensionDir = Join-Path $HomeDir "extension"
+
+$InstallDir = Resolve-LegacySubdir -Name "InstallDir" -Value $InstallDir -Canonical $binDir -WasBound $PSBoundParameters.ContainsKey("InstallDir")
+$DataDir = Resolve-LegacySubdir -Name "DataDir" -Value $DataDir -Canonical $dataDir -WasBound $PSBoundParameters.ContainsKey("DataDir")
+$ExtensionDir = Resolve-LegacySubdir -Name "ExtensionDir" -Value $ExtensionDir -Canonical $extensionDir -WasBound $PSBoundParameters.ContainsKey("ExtensionDir")
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($DistDir)) {
-    $DistDir = Join-Path $repoRoot "dist"
+    if ((Test-Path -LiteralPath (Join-Path $PSScriptRoot "corvusd.exe") -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $PSScriptRoot "corvus.exe") -PathType Leaf)) {
+        $DistDir = $PSScriptRoot
+    } else {
+        $DistDir = Join-Path $repoRoot "dist"
+    }
 }
 $DistDir = (Get-AbsolutePath $DistDir).TrimEnd([char]'\')
-
-if ($InstallDir -eq $DataDir) {
-    Stop-WithError "InstallDir and DataDir must be different directories"
-}
-if ($ExtensionDir -eq $DataDir -or $ExtensionDir -eq $InstallDir) {
-    Stop-WithError "ExtensionDir must be different from DataDir and InstallDir"
-}
-$separator = [System.IO.Path]::DirectorySeparatorChar
-if ($DataDir.StartsWith($ExtensionDir + $separator, [System.StringComparison]::OrdinalIgnoreCase) -or
-    $InstallDir.StartsWith($ExtensionDir + $separator, [System.StringComparison]::OrdinalIgnoreCase)) {
-    Stop-WithError "ExtensionDir must not contain DataDir or InstallDir"
-}
-if ($ExtensionDir -eq $repoRoot -or $ExtensionDir -eq (Join-Path $repoRoot "extension") -or
-    $repoRoot.StartsWith($ExtensionDir + $separator, [System.StringComparison]::OrdinalIgnoreCase)) {
-    Stop-WithError "ExtensionDir must not be the repository or contain it"
-}
 
 $corvusdSource = Join-Path $DistDir "corvusd.exe"
 $corvusSource = Join-Path $DistDir "corvus.exe"
@@ -127,79 +275,147 @@ if (-not (Test-Path -LiteralPath (Join-Path $extensionSource "manifest.json") -P
     Stop-WithError "missing extension manifest in $DistDir\extension or $repoRoot\extension"
 }
 
-$candidates = New-Object System.Collections.Generic.List[string]
-if (-not [string]::IsNullOrWhiteSpace($NssmPath)) {
-    $candidates.Add($NssmPath)
-}
-$candidates.Add((Join-Path $InstallDir "nssm.exe"))
-$nssmCommand = Get-Command nssm.exe -ErrorAction SilentlyContinue
-if ($null -ne $nssmCommand) {
-    $candidates.Add($nssmCommand.Source)
-}
-$candidates.Add("C:\ProgramData\chocolatey\bin\nssm.exe")
-$candidates.Add("C:\Program Files\nssm\nssm.exe")
-
-$script:NssmCommand = $null
-foreach ($candidate in $candidates) {
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-        $script:NssmCommand = Get-AbsolutePath $candidate
-        break
-    }
-}
-if ($null -eq $script:NssmCommand) {
-    Stop-WithError "nssm.exe not found; install nssm, put it on PATH, or pass -NssmPath"
-}
-
-foreach ($directory in @($InstallDir, $DataDir, $ExtensionDir)) {
+foreach ($directory in @($HomeDir, $binDir, $dataDir, $logsDir, $configDir, $extensionDir)) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
 }
 
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 $serviceExisted = $null -ne $service
+$expectedNssm = Join-Path $binDir "nssm.exe"
+$usesHomeNssm = $false
+if ($serviceExisted) {
+    $imagePath = Get-ServiceImagePath -Name $ServiceName
+    $usesHomeNssm = -not [string]::IsNullOrWhiteSpace($imagePath) -and
+        $imagePath.IndexOf($expectedNssm, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+}
 if ($serviceExisted -and $service.Status.ToString() -ne "Stopped") {
     Write-Host "Stopping service $ServiceName ..."
-    Invoke-Nssm @("stop", $ServiceName)
+    Stop-Service -Name $ServiceName -Force -ErrorAction Stop
     if (-not (Wait-ServiceStatus -Name $ServiceName -Status "Stopped" -TimeoutSeconds 30)) {
         Stop-WithError "service $ServiceName did not stop within 30 seconds"
     }
 }
 
-Write-Host "Copying binaries to $InstallDir ..."
-Copy-Item -LiteralPath $corvusdSource -Destination (Join-Path $InstallDir "corvusd.exe") -Force
-Copy-Item -LiteralPath $corvusSource -Destination (Join-Path $InstallDir "corvus.exe") -Force
-
-Write-Host "Copying extension to $ExtensionDir ..."
-if (Test-Path -LiteralPath $ExtensionDir) {
-    Remove-Item -LiteralPath $ExtensionDir -Recurse -Force
-}
-New-Item -ItemType Directory -Path $ExtensionDir -Force | Out-Null
-Copy-Item -Path (Join-Path $extensionSource "*") -Destination $ExtensionDir -Recurse -Force
-if (-not (Test-Path -LiteralPath (Join-Path $ExtensionDir "manifest.json") -PathType Leaf)) {
-    Stop-WithError "the extension copy did not produce $ExtensionDir\manifest.json"
+$nssmSources = New-Object System.Collections.Generic.List[string]
+$nssmSources.Add((Join-Path $DistDir "nssm.exe"))
+$nssmSources.Add((Join-Path $repoRoot "packaging\windows\nssm.exe"))
+$nssmSources.Add((Join-Path $binDir "nssm.exe"))
+if (-not [string]::IsNullOrWhiteSpace($NssmPath)) {
+    $nssmSources.Add($NssmPath)
 }
 
-$dbPath = Join-Path $DataDir "corvus.db"
-$appParameters = "serve --db `"$dbPath`""
-if ($WsPort -gt 0) {
-    $appParameters += " --ws-port $WsPort"
+$nssmSource = $null
+foreach ($candidate in $nssmSources) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        $nssmSource = Get-AbsolutePath $candidate
+        break
+    }
 }
-if ($HttpPort -gt 0) {
-    $appParameters += " --http-port $HttpPort"
+if ($null -eq $nssmSource) {
+    Stop-WithError "nssm.exe is missing; expected packaging/windows/nssm.exe or dist/nssm.exe"
 }
 
-if (-not $serviceExisted) {
+$vendorNssm = Join-Path $binDir "nssm.exe"
+if (-not $nssmSource.Equals($vendorNssm, [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Host "Vendoring nssm.exe to $vendorNssm ..."
+    Copy-Item -LiteralPath $nssmSource -Destination $vendorNssm -Force
+}
+if (-not (Test-Path -LiteralPath $vendorNssm -PathType Leaf)) {
+    Stop-WithError "could not install $vendorNssm"
+}
+$script:NssmCommand = $vendorNssm
+
+
+
+$legacyRoot = Join-Path $env:USERPROFILE ".corvus"
+$migrationDir = Join-Path $HomeDir "migration\userprofile-corvus"
+if (-not $KeepLegacyData -and (Test-Path -LiteralPath $legacyRoot)) {
+    if ((Test-PathUnder -Candidate $HomeDir -Root $legacyRoot) -or (Test-PathUnder -Candidate $legacyRoot -Root $HomeDir)) {
+        Stop-WithError "HomeDir must not overlap the legacy data at $legacyRoot"
+    }
+    if (Test-Path -LiteralPath $migrationDir) {
+        Stop-WithError "legacy data at $legacyRoot cannot be moved because $migrationDir already exists; merge it manually and rerun"
+    }
+    $migrationParent = Split-Path -Parent $migrationDir
+    New-Item -ItemType Directory -Path $migrationParent -Force | Out-Null
+    Write-Host "Moving legacy data: $legacyRoot -> $migrationDir"
+    try {
+        Move-Item -LiteralPath $legacyRoot -Destination $migrationDir -ErrorAction Stop
+    } catch {
+        Stop-WithError "could not move legacy data from $legacyRoot to $migrationDir; service configuration was not changed: $($_.Exception.Message)"
+    }
+    if (Test-Path -LiteralPath $legacyRoot) {
+        Stop-WithError "legacy path $legacyRoot still exists after the move; stop and inspect it"
+    }
+} elseif ($KeepLegacyData -and (Test-Path -LiteralPath $legacyRoot)) {
+    Write-Host "Keeping legacy data at $legacyRoot (-KeepLegacyData)."
+}
+
+$legacyDb = Join-Path $migrationDir "corvus.db"
+if ($KeepLegacyData) {
+    $legacyDb = Join-Path $legacyRoot "corvus.db"
+}
+$newDb = Join-Path $dataDir "corvus.db"
+if (-not (Test-Path -LiteralPath $newDb -PathType Leaf) -and (Test-Path -LiteralPath $legacyDb -PathType Leaf)) {
+    Write-Host "Migrating legacy database: $legacyDb -> $newDb"
+    Copy-Item -LiteralPath $legacyDb -Destination $newDb -Force
+    Write-Host "  migrated corvus.db"
+    foreach ($suffix in @("-wal", "-shm")) {
+        $legacySidecar = $legacyDb + $suffix
+        if (Test-Path -LiteralPath $legacySidecar -PathType Leaf) {
+            Copy-Item -LiteralPath $legacySidecar -Destination ($newDb + $suffix) -Force
+            Write-Host "  migrated corvus.db$suffix"
+        }
+    }
+} elseif (Test-Path -LiteralPath $newDb -PathType Leaf) {
+    Write-Host "Keeping existing database: $newDb"
+} else {
+    Write-Host "No legacy database at $legacyDb; a new database will be created."
+}
+
+Write-Host "Copying binaries to $binDir ..."
+Copy-Item -LiteralPath $corvusdSource -Destination (Join-Path $binDir "corvusd.exe") -Force
+Copy-Item -LiteralPath $corvusSource -Destination (Join-Path $binDir "corvus.exe") -Force
+
+Write-Host "Copying extension to $extensionDir ..."
+if (Test-Path -LiteralPath $extensionDir) {
+    Remove-Item -LiteralPath $extensionDir -Recurse -Force
+}
+New-Item -ItemType Directory -Path $extensionDir -Force | Out-Null
+Copy-Item -Path (Join-Path $extensionSource "*") -Destination $extensionDir -Recurse -Force
+if (-not (Test-Path -LiteralPath (Join-Path $extensionDir "manifest.json") -PathType Leaf)) {
+    Stop-WithError "the extension copy did not produce $extensionDir\manifest.json"
+}
+
+$appParameters = [string]::Format('serve --home "{0}" --ws-port {1} --http-port {2}', $HomeDir, $WsPort, $HttpPort)
+
+if ($serviceExisted -and -not $usesHomeNssm) {
+    Write-Host "Reinstalling service $ServiceName with $expectedNssm ..."
+    & $script:NssmCommand remove $ServiceName confirm
+    if (-not (Wait-ServiceGone -Name $ServiceName -TimeoutSeconds 30)) {
+        & sc.exe delete $ServiceName | Out-Null
+        if (-not (Wait-ServiceGone -Name $ServiceName -TimeoutSeconds 30)) {
+            Stop-WithError "could not remove service $ServiceName before reinstalling it"
+        }
+    }
+}
+
+if (-not $serviceExisted -or -not $usesHomeNssm) {
     Write-Host "Installing service $ServiceName ..."
-    Invoke-Nssm @("install", $ServiceName, (Join-Path $InstallDir "corvusd.exe"))
+    Invoke-Nssm @("install", $ServiceName, (Join-Path $binDir "corvusd.exe"))
 }
 
-Invoke-Nssm @("set", $ServiceName, "Application", (Join-Path $InstallDir "corvusd.exe"))
-Invoke-Nssm @("set", $ServiceName, "AppDirectory", $DataDir)
+Invoke-Nssm @("set", $ServiceName, "Application", (Join-Path $binDir "corvusd.exe"))
+Invoke-Nssm @("set", $ServiceName, "AppDirectory", $HomeDir)
 Invoke-Nssm @("set", $ServiceName, "AppParameters", $appParameters)
 Invoke-Nssm @("set", $ServiceName, "Start", "SERVICE_AUTO_START")
 Invoke-Nssm @("set", $ServiceName, "DisplayName", $ServiceName)
 Invoke-Nssm @("set", $ServiceName, "Description", "Corvus browser hub daemon")
-Invoke-Nssm @("set", $ServiceName, "AppStdout", (Join-Path $DataDir "corvusd.log"))
-Invoke-Nssm @("set", $ServiceName, "AppStderr", (Join-Path $DataDir "corvusd.err.log"))
+Invoke-Nssm @("set", $ServiceName, "AppStdout", (Join-Path $logsDir "corvusd.out.log"))
+Invoke-Nssm @("set", $ServiceName, "AppStderr", (Join-Path $logsDir "corvusd.err.log"))
+Invoke-Nssm @("set", $ServiceName, "AppRotateFiles", "1")
+Invoke-Nssm @("set", $ServiceName, "AppRotateOnline", "1")
+Invoke-Nssm @("set", $ServiceName, "AppRotateBytes", "10485760")
 
 Write-Host "Starting service $ServiceName ..."
 & $script:NssmCommand start $ServiceName
@@ -208,8 +424,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 if (-not (Wait-ServiceStatus -Name $ServiceName -Status "Running" -TimeoutSeconds 30)) {
     Write-Host "service $ServiceName did not reach Running; recent log lines:"
-    Show-LogTail (Join-Path $DataDir "corvusd.err.log")
-    Show-LogTail (Join-Path $DataDir "corvusd.log")
+    Show-LogTail (Join-Path $logsDir "corvusd.err.log")
+    Show-LogTail (Join-Path $logsDir "corvusd.out.log")
     Stop-WithError "service $ServiceName did not reach Running within 30 seconds"
 }
 Start-Sleep -Seconds 1
@@ -218,30 +434,24 @@ if ($null -eq $service -or $service.Status.ToString() -ne "Running") {
     Stop-WithError "service $ServiceName started but is no longer running"
 }
 
-$mcpPort = 7331
-if ($HttpPort -gt 0) {
-    $mcpPort = $HttpPort
-}
-$wsPortActual = 7330
-if ($WsPort -gt 0) {
-    $wsPortActual = $WsPort
-}
-
+$corvusCli = Join-Path $binDir "corvus.exe"
 Write-Host ""
 Write-Host "Corvus is installed and the service is running."
 Write-Host "  service:   $ServiceName"
-Write-Host "  binaries:  $InstallDir"
-Write-Host "  data:      $DataDir"
-Write-Host "  database:  $dbPath"
-Write-Host "  extension: $ExtensionDir"
-Write-Host "  websocket: ws://127.0.0.1:$wsPortActual"
-Write-Host "  MCP:       http://127.0.0.1:$mcpPort/mcp"
+Write-Host "  home:      $HomeDir"
+Write-Host "  binaries:  $binDir"
+Write-Host "  data:      $dataDir"
+Write-Host "  database:  $newDb"
+Write-Host "  extension: $extensionDir"
+Write-Host "  logs:      $logsDir"
+Write-Host "  websocket: ws://127.0.0.1:$WsPort"
+Write-Host "  MCP:       http://127.0.0.1:$HttpPort/mcp"
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. Open chrome://extensions (or edge://extensions), enable Developer mode,"
-Write-Host "     choose Load unpacked and select: $ExtensionDir"
-Write-Host "  2. Verify the daemon: & `"$InstallDir\corvus.exe`" doctor"
-Write-Host "  3. HTTP client configuration: & `"$InstallDir\corvus.exe`" config --transport http"
+Write-Host "     choose Load unpacked and select: $extensionDir"
+Write-Host ('  2. Verify the daemon: & "' + $corvusCli + '" doctor')
+Write-Host ('  3. HTTP client configuration: & "' + $corvusCli + '" config --transport http')
 Write-Host "     Paste the mcpServers entry into the client; keep the service running."
 Write-Host "     For a stdio-only client, stop the service first, then run:"
-Write-Host "       & `"$InstallDir\corvus.exe`" serve --stdio"
+Write-Host ('       & "' + $corvusCli + '" serve --stdio')

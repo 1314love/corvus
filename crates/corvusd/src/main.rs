@@ -5,9 +5,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::EnvFilter;
 
+use corvusd::home::HomeLayout;
 use corvusd::{Daemon, DaemonConfig};
 
 #[derive(Parser)]
@@ -37,11 +36,20 @@ enum Command {
         /// Recording database path
         #[arg(long)]
         db: Option<PathBuf>,
+        /// Corvus home directory
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Log file path override
+        #[arg(long)]
+        log_file: Option<PathBuf>,
+        /// Disable the log file and keep logging on stderr
+        #[arg(long, conflicts_with = "log_file")]
+        no_log_file: bool,
         /// Also serve MCP over standard input and output
         #[arg(long)]
         stdio: bool,
     },
-    /// Print version, ports and connected browsers
+    /// Print version, ports, recording state and connected browsers
     Doctor {
         /// Address of the daemon to inspect
         #[arg(long, default_value_t = corvusd::DEFAULT_BIND)]
@@ -55,21 +63,14 @@ enum Command {
         /// Recording database path to inspect
         #[arg(long)]
         db: Option<PathBuf>,
+        /// Corvus home directory
+        #[arg(long)]
+        home: Option<PathBuf>,
     },
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(corvusd::logs::global().clone())
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .init();
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
     let cli = Cli::parse();
     match cli.command {
         Command::Serve {
@@ -77,19 +78,31 @@ async fn main() -> Result<()> {
             ws_port,
             http_port,
             db,
+            home,
+            log_file,
+            no_log_file,
             stdio,
         } => {
+            let layout = HomeLayout::resolve(home.clone())?;
+            let log_target = if no_log_file {
+                None
+            } else {
+                log_file.or_else(|| Some(layout.log_path()))
+            };
+            let _logging = corvusd::logging::init(log_target, layout.root());
             let daemon = Daemon::start(DaemonConfig {
                 bind,
                 ws_port,
                 http_port,
                 db_path: db,
+                home,
                 ..DaemonConfig::default()
             })
             .await?;
             tracing::info!(
                 ws = %daemon.ws_addr(),
                 mcp = %format!("http://{}/mcp", daemon.http_addr()),
+                db = %daemon.db_path().display(),
                 "corvusd ready"
             );
             if stdio {
@@ -97,10 +110,12 @@ async fn main() -> Result<()> {
                     result = corvus_mcp::serve_stdio(std::sync::Arc::clone(daemon.mcp())) => {
                         result?;
                     }
-                    _ = tokio::signal::ctrl_c() => {}
+                    result = corvusd::signals::shutdown() => {
+                        result?;
+                    }
                 }
             } else {
-                tokio::signal::ctrl_c().await?;
+                corvusd::signals::shutdown().await?;
             }
             daemon.shutdown().await;
         }
@@ -109,8 +124,10 @@ async fn main() -> Result<()> {
             ws_port,
             http_port,
             db,
+            home,
         } => {
-            let report = corvusd::doctor::inspect_with_db(bind, ws_port, http_port, db).await;
+            let report =
+                corvusd::doctor::inspect_with_home(bind, ws_port, http_port, db, home).await;
             print!("{}", corvusd::doctor::render(&report));
         }
     }

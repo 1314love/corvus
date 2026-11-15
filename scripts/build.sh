@@ -3,10 +3,12 @@
 # Build the Corvus release binaries and checksum them.
 #
 # Writes dist/corvusd[.exe], dist/corvus[.exe] and dist/SHA256SUMS. The build is
-# offline by design: the local cargo cache is the only dependency source.
+# offline by default; set CORVUS_CARGO_OFFLINE=0 to let Cargo use the network on
+# a fresh CI runner.
 # Safe to re-run; exits non-zero if the build, a copy or a checksum fails.
 #
 # Usage: scripts/build.sh
+# Environment: CORVUS_CARGO_OFFLINE=0 enables network access (default is offline).
 
 set -euo pipefail
 
@@ -56,7 +58,12 @@ esac
 echo "cargo:  $cargo_bin"
 echo "target: $target_dir"
 
-"$cargo_bin" build --release --offline -p corvusd -p corvus
+offline_args=()
+if [ "${CORVUS_CARGO_OFFLINE:-1}" != "0" ]; then
+    offline_args=(--offline)
+fi
+
+"$cargo_bin" build --release "${offline_args[@]}" -p corvusd -p corvus
 
 mkdir -p "$dist_dir"
 

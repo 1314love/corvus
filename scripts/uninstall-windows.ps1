@@ -1,15 +1,19 @@
-# Remove the Corvus Windows service and its installed binaries.
+# Remove the Corvus Windows service and its installed files.
 #
-# Database files are kept unless -PurgeData is given. Run from an elevated
-# PowerShell when the service exists. The script is idempotent.
+# Everything is addressed through -HomeDir. The service is removed first; the
+# home directory is kept unless -PurgeData is given, which removes only that
+# root. Run from an elevated PowerShell. The script is idempotent.
+# -SelfTest checks the destructive-purge guard without changing anything.
 [CmdletBinding()]
 param(
     [string]$ServiceName = "Corvus",
-    [string]$InstallDir = (Join-Path $env:USERPROFILE ".corvus\bin"),
-    [string]$DataDir = (Join-Path $env:USERPROFILE ".corvus"),
-    [string]$ExtensionDir = (Join-Path $env:USERPROFILE ".corvus\extension"),
+    [string]$HomeDir = (Join-Path $env:ProgramData "Corvus"),
+    [string]$InstallDir = "",
+    [string]$DataDir = "",
+    [string]$ExtensionDir = "",
     [string]$NssmPath = "",
-    [switch]$PurgeData
+    [switch]$PurgeData,
+    [switch]$SelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -35,13 +39,139 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Test-PathUnder {
+    param([string]$Candidate, [string]$Root)
+    $candidatePath = $Candidate.TrimEnd([char]'\')
+    $rootPath = $Root.TrimEnd([char]'\')
+    if ($candidatePath.Equals($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    return $candidatePath.StartsWith($rootPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-NoReparsePoint {
+    param([string]$Path)
+    $current = $Path
+    while ($true) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) {
+                Stop-WithError "HomeDir must not contain a reparse point: $current"
+            }
+        }
+        $parent = Split-Path -Parent $current
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent.Equals($current, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $current = $parent
+        if ([string]::IsNullOrWhiteSpace($current)) {
+            break
+        }
+    }
+}
+
+function Assert-SafeHome {
+    param([string]$Path)
+    $full = (Get-AbsolutePath $Path).TrimEnd([char]'\')
+    $driveRoot = [System.IO.Path]::GetPathRoot($full).TrimEnd([char]'\')
+    if ($full -eq $driveRoot) {
+        Stop-WithError "HomeDir must not be a drive root: $full"
+    }
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $tempRoots = @()
+    foreach ($temp in @([System.IO.Path]::GetTempPath(), $env:TEMP)) {
+        if (-not [string]::IsNullOrWhiteSpace($temp)) {
+            $tempRoots += (Get-AbsolutePath $temp).TrimEnd([char]'\')
+        }
+    }
+    $isTemp = $false
+    foreach ($tempRoot in $tempRoots) {
+        if (Test-PathUnder -Candidate $full -Root $tempRoot) {
+            $isTemp = $true
+        }
+    }
+    $exactProtected = @(
+        $env:ProgramData,
+        $env:USERPROFILE,
+        $env:WINDIR,
+        $env:ProgramFiles,
+        [Environment]::GetEnvironmentVariable("ProgramFiles(x86)"),
+        [System.IO.Path]::GetTempPath(),
+        $env:TEMP,
+        $repoRoot
+    )
+    foreach ($candidate in $exactProtected) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        $resolved = (Get-AbsolutePath $candidate).TrimEnd([char]'\')
+        if ($full.Equals($resolved, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Stop-WithError "HomeDir must not be $resolved"
+        }
+    }
+    if ((Test-PathUnder -Candidate $repoRoot -Root $full) -or (Test-PathUnder -Candidate $full -Root $repoRoot)) {
+        Stop-WithError "HomeDir must not contain or live inside the repository: $repoRoot"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) {
+        $programData = (Get-AbsolutePath $env:ProgramData).TrimEnd([char]'\')
+        if (Test-PathUnder -Candidate $full -Root $programData) {
+            $relative = $full.Substring($programData.Length).TrimStart([char]'\')
+            $hasSeparator = $relative.Contains([System.IO.Path]::DirectorySeparatorChar.ToString())
+            if ($hasSeparator -or -not $relative.StartsWith("Corvus", [System.StringComparison]::OrdinalIgnoreCase)) {
+                Stop-WithError "HomeDir under ProgramData must be ProgramData\Corvus or a direct Corvus* child: $full"
+            }
+        }
+    }
+    $systemRoots = @($env:WINDIR, $env:ProgramFiles, [Environment]::GetEnvironmentVariable("ProgramFiles(x86)"))
+    foreach ($root in $systemRoots) {
+        if ([string]::IsNullOrWhiteSpace($root)) {
+            continue
+        }
+        $resolved = (Get-AbsolutePath $root).TrimEnd([char]'\')
+        if (Test-PathUnder -Candidate $full -Root $resolved) {
+            Stop-WithError "HomeDir must not be under $resolved"
+        }
+    }
+    if (-not $isTemp -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $profile = (Get-AbsolutePath $env:USERPROFILE).TrimEnd([char]'\')
+        if (Test-PathUnder -Candidate $full -Root $profile) {
+            Stop-WithError "HomeDir must not be under the user profile: $full"
+        }
+    }
+    Assert-NoReparsePoint -Path $full
+    return $full
+}
+
+function Resolve-LegacySubdir {
+    param(
+        [string]$Name,
+        [string]$Value,
+        [string]$Canonical,
+        [bool]$WasBound
+    )
+    if (-not $WasBound) {
+        return $Canonical
+    }
+    $resolved = (Get-AbsolutePath $Value).TrimEnd([char]'\')
+    if (-not (Test-PathUnder -Candidate $resolved -Root $HomeDir) -or
+        $resolved.Equals($HomeDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "$Name is a deprecated alias and must be a subdirectory of HomeDir ($HomeDir); got $resolved. Use -HomeDir instead."
+    }
+    if (-not $resolved.Equals($Canonical, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "$Name is deprecated; the fixed layout uses $Canonical"
+    }
+    return $Canonical
+}
+
 function Find-Nssm {
     param([string]$ExplicitPath, [string]$InstallDirectory)
     $candidates = New-Object System.Collections.Generic.List[string]
+    $candidates.Add((Join-Path $InstallDirectory "nssm.exe"))
     if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
         $candidates.Add($ExplicitPath)
     }
-    $candidates.Add((Join-Path $InstallDirectory "nssm.exe"))
+    $candidates.Add((Join-Path $PSScriptRoot "nssm.exe"))
+    $candidates.Add((Join-Path (Split-Path -Parent $PSScriptRoot) "packaging\windows\nssm.exe"))
     $command = Get-Command nssm.exe -ErrorAction SilentlyContinue
     if ($null -ne $command) {
         $candidates.Add($command.Source)
@@ -69,135 +199,106 @@ function Wait-ServiceGone {
     return $false
 }
 
-function Remove-EmptyDirectory {
-    param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        return
-    }
-    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd([char]'\')
-    $driveRoot = [System.IO.Path]::GetPathRoot($full).TrimEnd([char]'\')
-    if ($full -eq $driveRoot) {
-        Write-Host "Skipped unsafe empty directory $Path"
-        return
-    }
-    $repoRoot = Split-Path -Parent $PSScriptRoot
-    $protected = @($env:USERPROFILE, $env:TEMP, $repoRoot, (Join-Path $repoRoot "extension"))
-    foreach ($candidate in $protected) {
-        if ([string]::IsNullOrWhiteSpace($candidate)) {
-            continue
-        }
-        $resolved = [System.IO.Path]::GetFullPath($candidate).TrimEnd([char]'\')
-        if ($full -eq $resolved) {
-            Write-Host "Skipped unsafe empty directory $Path"
-            return
-        }
-    }
+if ($SelfTest) {
+    $bad = Join-Path $env:USERPROFILE "Documents"
+    $badRejected = $false
     try {
-        $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
+        $null = Assert-SafeHome $bad
     } catch {
-        Write-Host "Could not inspect directory $Path; leaving it in place."
-        return
+        $badRejected = $true
     }
-    if ($entries.Count -ne 0) {
-        Write-Host "Kept non-empty directory $Path"
-        return
+    if (-not $badRejected) {
+        Stop-WithError "self-test: $bad was accepted as a HomeDir"
     }
+    $good = Join-Path $env:ProgramData "Corvus"
     try {
-        Remove-Item -LiteralPath $Path -Force
-        Write-Host "Removed empty directory $Path"
+        $null = Assert-SafeHome $good
     } catch {
-        Write-Host "Could not remove empty directory $Path; leaving it in place."
+        Stop-WithError "self-test: $good was rejected: $($_.Exception.Message)"
     }
+    $tempHome = Join-Path ([System.IO.Path]::GetTempPath()) "Corvus Guard Self Test"
+    try {
+        $null = Assert-SafeHome $tempHome
+    } catch {
+        Stop-WithError "self-test: $tempHome was rejected: $($_.Exception.Message)"
+    }
+    Write-Host "self-test passed: the user-profile path is refused; ProgramData\Corvus and a temp HomeDir are allowed"
+    exit 0
 }
 
+if (-not (Test-Administrator)) {
+    Stop-WithError "run this script from an elevated PowerShell session"
+}
 if ($ServiceName -notmatch '^[A-Za-z0-9_.-]+$' -or $ServiceName.Length -gt 64) {
     Stop-WithError "ServiceName must contain only letters, digits, dot, underscore and hyphen"
 }
 
-$InstallDir = (Get-AbsolutePath $InstallDir).TrimEnd([char]'\')
-$DataDir = (Get-AbsolutePath $DataDir).TrimEnd([char]'\')
-$ExtensionDir = (Get-AbsolutePath $ExtensionDir).TrimEnd([char]'\')
+$HomeDir = Assert-SafeHome $HomeDir
+$binDir = Join-Path $HomeDir "bin"
+$dataDir = Join-Path $HomeDir "data"
+$extensionDir = Join-Path $HomeDir "extension"
+
+$InstallDir = Resolve-LegacySubdir -Name "InstallDir" -Value $InstallDir -Canonical $binDir -WasBound $PSBoundParameters.ContainsKey("InstallDir")
+$DataDir = Resolve-LegacySubdir -Name "DataDir" -Value $DataDir -Canonical $dataDir -WasBound $PSBoundParameters.ContainsKey("DataDir")
+$ExtensionDir = Resolve-LegacySubdir -Name "ExtensionDir" -Value $ExtensionDir -Canonical $extensionDir -WasBound $PSBoundParameters.ContainsKey("ExtensionDir")
 
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($null -ne $service) {
-    if (-not (Test-Administrator)) {
-        Stop-WithError "run this script from an elevated PowerShell session to remove the service"
-    }
-    $nssm = Find-Nssm -ExplicitPath $NssmPath -InstallDirectory $InstallDir
+    $nssm = Find-Nssm -ExplicitPath $NssmPath -InstallDirectory $binDir
     if ($null -eq $nssm) {
         Write-Host "nssm.exe not found; using sc.exe to remove service $ServiceName ..."
         & sc.exe stop $ServiceName | Out-Null
         & sc.exe delete $ServiceName | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Stop-WithError "sc.exe delete $ServiceName failed with exit code $LASTEXITCODE"
+        $scExit = $LASTEXITCODE
+        if (-not (Wait-ServiceGone -Name $ServiceName -TimeoutSeconds 30)) {
+            Stop-WithError "sc.exe delete $ServiceName failed with exit code $scExit"
         }
     } else {
-        Write-Host "Stopping service $ServiceName ..."
         if ($service.Status.ToString() -ne "Stopped") {
+            Write-Host "Stopping service $ServiceName ..."
             & $nssm stop $ServiceName
-            if ($LASTEXITCODE -ne 0) {
-                Stop-WithError "nssm stop $ServiceName failed with exit code $LASTEXITCODE"
-            }
+            $stopExit = $LASTEXITCODE
             $deadline = (Get-Date).AddSeconds(30)
             do {
                 Start-Sleep -Milliseconds 500
                 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
             } while ($null -ne $service -and $service.Status.ToString() -ne "Stopped" -and (Get-Date) -lt $deadline)
             if ($null -ne $service -and $service.Status.ToString() -ne "Stopped") {
-                Stop-WithError "service $ServiceName did not stop within 30 seconds"
+                Stop-WithError "nssm stop $ServiceName failed with exit code $stopExit and the service did not stop"
             }
         }
         Write-Host "Removing service $ServiceName ..."
         & $nssm remove $ServiceName confirm
-        if ($LASTEXITCODE -ne 0) {
-            Stop-WithError "nssm remove $ServiceName failed with exit code $LASTEXITCODE"
+        if (-not (Wait-ServiceGone -Name $ServiceName -TimeoutSeconds 30)) {
+            Stop-WithError "nssm remove $ServiceName failed and the service is still registered"
         }
-    }
-    if (-not (Wait-ServiceGone -Name $ServiceName -TimeoutSeconds 30)) {
-        Stop-WithError "service $ServiceName is still registered after removal"
     }
     Write-Host "Service $ServiceName removed."
 } else {
     Write-Host "Service $ServiceName is not installed."
 }
 
-foreach ($name in @("corvusd.exe", "corvus.exe")) {
-    $path = Join-Path $InstallDir $name
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-        Remove-Item -LiteralPath $path -Force
-        Write-Host "Removed $path"
-    }
-}
-
-$separator = [System.IO.Path]::DirectorySeparatorChar
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$safeExtensionDir = $ExtensionDir -ne $DataDir -and $ExtensionDir -ne $InstallDir -and
-    $ExtensionDir -ne $repoRoot -and $ExtensionDir -ne (Join-Path $repoRoot "extension") -and
-    -not $DataDir.StartsWith($ExtensionDir + $separator, [System.StringComparison]::OrdinalIgnoreCase) -and
-    -not $InstallDir.StartsWith($ExtensionDir + $separator, [System.StringComparison]::OrdinalIgnoreCase) -and
-    -not $repoRoot.StartsWith($ExtensionDir + $separator, [System.StringComparison]::OrdinalIgnoreCase)
-if (Test-Path -LiteralPath $ExtensionDir) {
-    if ($safeExtensionDir) {
-        Remove-Item -LiteralPath $ExtensionDir -Recurse -Force
-        Write-Host "Removed $ExtensionDir"
-    } else {
-        Write-Host "Skipped unsafe ExtensionDir: $ExtensionDir"
-    }
-}
-
 if ($PurgeData) {
-    foreach ($name in @("corvus.db", "corvus.db-wal", "corvus.db-shm", "corvusd.log", "corvusd.err.log")) {
-        $path = Join-Path $DataDir $name
+    if (Test-Path -LiteralPath $HomeDir) {
+        Remove-Item -LiteralPath $HomeDir -Recurse -Force
+        Write-Host "Removed $HomeDir"
+    } else {
+        Write-Host "$HomeDir does not exist."
+    }
+    Write-Host "All Corvus data under $HomeDir was purged."
+} else {
+    foreach ($name in @("corvusd.exe", "corvus.exe")) {
+        $path = Join-Path $binDir $name
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             Remove-Item -LiteralPath $path -Force
             Write-Host "Removed $path"
         }
     }
-    Write-Host "Database and log files were purged."
-    Remove-EmptyDirectory -Path $InstallDir
-    Remove-EmptyDirectory -Path $DataDir
-} else {
-    Write-Host "Database kept at $(Join-Path $DataDir "corvus.db") (use -PurgeData to delete it)."
+    if (Test-Path -LiteralPath $extensionDir) {
+        Remove-Item -LiteralPath $extensionDir -Recurse -Force
+        Write-Host "Removed $extensionDir"
+    }
+    Write-Host "Keeping database at $(Join-Path $dataDir 'corvus.db') (use -PurgeData to remove $HomeDir)."
 }
 
 Write-Host "Uninstall complete."

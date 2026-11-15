@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Corvus options</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: Canvas;
+      color: CanvasText;
+    }
+    main { max-width: 640px; margin: 40px auto; padding: 0 20px 40px; }
+    h1 { margin: 0 0 4px; font-size: 20px; }
+    .lede { margin: 0 0 24px; color: #6b7280; }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: none;
+      background: #8a8f98;
+      box-shadow: 0 0 0 2px rgba(127, 127, 127, 0.18);
+    }
+    .dot-on { background: #1a9f52; box-shadow: 0 0 0 2px rgba(26, 159, 82, 0.2); }
+    .dot-off { background: #8a8f98; box-shadow: 0 0 0 2px rgba(127, 127, 127, 0.18); }
+    #status-text { font-weight: 600; }
+    form { margin-top: 24px; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; }
+    input {
+      flex: 1 1 320px;
+      min-width: 0;
+      padding: 8px 10px;
+      border: 1px solid rgba(127, 127, 127, 0.45);
+      border-radius: 6px;
+      background: Field;
+      color: FieldText;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    button {
+      padding: 8px 12px;
+      border: 1px solid rgba(127, 127, 127, 0.45);
+      border-radius: 6px;
+      background: ButtonFace;
+      color: ButtonText;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+    button:disabled { opacity: 0.55; cursor: default; }
+    .hint { min-height: 1.5em; margin: 8px 0 0; color: #6b7280; }
+    .hint.error { color: #b91c1c; }
+    .hint.ok { color: #15803d; }
+    .note { margin-top: 28px; padding-top: 14px; border-top: 1px solid rgba(127, 127, 127, 0.25); color: #6b7280; }
+    .mono { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Corvus</h1>
+    <p class="lede">Choose the daemon socket this browser connects to. Settings apply immediately.</p>
+
+    <p class="row">
+      <span id="status-dot" class="dot dot-off" role="img" aria-label="Connection status"></span>
+      <span id="status-text">Checking connection...</span>
+    </p>
+
+    <form id="daemon-form" novalidate>
+      <label for="daemon-url">Daemon WebSocket URL</label>
+      <div class="row">
+        <input id="daemon-url" type="text" spellcheck="false" autocomplete="off" inputmode="url" placeholder="ws://127.0.0.1:7330" aria-describedby="validation">
+        <button id="save" class="primary" type="submit">Save</button>
+        <button id="reset" type="button">Reset to default</button>
+      </div>
+      <p id="validation" class="hint" role="status" aria-live="polite"></p>
+    </form>
+
+    <p class="note">The default <span class="mono">ws://127.0.0.1:7330</span> is local to this machine. To reach a daemon on another host, expose it through a trusted tunnel and use a <span class="mono">wss://</span> URL; do not send the socket over an untrusted network.</p>
+  </main>
+  <script src="daemon_url.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

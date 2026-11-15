@@ -2,12 +2,12 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-Status: M1-M4 wave 1 implemented; M4 wave 2 and M5 in progress. Audience: engineers.
+Status: 1.1.0 ships the M1-M4 backend surface plus single-root packaging, Linux packages, Docker and Kubernetes deployment. Audience: engineers.
 
 ## 1. Constraints that shape the design
 
 1. **Must drive the browser the user is already using.** No relaunch, no dedicated profile, no remote-debugging flag. This forbids a CDP-only design: the extension is the only way in.
-2. **Zero approvals, zero pairing, zero pages.** Any flow that needs a human click is a defect.
+2. **Zero approvals, zero pairing, no required setup page.** The extension ships without a setup step; the optional options page only overrides the daemon URL.
 3. **Connection is the product.** MV3 service workers are killed after ~30s idle; the design must assume the browser side is hostile to long-lived sockets.
 4. **Multi-browser, multi-profile, concurrent.** One daemon, N extensions, independent sessions.
 5. **Everything observable.** Every command and its page context must be replayable after the fact.
@@ -23,7 +23,7 @@ Status: M1-M4 wave 1 implemented; M4 wave 2 and M5 in progress. Audience: engine
     |  mcp-server  -> tool registry -> router -> session runtime    |
     |  transport hub (ws / native-messaging / long-poll)            |
     |  recorder (sqlite + jsonl + trace)                            |
-    |  site memory (sqlite)   metrics (prometheus)   health         |
+    |  recording (sqlite)    metrics (prometheus)   health          |
     +--------------------------------------------------------------+
         |  framed JSON envelope over WS (primary)
         v
@@ -32,7 +32,7 @@ Status: M1-M4 wave 1 implemented; M4 wave 2 and M5 in progress. Audience: engine
         v
     browser
 
-Processes: one corvusd per user session (service on Win/macOS/Linux), one extension per browser profile, one CLI client (corvus).
+Processes: one corvusd per user session (a service on Windows and Linux; foreground on macOS), one extension per browser profile, one CLI client (corvus).
 
 ## 3. Crates
 
@@ -41,13 +41,12 @@ Processes: one corvusd per user session (service on Win/macOS/Linux), one extens
 | corvus-proto | wire types: envelope, command, response, error taxonomy, versioning |
 | corvus-mcp | MCP server: tool registry, JSON-RPC, stdio + streamable-http transports |
 | corvus-transport | WS server, native-messaging host, long-poll fallback, browser registry |
-| corvus-runtime | command router, per-browser queues, timeouts, idempotency, cancellation |
-| corvus-record | session recorder, sqlite schema, trace writer, replay engine |
-| corvus-memory | site cards, selector heuristics, export/import |
+| corvus-runtime | command router, per-tab lanes, timeouts, idempotency, cancellation |
+| corvus-record | session recorder, sqlite schema, step store, replay support |
 | corvusd | daemon binary: wires everything, service lifecycle, config |
 | corvus | CLI: doctor, serve, attach, replay, bench, config print |
 
-Key crates: tokio, axum, tower, serde, serde_json, rusqlite (bundled), tracing, tracing-subscriber, thiserror, clap, uuid, dashmap, arc-swap.
+Key crates: tokio, axum, serde, serde_json, rusqlite (bundled), tracing, tracing-subscriber, tracing-appender, thiserror, clap, uuid.
 
 ## 4. Wire protocol
 
@@ -212,13 +211,13 @@ M4 wave 1 adds no tools. It changes how the router schedules calls and how an in
 
 ## 6. Extension design
 
-Three contexts, no pages:
+Three runtime contexts and two small UI surfaces:
 
 1. **service worker**: command dispatch, tabs API, scripting, debugger attach/detach, downloads.
 2. **content script**: DOM snapshot, click/type synthesis, waits, mutation observers.
 3. **offscreen document**: WebSocket owner (SW cannot hold a socket reliably), keepalive, reconnect loop.
 
-The popup is status-only: one connection dot and one status line, with no controls. The debugger capability is advertised unconditionally and attached on demand when a CDP-backed tool needs it; a refused attach is the only reason the channel becomes unavailable.
+The popup is status-only: one connection dot and one status line, with no controls. The options page is optional and only stores the daemon WebSocket URL (`ws://` or `wss://`, default `ws://127.0.0.1:7330`) under `corvus.daemonUrl`; it is not part of the command path. The debugger capability is advertised unconditionally and attached on demand when a CDP-backed tool needs it; a refused attach is the only reason the channel becomes unavailable.
 
 Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate retry on network-online, alarm every 30s as a floor, and a daemon-push "resume" message when the daemon restarts.
 
@@ -246,9 +245,20 @@ Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate r
 | INTERNAL | bug; carries trace id | no |
 | CANCELLED | the command was cancelled before the browser answered | no |
 
-## 9. Storage
+## 9. Storage and file layout
 
-SQLite at `~/.corvus/corvus.db` (`%USERPROFILE%\.corvus\corvus.db` on Windows), WAL, schema version 1 in `schema_meta`. `corvusd serve --db <path>` overrides the path, then `CORVUS_DB_PATH`; the parent directory is created.
+The daemon keeps every backend file under one root selected by `--home <dir>` or `CORVUS_HOME`. Platform defaults are `%LOCALAPPDATA%\Corvus` on Windows, `$XDG_DATA_HOME/corvus` (falling back to `~/.local/share/corvus`) on Linux, and `~/Library/Application Support/Corvus` on macOS. The Windows installer uses `%ProgramData%\Corvus` for the service, the Linux package uses `/opt/corvus`, and the Docker image and Kubernetes manifests use `/data`.
+
+    <root>/
+      bin/            corvusd, corvus
+      data/corvus.db  SQLite recording store
+      logs/           corvusd.log.YYYY-MM-DD (UTC) plus optional service files
+      config/         reserved for file configuration
+      extension/      unpacked extension
+
+Resolution order: `--db <path>` wins; otherwise a configured `--home`/`CORVUS_HOME` selects `<root>/data/corvus.db`; without either, `CORVUS_DB_PATH` is still honoured, then the platform default database. Relative roots become absolute against the process working directory. `corvusd serve` creates `data/`, `logs/` and `config/`, but not `bin/` or `extension/`. File logging is on by default at `<root>/logs/corvusd.log.YYYY-MM-DD` with UTC daily rotation; `--log-file` overrides the path and `--no-log-file` disables file output. See [05-deployment.md](05-deployment.md) for service and container layouts.
+
+The recording store is SQLite with WAL, schema version 1 in `schema_meta`.
 
 | table | columns |
 |---|---|
@@ -261,44 +271,38 @@ On startup, sessions left active by a previous process get `ended_at` set to now
 
 ## 10. Configuration
 
-~/.corvus/config.toml:
+No `config.toml` is loaded in this release. Settings come from flags and environment variables:
 
-    [daemon]
-    http_port = 7331
-    ws_port = 7330
-    bind = "127.0.0.1"
+| Setting | Control | Default |
+|---|---|---|
+| Bind address | `corvusd serve --bind`, `corvus serve --bind` | `127.0.0.1` |
+| WebSocket port | `--ws-port` | 7330 |
+| MCP HTTP port | `--http-port` | 7331 |
+| Home root | `--home`, `CORVUS_HOME` | platform default |
+| Database | `--db`, then the home root, then `CORVUS_DB_PATH` | `<root>/data/corvus.db` |
+| File log | `--log-file`, `--no-log-file` | `<root>/logs/corvusd.log` |
+| Log filter | `RUST_LOG` | `info` |
+| MCP transport | `--stdio`, or HTTP on `/mcp` | HTTP |
 
-    [recording]
-    enabled = true
-    mode = "structured"      # structured | full
-    retention_days = 30
-
-    [tools]
-    paginate_over_bytes = 65536
-    default_timeout_ms = 60000
-
-    [memory]
-    enabled = true
-    export_format = "jsonl"
-
-`config.toml` is not loaded in this milestone. The `[recording]` block documents the target shape only; recording is always on, and the effective controls are `corvusd serve --db <path>`, `CORVUS_DB_PATH` and the fixed 30-day retention. File loading lands with packaging.
+Recording is always on and keeps the fixed 30-day retention. `corvus config --client <name> --transport stdio|http [--home <dir>]` prints a ready `mcpServers` JSON object on stdout, with a location hint on stderr; the stdio form pins `--home` when supplied, and the HTTP form points at `http://127.0.0.1:7331/mcp`.
 
 Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capped at 125000 ms, `browser_eval` gets 30000 ms, `download_wait` gets `args.timeout_ms + 5000` ms capped at 125000 ms, and every other tool gets the 60000 ms default; the router clamps every deadline to the 125000 ms ceiling.
 
 ## 11. Build and CI
 
-- cargo workspace, edition 2021, MSRV pinned in rust-toolchain.toml.
-- CI matrix: windows-latest, macos-latest, ubuntu-22.04; each runs fmt, clippy -D warnings, cargo test.
-- Extension: esbuild bundle, no framework; size budget 1MB; manifest key pinned so the extension id is stable across machines.
-- Release: cross-built binaries with checksums, GitHub release notes generated from conventional commits.
+- cargo workspace, edition 2021, Rust 1.90 as MSRV in `Cargo.toml` and `rust-toolchain.toml`.
+- CI matrix: windows-latest, macos-latest and ubuntu-latest; each runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
+- Packaging jobs: `scripts/package-linux.sh` builds the x86_64 tar.gz and verifies the systemd unit; a Docker job builds the image, checks the reported version and `/health`, and asserts the 32-tool list.
+- Extension: hand-written MV3, no bundler; manifest key pinned so the extension id is stable across machines.
+- Release: platform packages with `SHA256SUMS`; macOS has no packaged installer in 1.1.0.
 
 ## 12. Security posture
 
-Deliberate: no permission prompts, no allow-list, no per-action confirmation. The trust boundary is the OS user account; the daemon binds to loopback only and authenticates extensions with a per-machine secret stored in the OS keychain (Windows DPAPI, macOS Keychain, libsecret).
+Deliberate: no permission prompts, no allow-list, no per-action confirmation, and no authentication or pairing secret. The trust boundary is the OS user account: browser transports and the MCP HTTP server bind to loopback, and home-root file permissions protect the recording database. Any local process that can reach ports 7330 or 7331 can drive the connected browser, so never expose those ports beyond loopback.
 
 Threats considered:
 
-- Other local users: loopback + per-user secret + file permissions.
+- Other local users: loopback binding plus per-user home permissions.
 - Malicious web page: content script never evaluates page-controlled strings as code; all selectors and scripts come from the daemon.
 - Extension supply chain: pinned manifest key, signed releases.
 
@@ -308,10 +312,13 @@ Non-goal: protecting the user from their own agent. That is out of scope by desi
 
     corvus/
       crates/corvus-proto, corvus-mcp, corvus-transport, corvus-runtime,
-             corvus-record, corvus-memory, corvusd, corvus
+             corvus-record, corvusd, corvus
       extension/
-        manifest.json, background.js, content.js, offscreen.html, popup.html
+        manifest.json, background.js, content.js, offscreen.html,
+        popup.html, popup.js, options.html, options.js, daemon_url.js
+      deploy/docker/, deploy/k8s/
+      packaging/windows/, packaging/systemd/
       docs/
-      tests/e2e/
+      tests/
       scripts/
       .github/workflows/

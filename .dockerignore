@@ -1,0 +1,12 @@
+.git
+.github
+target
+dist
+docs
+tests
+deploy
+scripts
+*.md
+*.log
+*.zip
+*.tar.gz

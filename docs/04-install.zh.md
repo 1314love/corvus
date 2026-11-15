@@ -1,96 +1,163 @@
 [English](04-install.md) | [中文](04-install.zh.md)
 
-# 安装与升级
+# 安装、升级与卸载
 
-Corvus 由一个本地守护进程（`corvusd`）、一个命令行客户端（`corvus`）和一个浏览器扩展组成。本页说明如何用
-nssm 把守护进程安装为 Windows 服务、加载扩展、连接 MCP 客户端，并覆盖升级与卸载。服务只绑定
-`127.0.0.1`。
+Corvus 由一个本地守护进程（`corvusd`）、一个命令行客户端（`corvus`）和一个浏览器扩展组成。所有后端文件都位于同一个根目录下，由 `--home` 或 `CORVUS_HOME` 选择：二进制、数据库、日志、配置与已解包的扩展。本页覆盖 Windows 上用 nssm 安装服务，以及 Linux 上用 systemd 从发布包安装；Docker、Kubernetes、备份与完整运维清单见 [05-deployment.zh.md](05-deployment.zh.md)。守护进程默认只绑定 `127.0.0.1`。
 
 ## 默认布局
 
-| 项目 | 默认值 |
-|---|---|
-| 服务名 | `Corvus` |
-| 二进制 | `%USERPROFILE%\.corvus\bin`（`corvusd.exe`、`corvus.exe`） |
-| 数据目录 | `%USERPROFILE%\.corvus` |
-| 数据库 | `%USERPROFILE%\.corvus\corvus.db` |
-| 扩展 | `%USERPROFILE%\.corvus\extension` |
-| 日志 | `%USERPROFILE%\.corvus\corvusd.log`、`%USERPROFILE%\.corvus\corvusd.err.log` |
-| WebSocket | `ws://127.0.0.1:7330` |
-| MCP HTTP | `http://127.0.0.1:7331/mcp` |
+| 平台 | 默认根目录 | 启动方式 |
+|---|---|---|
+| Windows 服务 | `%ProgramData%\Corvus` | `install-windows.ps1` 通过 nssm 注册 `Corvus` 服务 |
+| Windows 前台 | `%LOCALAPPDATA%\Corvus` | `corvusd serve` 或 `corvus serve` |
+| Linux 安装包 | `/opt/corvus` | `install-linux.sh` 写入 `/etc/systemd/system/corvus.service` |
+| Linux 前台 | `$XDG_DATA_HOME/corvus` 或 `~/.local/share/corvus` | `corvusd serve` |
+| Docker / Kubernetes | `/data` | 容器入口或 Kubernetes 清单 |
+| macOS 源码运行 | `~/Library/Application Support/Corvus` | `corvusd serve`；1.1.0 不提供安装包 |
+
+一个根目录容纳全部后端文件：
+
+    <root>/
+      bin/            corvusd、corvus，Windows 上还有 nssm.exe
+      data/corvus.db  SQLite 录制库
+      logs/           每日文件日志与服务 stdout/stderr 文件
+      config/         预留给文件配置
+      extension/      已解包的扩展
+
+| 端口 | 用途 | 默认值 |
+|---|---|---|
+| 7330 | 扩展使用的 WebSocket 传输 | `ws://127.0.0.1:7330` |
+| 7331 | MCP streamable HTTP、`/health` 与 `/metrics` | `http://127.0.0.1:7331/mcp` |
+
+数据库默认为 `<root>/data/corvus.db`，除非给出 `--db <path>`。已配置的 `--home` 或 `CORVUS_HOME` 优先于 `CORVUS_DB_PATH`；没有根目录覆盖时仍会读取 `CORVUS_DB_PATH`。文件日志默认写入 `<root>/logs/corvusd.log`，按 UTC 每日轮转为 `corvusd.log.YYYY-MM-DD`；`--log-file` 覆盖路径，`--no-log-file` 关闭文件输出。
 
 ## 前置条件
 
+### Windows
+
 - Windows 10 或 Windows 11，64 位。
 - PowerShell 5.1 或 PowerShell 7；安装与卸载需要以管理员身份运行。
-- nssm 2.24 或更高版本。安装脚本会依次查找 `PATH`、安装目录、Chocolatey bin 目录、
-  `C:\Program Files\nssm`，也接受 `-NssmPath`。
-- `dist/` 中已有发布包，包含 `corvusd.exe`、`corvus.exe` 和 `extension/`。
-- 用于加载扩展的 Chrome、Edge 或 Brave（Chromium 120+）。
-- 只有从源码构建发布包时才需要 Rust 工具链。
+- 在 Windows 上构建的发布 ZIP，包含 `corvusd.exe`、`corvus.exe`、扩展、安装与卸载脚本，以及随包附带的 `nssm.exe`。
+- nssm 2.24 或更高版本。发布包把它放在 `bin\nssm.exe`；也可以用 `-NssmPath` 选择系统副本。
+- 用于加载扩展的 Chrome、Edge 或 Brave（Chromium 120 或更高）。
+
+### Linux
+
+- Linux x86_64，带 glibc 与 systemd。
+- 通过 `sudo` 取得 root 权限；`install-linux.sh` 需要 systemd，并在 `/etc/systemd/system` 下写入 unit。
+- 建议安装 `curl` 供安装脚本做健康检查与后续验证；缺少 `curl` 时安装仍会继续并给出警告。
+- `corvus-<version>-linux-x86_64.tar.gz` 发布包及其 `SHA256SUMS`。
+
+从源码构建需要 Rust 1.90 或更高版本。本版本的 macOS 仅支持从源码运行。
 
 ## 构建发布包
 
-如果已有准备好的、可信的 `dist/` 发布包，可以跳过本节。在 Windows 的 MSYS bash 或 Git Bash 中，从仓库根目录执行：
+如果已有准备好的、可信的发布包，可以跳过本节。在仓库根目录执行：
 
 ```bash
-bash scripts/dev-setup.sh
+# Windows ZIP：dist/corvus-<version>-windows-x64.zip
 bash scripts/package.sh
-(cd dist && sha256sum -c SHA256SUMS)
+
+# Linux tar 包：dist/corvus-<version>-linux-x86_64.tar.gz
+bash scripts/package-linux.sh
 ```
 
-`scripts/package.sh` 会执行离线发布构建，然后写入 `dist/corvusd.exe`、`dist/corvus.exe`、
-`dist/extension/`、`dist/VERSION` 和 `dist/SHA256SUMS`。构建脚本使用 `--offline`，依赖本机 cargo 缓存。
-新机器需要先在有网络时运行一次 `cargo fetch` 填充缓存；CI 构建正常使用网络。Windows 安装脚本要求
-`.exe` 文件名，因此请在 Windows 上构建 Windows 发布包。
+Windows 发布包默认使用 `--offline` 与本机 cargo 缓存构建；设置 `CORVUS_CARGO_OFFLINE=0` 可让 CI 使用网络。Linux 发布包使用正常的 Cargo 网络访问构建（`cargo build --release --locked`）。两个脚本都会校验暂存包的条目与校验和。新机器需要先在有网络时运行一次 `cargo fetch` 填充缓存。Windows 安装脚本要求 `.exe` 文件名，因此请在 Windows 上构建 Windows 发布包。Linux 发布包仅支持 x86_64。
 
-## 安装服务
+## 在 Windows 上安装
 
-在仓库根目录打开管理员 PowerShell。默认安装只需一条命令：
+发布 ZIP 的根目录包含 `install-windows.ps1` 与 `uninstall-windows.ps1`。在解压目录中打开管理员 PowerShell 并执行：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1
 ```
 
-如果 nssm 不在 `PATH` 中，传入完整路径：
+在仓库检出中，请先用 `bash scripts/package.sh` 构建发布包，再执行 `.\scripts\install-windows.ps1`。
+
+使用其他根目录与端口时：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 `
-  -NssmPath "C:\tools\nssm\nssm.exe"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1 `
+  -HomeDir "D:\Corvus" -WsPort 7330 -HttpPort 7331
 ```
 
-如果要安装到用户目录之外，传入三个路径；升级与卸载时使用同一组值：
+在仓库检出中，请把两条命令里的 `.\install-windows.ps1` 换成 `.\scripts\install-windows.ps1`。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 `
-  -InstallDir "D:\Corvus\bin" -DataDir "D:\Corvus\data" -ExtensionDir "D:\Corvus\extension"
+安装脚本会检查管理员权限与根目录，在发布二进制缺失时拒绝执行，停止已有的 `Corvus` 服务，复制 `bin/` 与 `extension/`，停止并删除旧服务注册，然后注册 nssm 服务。服务命令为：
+
+```text
+corvusd.exe serve --home "<HomeDir>" --ws-port <WsPort> --http-port <HttpPort>
 ```
 
-安装脚本会检查管理员权限与路径，在发布二进制缺失时拒绝执行，停止已有服务，复制二进制与打包的扩展，
-配置 nssm 服务并启动。服务执行的命令是 `corvusd.exe serve --db "<DataDir>\corvus.db"`。脚本是幂等的：
-重复执行同一条命令会原地升级并保留数据库。如果服务在 30 秒内没有进入 `Running`，脚本会打印最近的日志
-并以非零状态退出。
+脚本是幂等的：重复执行同一条命令会原地升级并保留数据库。如果服务在 30 秒内没有进入 `Running`，脚本会打印最近的日志并以非零状态退出。
 
-## 加载扩展
+`-InstallDir`、`-DataDir` 与 `-ExtensionDir` 仍作为已弃用的兼容别名接受，但必须解析到 `-HomeDir` 的子目录。新安装只需传 `-HomeDir`。
+
+### 从 1.0.0 迁移
+
+1.0.0 把文件放在 `%USERPROFILE%\.corvus`。安装脚本会把该目录移动到 `<HomeDir>\migration\userprofile-corvus`；如果 `<HomeDir>\data\corvus.db` 尚不存在，则把 `corvus.db`、`corvus.db-wal` 与 `corvus.db-shm` 复制到新的数据目录。传 `-KeepLegacyData` 可保留旧目录。需要保留录制历史时，升级前先备份旧数据库。
+
+### 加载扩展
 
 1. 打开 `chrome://extensions` 或 `edge://extensions`。
 2. 打开开发者模式。
-3. 选择“加载已解压的扩展程序”，目录选 `%USERPROFILE%\.corvus\extension`（或自定义的 `-ExtensionDir`）。
+3. 选择“加载已解压的扩展程序”，目录选 `<HomeDir>\extension`。
 4. 打开扩展弹窗。绿点表示已连接守护进程；弹窗显示浏览器 ID、扩展版本与能力。
 
-升级后如果 manifest 或脚本有变化，在扩展卡片上点“重新加载”。扩展没有设置页，也没有配对步骤。
+扩展没有配对步骤。可选的设置页只用于修改守护进程 WebSocket URL，见[扩展设置页](#扩展设置页)。
+
+## 在 Linux 上安装
+
+下载或复制 tar 包，解压到一个目录，然后校验并安装：
+
+```bash
+mkdir -p corvus-1.1.0-linux-x86_64
+tar -xzf corvus-1.1.0-linux-x86_64.tar.gz -C corvus-1.1.0-linux-x86_64
+cd corvus-1.1.0-linux-x86_64
+sha256sum -c SHA256SUMS
+sudo ./install-linux.sh
+```
+
+安装脚本创建名为 `corvus` 的系统用户（无 home、`nologin` shell），以 root 身份安装 `bin/` 与 `extension/`，把 `data/`、`logs/`、`config/` 交给服务用户写入，写入 systemd unit，启用并重启服务，然后在最多 30 秒内轮询 `http://127.0.0.1:<HttpPort>/health`。
+
+用环境变量覆盖根目录、服务用户与端口：
+
+```bash
+sudo CORVUS_HOME=/var/lib/corvus CORVUS_USER=corvus \
+  CORVUS_WS_PORT=7330 CORVUS_HTTP_PORT=7331 ./install-linux.sh
+```
+
+`CORVUS_HOME` 必须是系统目录和用户目录之外的专用绝对路径。服务 unit 位于 `/etc/systemd/system/corvus.service`；日志同时写入 `<root>/logs` 下的每日文件与 journal。
+
+用 `systemctl status corvus.service`、`curl -fsS http://127.0.0.1:7331/health` 和 `sudo -u corvus <root>/bin/corvus doctor` 验证安装。
+
+## 扩展设置页
+
+扩展默认连接 `ws://127.0.0.1:7330`。使用其他守护进程或 `wss://` 隧道时，打开扩展设置页（或弹窗中的 Change 链接），填写完整 WebSocket URL 并保存。URL 保存在 `corvus.daemonUrl`；Reset 恢复默认值。扩展重新加载或升级后，请刷新已打开的标签页，让内容脚本重新连接。
+
+`wss://` 端点需要在 Corvus 之外终止 TLS，例如反向代理。守护进程本身没有认证，因此把 7330 或 7331 暴露到回环之外的隧道等同于暴露完整的浏览器控制能力。见 [05-deployment.zh.md](05-deployment.zh.md#7-端口、暴露面与无认证边界)。
 
 ## 验证安装
 
+Windows：
+
 ```powershell
 Get-Service Corvus | Format-Table Name, Status, StartType
-& "$env:USERPROFILE\.corvus\bin\corvus.exe" doctor
+& "$env:ProgramData\Corvus\bin\corvus.exe" doctor
 Invoke-RestMethod http://127.0.0.1:7331/health
+Invoke-WebRequest http://127.0.0.1:7331/metrics | Select-Object -Expand Content
 ```
 
-`doctor` 会报告版本、WebSocket 与 MCP HTTP 端口是否可达、数据库路径，以及每个已连接浏览器一行。
-`health` 返回 `status: "ok"` 和当前数据库路径。守护进程可达但没有浏览器行，说明扩展尚未加载，或扩展
-连接的是另一个端口。
+Linux：
+
+```bash
+systemctl status corvus.service
+/opt/corvus/bin/corvus doctor
+curl -fsS http://127.0.0.1:7331/health
+curl -fsS http://127.0.0.1:7331/metrics
+```
+
+`doctor` 会报告版本、WebSocket 与 MCP HTTP 端口是否可达、运行时长、工具调用计数、数据库路径、schema 版本、会话与步骤数量，以及每个已连接浏览器一行。`/health` 返回 `status: "ok"`、绑定地址与录制信息。守护进程可达但没有浏览器行，说明扩展尚未加载，或指向了另一个端口。
 
 ## 连接 MCP 客户端
 
@@ -99,77 +166,75 @@ Invoke-RestMethod http://127.0.0.1:7331/health
 Windows 服务保持安装时使用 HTTP。用已安装的二进制生成配置：
 
 ```powershell
-& "$env:USERPROFILE\.corvus\bin\corvus.exe" config --transport http
+& "$env:ProgramData\Corvus\bin\corvus.exe" config --client cursor --transport http
 ```
 
-把输出的 `mcpServers` 对象粘贴到客户端配置。它指向 `http://127.0.0.1:7331/mcp`；保持服务运行。
-`--client` 接受客户端名称，并会在 stderr 追加位置提示；stdout 的 JSON 对所有客户端使用同一套 schema。
+把输出的 `mcpServers` 对象粘贴到客户端配置。它指向 `http://127.0.0.1:7331/mcp`；保持服务运行。`--client` 接受 `claude`、`cursor`、`dsh`、`cline` 或 `generic`，并在 stderr 追加位置提示。stdout 的 JSON 对所有客户端使用同一套 schema，因此重定向 stdout 得到的就是有效配置文件。
 
 ### stdio 传输
 
-只有客户端不支持 HTTP 时才使用 stdio。stdio 客户端会自行启动 `corvus.exe serve --stdio`，它需要与
-服务相同的回环端口。必须先停止服务，否则新进程会因端口被占用而失败：
+客户端自行管理进程时使用 stdio。生成的条目会启动 `corvus serve --stdio`。stdio 客户端需要与服务相同的回环端口，因此必须先停止服务，否则新进程会因端口被占用而失败：
 
 ```powershell
 Stop-Service Corvus
-& "$env:USERPROFILE\.corvus\bin\corvus.exe" config --transport stdio
+& "$env:ProgramData\Corvus\bin\corvus.exe" config --client generic --transport stdio
 ```
 
-客户端会启动该 JSON 中的命令。stdio 客户端使用期间保持服务停止；切回 HTTP 时运行
-`Start-Service Corvus`。不要在默认端口上同时运行两种传输。
+要在生成的命令中固定自定义根目录，加 `--home <dir>`；stdio 参数变为 `serve --stdio --home <dir>`。stdio 客户端使用期间保持服务停止；切回 HTTP 时运行 `Start-Service Corvus`。不要在默认端口上同时运行两种传输。
 
 ## 五分钟上手流程
 
-这是 M4 验收流程。已有准备好的 `dist/` 时可在五分钟内完成；从源码做一次全新发布构建会额外增加编译时间。
+这是 Windows 验收流程。已有准备好的 ZIP 时可在五分钟内完成；从源码做一次全新发布构建会额外增加编译时间。
 
 | 时间 | 步骤 | 命令或操作 | 成功信号 |
 |---|---|---|---|
-| 0:00 | 检查前置条件 | Windows 10/11、管理员 PowerShell、nssm、Chrome、Edge 或 Brave（Chromium 120+） | `nssm version` 输出版本 |
-| 0:30 | 构建或定位发布包 | `bash scripts/package.sh`（已有 `dist/` 则跳过） | `dist/corvusd.exe` 与 `dist/corvus.exe` 存在 |
-| 1:30 | 安装服务 | `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1` | 安装脚本以 `service is running` 结束 |
-| 2:30 | 加载扩展 | 加载已解压的扩展：`%USERPROFILE%\.corvus\extension` | 弹窗绿点亮起 |
-| 3:30 | 连接客户端 | `corvus.exe config --transport http` 并粘贴配置 | 客户端列出 Corvus 服务 |
-| 4:30 | 打开第一页 | 调用 `browser_navigate`，参数 `{"url":"https://example.com"}`，再调用 `browser_snapshot` | 快照返回页面标题与节点 |
+| 0:00 | 检查前置条件 | Windows 10/11、管理员 PowerShell、Chrome、Edge 或 Brave（Chromium 120+） | Windows 与浏览器版本受支持 |
+| 0:30 | 构建或定位发布包 | `bash scripts/package.sh`（已有 ZIP 则跳过） | `dist/corvusd.exe` 与 `dist/corvus.exe` 存在 |
+| 1:30 | 安装服务 | `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1` | 安装脚本以服务运行结束 |
+| 2:30 | 加载扩展 | 加载已解压的扩展：`%ProgramData%\Corvus\extension` | 弹窗绿点亮起 |
+| 3:30 | 连接客户端 | `corvus.exe config --client cursor --transport http` 并粘贴配置 | 客户端列出 Corvus 服务 |
+| 4:30 | 打开第一页 | 调用 `browser_navigate`，参数 `{"url":"https://example.com"}`，再调用 `page_snapshot` | 快照返回页面标题与节点 |
 
 ## 升级
 
-1. 构建或获取新的发布包。
-2. 用相同路径执行同一条安装命令。
-3. 扩展文件有变化时重新加载扩展。
-4. 运行 `doctor` 检查 `version`。
-
-```bash
-bash scripts/package.sh
-```
+需要保留录制历史时，先备份 `<root>/data/corvus.db`。然后用同样的方式安装新发布包：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
-& "$env:USERPROFILE\.corvus\bin\corvus.exe" doctor
+& "$env:ProgramData\Corvus\bin\corvus.exe" doctor
 ```
 
-安装脚本会停止服务、替换二进制与扩展、重写服务参数，然后重新启动服务。数据库与日志不会被改动。
-如果升级涉及数据库结构，先在服务停止时备份 `corvus.db` 再安装新版本。
+```bash
+sudo ./install-linux.sh
+systemctl status corvus.service
+/opt/corvus/bin/corvus doctor
+```
+
+安装脚本会停止服务、替换 `bin/` 与 `extension/`、重写服务参数，然后重新启动服务。数据库、日志与配置不会被删除。扩展文件有变化时，重新加载扩展与已打开的标签页。Docker 与 Kubernetes 升级见 [05-deployment.zh.md](05-deployment.zh.md)。
 
 ## 卸载
 
-在仓库根目录打开管理员 PowerShell：
+Windows 上在管理员 PowerShell 中执行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\uninstall-windows.ps1
 ```
 
-脚本会停止并删除 `Corvus` 服务，从安装目录移除 `corvusd.exe` 与 `corvus.exe`，并删除扩展目录。默认保留
-`corvus.db` 与日志文件。如果连数据库和日志一起删除：
+脚本会停止并删除 `Corvus` 服务，移除二进制与扩展，默认保留数据库与日志。服务删除后加 `-PurgeData` 可删除整个根目录。安装时使用了自定义值时传 `-HomeDir` 与 `-ServiceName`；`-SelfTest` 只检查路径守卫，不做任何改动。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\uninstall-windows.ps1 -PurgeData
+Linux：
+
+```bash
+sudo ./uninstall-linux.sh
+# 同时删除数据、日志与服务用户
+sudo ./uninstall-linux.sh --purge
 ```
 
-如果安装时使用了自定义布局，传入对应的 `-InstallDir`、`-DataDir`、`-ExtensionDir` 和 `-ServiceName`。
-脚本是幂等的，服务已不存在时会明确提示。空的安装目录与数据目录会保留；彻底清理磁盘时可在 purge 后手动
-删除。
+默认卸载保留 `<root>/data`、`<root>/logs` 与 `<root>/config`。`--purge` 删除整个根目录以及服务用户和组。`--self-test` 只检查路径守卫。
 
 ## 服务控制与故障排查
+
+Windows：
 
 ```powershell
 Get-Service Corvus
@@ -177,21 +242,27 @@ Restart-Service Corvus
 nssm restart Corvus
 ```
 
+Linux：
+
+```bash
+systemctl status corvus.service
+systemctl restart corvus.service
+journalctl -u corvus.service -n 100 --no-pager
+```
+
 | 现象 | 检查 | 处理 |
 |---|---|---|
-| 提示 `nssm.exe not found` | `nssm version` | 把 nssm 放入 `PATH`，或传 `-NssmPath` |
-| 服务无法启动 | `%USERPROFILE%\.corvus\corvusd.err.log` | 修正日志中的路径、端口或权限问题后重跑安装脚本 |
-| 7330 或 7331 被占用 | `netstat -ano | findstr :7330` | 停止另一个守护进程；不要同时运行服务与 stdio 模式 |
-| `doctor` 没有浏览器 | 弹窗状态、`Get-Service Corvus` | 加载或重新加载扩展；确认 WebSocket 端口为 7330 |
-| 客户端无法连接 HTTP | `Invoke-RestMethod http://127.0.0.1:7331/health` | 启动服务；使用 `127.0.0.1`，不要用局域网地址 |
-| 离线打包失败 | `bash scripts/dev-setup.sh` | 先在有网络时填充 cargo 缓存，或使用准备好的 `dist/` |
-| 脚本被执行策略拦截 | 错误文本会指出 ExecutionPolicy | 按上文使用 `-ExecutionPolicy Bypass` |
-| 提示 `missing ...corvusd.exe` | `dist/` 内容 | 先运行 `bash scripts/package.sh` |
-| 扩展重新加载或从新目录加载后，page_text/page_snapshot 返回 TIMEOUT | tab_list 仍能列出标签页；扩展卡片为绿点 | 重新加载标签页或重新打开其 URL 即可。标签页会继续运行旧扩展的内容脚本，而 tab_list 不需要内容脚本 |
+| 提示 `nssm.exe not found` | `nssm version` | 使用随包的 `bin\nssm.exe`、把 nssm 放入 `PATH`，或传 `-NssmPath` |
+| Windows 服务无法启动 | `<root>\logs\corvusd.err.log` 与 `<root>\logs\corvusd.log.YYYY-MM-DD` | 修正日志中的路径、端口或权限问题后重跑安装脚本 |
+| Linux 服务无法启动 | `systemctl status corvus.service` 与 `journalctl -u corvus.service` | 修正 unit、路径或端口问题后重跑安装脚本 |
+| 7330 或 7331 被占用 | `netstat -ano | findstr :7330` 或 `ss -ltnp | grep 733` | 停止另一个守护进程；不要同时运行服务与 stdio 模式 |
+| `doctor` 没有浏览器 | 弹窗状态、服务状态、设置页 URL | 加载或重新加载扩展；确认 WebSocket URL 与 7330 端口 |
+| 客户端无法连接 HTTP | `Invoke-RestMethod http://127.0.0.1:7331/health` 或 `curl -fsS http://127.0.0.1:7331/health` | 启动服务；使用 `127.0.0.1`，不要用局域网地址 |
+| 离线打包失败 | `bash scripts/dev-setup.sh` | 先在有网络时填充 cargo 缓存，或使用准备好的发布包 |
+| Windows 脚本被执行策略拦截 | 错误文本会指出 ExecutionPolicy | 按上文使用 `-ExecutionPolicy Bypass` |
+| 提示 `missing ...corvusd.exe` | 发布包内容 | 先运行 `bash scripts/package.sh` |
+| 扩展重新加载后，`page_text` 或 `page_snapshot` 返回 TIMEOUT | `tab_list` 仍能列出标签页；扩展卡片为绿点 | 重新加载标签页或重新打开其 URL。标签页会继续运行旧内容脚本，而 `tab_list` 不需要内容脚本 |
 
 ## 安全说明
 
-守护进程只绑定 `127.0.0.1`，没有认证层：任何能访问这些端口的本地进程都可以驱动已连接的浏览器。不要把
-7330 或 7331 暴露到回环地址之外。安装脚本按 nssm 默认账户 LocalSystem 注册服务；如果安全策略要求专用
-身份，请用 nssm 修改服务账户。数据库保存了命令、参数和结果，应把 `%USERPROFILE%\.corvus\corvus.db`
-视为敏感数据；把机器交给他人前先 purge。
+守护进程只绑定 `127.0.0.1`，没有认证层：任何能访问这些端口的本地进程都可以驱动已连接的浏览器。不要把 7330 或 7331 暴露到回环地址之外。Windows 安装脚本按 nssm 默认账户 LocalSystem 注册服务；安全策略要求专用身份时，请用 nssm 修改服务账户。根目录包含录制的命令、参数与结果，应把 `<root>/data/corvus.db` 与日志视为敏感数据，把机器交给他人前先删除。Linux 安装脚本创建专用 `corvus` 服务用户，并把 `data/`、`logs/`、`config/` 限制给该用户。

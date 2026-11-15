@@ -12,6 +12,18 @@
 | M3 Observability | Make everything reviewable | recording, trace, replay, site memory, Prometheus | any historical session replays step by step |
 | M4 Ecosystem | Make it adoptable | installers, client config generators, docs site, examples, release pipeline | a stranger completes the quick start in 5 minutes |
 
+## v1.1.0 deployment milestone
+
+v1.1.0 is a deployment slice of M4. The 32-tool surface is unchanged.
+
+| Item | Exit criterion |
+|---|---|
+| Single root | `--home <dir>` or `CORVUS_HOME` holds binaries, the database, logs, config and the extension; `doctor` reports the active database path, and `--db` still overrides it. |
+| Windows | The installer defaults to `%ProgramData%\Corvus`, migrates a 1.0.0 `%USERPROFILE%\.corvus` tree, and keeps the service on one root. |
+| Linux | The x86_64 tarball carries `install-linux.sh`, a systemd unit, upgrade/uninstall scripts and `SHA256SUMS`. |
+| Containers | The amd64 Docker image and Kubernetes manifests mount one `/data` root; CI builds and validates them. |
+| Release | 1.1.0 binaries, changelog and bilingual release notes. NFR-3 stays pending until the 72h soak report is attached; Firefox remains unsupported. |
+
 ## Suggested schedule (one main developer + AI pairing)
 
 | Week | Content |

@@ -1,7 +1,7 @@
 //! End to end tests: a fake extension speaks the wire protocol to a running
 //! daemon, and the MCP surface is driven through JSON-RPC.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -32,6 +32,16 @@ fn temporary_database() -> PathBuf {
     path
 }
 
+fn temporary_directory() -> PathBuf {
+    let directory = tempfile::Builder::new()
+        .prefix("corvus-home-")
+        .tempdir()
+        .expect("a temporary directory");
+    let path = directory.path().to_path_buf();
+    std::mem::forget(directory);
+    path
+}
+
 async fn start_daemon(default_timeout_ms: u64) -> Daemon {
     start_daemon_at(default_timeout_ms, temporary_database()).await
 }
@@ -46,6 +56,7 @@ async fn start_daemon_at(default_timeout_ms: u64, db_path: PathBuf) -> Daemon {
             ..RouterConfig::default()
         },
         db_path: Some(db_path),
+        home: None,
     })
     .await
     .expect("the daemon binds its ephemeral ports")
@@ -3098,6 +3109,229 @@ async fn stdio_cancellation_returns_minus_32800_and_keeps_serving() {
             step.tool == "browser_wait" && step.error_code.as_deref() == Some("CANCELLED")
         }),
         "the cancelled call must be recorded: {steps:?}"
+    );
+}
+
+#[tokio::test]
+async fn home_layout_owns_the_database_logs_and_doctor_report() {
+    let home = temporary_directory();
+    let daemon = Daemon::start(DaemonConfig {
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ws_port: 0,
+        http_port: 0,
+        router: RouterConfig::default(),
+        db_path: None,
+        home: Some(home.clone()),
+    })
+    .await
+    .expect("the daemon starts on the configured home");
+    assert_eq!(daemon.home().root(), home.as_path());
+    let database = home.join("data").join("corvus.db");
+    assert_eq!(daemon.db_path(), database.as_path());
+    assert!(database.exists(), "the database lives under the home");
+    assert!(home.join("logs").is_dir());
+    assert!(home.join("config").is_dir());
+    assert!(!home.join("bin").exists());
+    assert!(!home.join("extension").exists());
+
+    let report = corvusd::doctor::inspect_with_home(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        daemon.ws_addr().port(),
+        daemon.http_addr().port(),
+        None,
+        Some(home.clone()),
+    )
+    .await;
+    assert!(report.daemon_running());
+    assert_eq!(report.db_path, database);
+    daemon.shutdown().await;
+
+    let explicit = temporary_database();
+    let daemon = Daemon::start(DaemonConfig {
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ws_port: 0,
+        http_port: 0,
+        router: RouterConfig::default(),
+        db_path: Some(explicit.clone()),
+        home: Some(home),
+    })
+    .await
+    .expect("the daemon starts with an explicit database");
+    assert_eq!(
+        daemon.db_path(),
+        explicit.as_path(),
+        "an explicit database wins over the home"
+    );
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn corvusd_serve_writes_home_database_and_daily_log_to_a_clean_stdout() {
+    let home = temporary_directory();
+    let ws_port = free_port();
+    let mut http_port = free_port();
+    while http_port == ws_port {
+        http_port = free_port();
+    }
+    let child = Command::new(env!("CARGO_BIN_EXE_corvusd"))
+        .arg("serve")
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .arg("--ws-port")
+        .arg(ws_port.to_string())
+        .arg("--http-port")
+        .arg(http_port.to_string())
+        .arg("--home")
+        .arg(&home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn corvusd");
+    let mut child = ChildGuard(child);
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ws_port);
+    wait_for_listener(&mut child, addr).await;
+
+    let database = home.join("data").join("corvus.db");
+    assert!(database.exists(), "expected the database at {database:?}");
+    let logs = home.join("logs");
+    assert!(logs.is_dir(), "expected the logs directory at {logs:?}");
+    let mut daily_log = false;
+    for _ in 0..60 {
+        if std::fs::read_dir(&logs)
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("corvusd.log")
+                })
+            })
+            .unwrap_or(false)
+        {
+            daily_log = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(daily_log, "expected a daily corvusd.log file in {logs:?}");
+
+    let _ = child.0.kill();
+    let _ = child.0.wait();
+    let mut stdout = String::new();
+    if let Some(mut handle) = child.0.stdout.take() {
+        handle
+            .read_to_string(&mut stdout)
+            .expect("read the daemon stdout");
+    }
+    assert!(
+        stdout.trim().is_empty(),
+        "daemon stdout must stay clean: {stdout:?}"
+    );
+}
+
+async fn wait_for_listener(child: &mut ChildGuard, addr: SocketAddr) {
+    for _ in 0..100 {
+        if let Ok(Some(status)) = child.0.try_wait() {
+            panic!("corvusd exited before listening: {status}");
+        }
+        if std::net::TcpStream::connect(addr).is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("corvusd never listened on {addr}");
+}
+
+#[tokio::test]
+async fn corvusd_log_file_flags_override_or_disable_the_home_log() {
+    let home = temporary_directory();
+    let custom = home.join("logs").join("custom-entry.log");
+    let ws_port = free_port();
+    let mut http_port = free_port();
+    while http_port == ws_port {
+        http_port = free_port();
+    }
+    let child = Command::new(env!("CARGO_BIN_EXE_corvusd"))
+        .arg("serve")
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .arg("--ws-port")
+        .arg(ws_port.to_string())
+        .arg("--http-port")
+        .arg(http_port.to_string())
+        .arg("--home")
+        .arg(&home)
+        .arg("--log-file")
+        .arg(&custom)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn corvusd");
+    let mut child = ChildGuard(child);
+    wait_for_listener(
+        &mut child,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ws_port),
+    )
+    .await;
+    let mut custom_log = false;
+    for _ in 0..60 {
+        if std::fs::read_dir(home.join("logs"))
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("custom-entry.log")
+                })
+            })
+            .unwrap_or(false)
+        {
+            custom_log = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(custom_log, "the log-file override was not used");
+    let _ = child.0.kill();
+    let _ = child.0.wait();
+
+    let quiet_home = temporary_directory();
+    let ws_port = free_port();
+    let mut http_port = free_port();
+    while http_port == ws_port {
+        http_port = free_port();
+    }
+    let child = Command::new(env!("CARGO_BIN_EXE_corvusd"))
+        .arg("serve")
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .arg("--ws-port")
+        .arg(ws_port.to_string())
+        .arg("--http-port")
+        .arg(http_port.to_string())
+        .arg("--home")
+        .arg(&quiet_home)
+        .arg("--no-log-file")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn corvusd without a log file");
+    let mut child = ChildGuard(child);
+    wait_for_listener(
+        &mut child,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ws_port),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let log_entries = std::fs::read_dir(quiet_home.join("logs"))
+        .map(|entries| entries.flatten().count())
+        .unwrap_or(0);
+    assert_eq!(
+        log_entries, 0,
+        "no log file is created when file logging is disabled"
     );
 }
 
