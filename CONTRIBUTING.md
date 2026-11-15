@@ -55,6 +55,7 @@ accepted under the same license.
 ### 5. Review checklist
 
 - [ ] commit message follows section 1
+- [ ] `node scripts/check-cot.mjs` passes; the diff and the commit message carry no reasoning text
 - [ ] `cargo fmt` / `clippy` / `test` green
 - [ ] new or changed behaviour is covered by tests
 - [ ] both language editions updated
@@ -106,7 +107,7 @@ Corvus 以公开源码、允许非商业使用的方式开放（见 `LICENSE`）
 ### 4. 文档双语
 
 - 每份文档必须在同一提交里同时提供英文版（`name.md`）与中文版（`name.zh.md`），规则见
-  [docs/LANGUAGE.md](docs/LANGUAGE.md)。第 5 节规定写作规则：不写推理过程，不写填充词。
+  [docs/LANGUAGE.md](docs/LANGUAGE.md)。第 5 节规定写作规则：不写推理过程，不写填充词；`scripts/check-cot.mjs` 在 CI 中机械校验。 <!-- cot-gate: allow -->
 - 缺一版视为未完成：要么两版一起交，要么把缺口登记到 [docs/README.md](docs/README.md) 的状态表里标 `pending`。
 - 文档以产品自身口吻书写：描述 Corvus 是什么、怎么做，不与他人产品做对照。
 - 每份文档开头说明读者与目的；术语与协议字段以 `docs/02-architecture.md` 为准。
@@ -117,6 +118,7 @@ Corvus 以公开源码、允许非商业使用的方式开放（见 `LICENSE`）
 提交 PR 前自查：
 
 - [ ] 提交信息符合第 1 节
+- [ ] `node scripts/check-cot.mjs` 通过，差异与提交信息中无推理文本
 - [ ] `cargo fmt` / `clippy` / `test` 全绿
 - [ ] 新增或修改的行为有测试覆盖
 - [ ] 中英两版都已更新

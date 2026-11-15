@@ -3,7 +3,8 @@
 // QA test code only. It does not import product modules.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { testTmpRoot } from "../lib/tmp.mjs";
 
 const PROTO = "2025-06-18";
 const NFR_GROWTH_BYTES = 50 * 1024 * 1024;
@@ -574,8 +575,8 @@ async function main() {
 const raw = parseArgs(process.argv.slice(2));
 const live = Boolean(raw.live);
 const defaultEvidence = live
-  ? resolve(process.env.TEMP || process.env.TMP || "/tmp", "corvus-nfr3-live")
-  : resolve(process.env.TEMP || process.env.TMP || "/tmp", "corvus-nfr3-soak");
+  ? join(testTmpRoot(), "corvus-nfr3-live")
+  : join(testTmpRoot(), "corvus-nfr3-soak");
 opts = {
   mcpUrl: raw["mcp-url"] || (live ? "http://127.0.0.1:7331/mcp" : "http://127.0.0.1:29431/mcp"),
   healthUrl: raw["health-url"] || null,

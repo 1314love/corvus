@@ -42,8 +42,12 @@ merged, but the index must show it as `pending`, and the gap must be closed befo
 
 Applies to documents, comments, commit messages and release notes. 适用于文档、注释、提交信息与发布说明。
 
-- No chain of thought. State the decision, the result and the evidence; never the deliberation behind them.
-  不写思考过程：只写结论、结果与证据。
+- No chain of thought. State the decision, the result and the evidence; never the deliberation behind them. <!-- cot-gate: allow -->
+  不写思考过程：只写结论、结果与证据。 <!-- cot-gate: allow -->
+- Enforced mechanically, not by review alone: `node scripts/check-cot.mjs` scans every tracked file and the commits of a
+  change, and CI fails on a hit. A line that quotes this rule ends with `cot-gate: allow`, which exempts it.
+  由脚本强制执行：`node scripts/check-cot.mjs` 扫描全部仓库文件与本次变更的提交，命中即失败；引用本条规则的行以
+  `cot-gate: allow` 结尾即豁免。
 - One idea per sentence. Delete a sentence whose content the table above already states.
   一句一个意思；表格已说明的内容不再复述。
 - Cut lead-ins and filler: "This section covers", "Note that", "simply", "basically",

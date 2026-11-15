@@ -20,9 +20,10 @@ if [ -z "$CARGO" ]; then
   fi
 fi
 
-TMPBASE=$TMPDIR
-[ -n "$TMPBASE" ] || TMPBASE=/tmp
-TMP=$(mktemp -d "$TMPBASE/corvus-perf.XXXXXX") || exit 1
+# shellcheck source=../lib/tmp.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/tmp.sh"
+TMPROOT=$(corvus_tmp_root) || exit 1
+TMP=$(mktemp -d "$TMPROOT/corvus-perf.XXXXXX") || exit 1
 EVID=$TMP/evidence
 mkdir -p "$EVID" || exit 1
 

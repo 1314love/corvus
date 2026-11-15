@@ -23,6 +23,7 @@ Crates, directories and user-visible behaviour touched. Breaking changes and the
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+node scripts/check-cot.mjs
 ```
 
 Paste the summary lines and any failure. 贴汇总行与失败信息，不要贴整份日志。
@@ -36,6 +37,7 @@ Paste the summary lines and any failure. 贴汇总行与失败信息，不要贴
 ## Checklist / 检查
 
 - [ ] Commit message states the change only; 提交信息只写变更结论
+- [ ] No reasoning text in the diff or the commit message; 差异与提交信息中无推理文本
 - [ ] No tokens, cookies, personal paths or customer names; 无令牌、Cookie、个人路径、客户名
 - [ ] New dependencies justified in the summary; 新依赖在摘要里说明理由
 - [ ] Scripts and commands run end to end; 脚本与命令实际跑通

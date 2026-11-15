@@ -154,6 +154,24 @@ pub(crate) struct Snapshot {
     pub nodes: Vec<Value>,
 }
 
+/// One frame document and its accessibility payload.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameInput<'a> {
+    /// Frame path: empty for the top document, `f0` for the first child and
+    /// `f0.0` for its first child.
+    pub path: &'a str,
+    /// Accessibility tree for this frame.
+    pub ax: &'a Value,
+    /// Matching `DOMSnapshot` document, when the frame has one.
+    pub document: Option<&'a Value>,
+    /// Root `DOMSnapshot.strings` array used to decode node names and frame ids.
+    pub strings: Option<&'a [Value]>,
+    /// Top-viewport coordinate of this frame document's origin.
+    pub origin: (f64, f64),
+    /// Scroll offset of this frame document.
+    pub scroll: (f64, f64),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Element,
@@ -170,6 +188,7 @@ struct Entry {
     value: Option<String>,
     states: Vec<&'static str>,
     bbox: Option<BBox>,
+    frame: String,
     depth: usize,
     interactive: bool,
 }
@@ -204,14 +223,46 @@ const SKIPPED_FULL_ROLES: &[&str] = &[
     "statictext",
 ];
 
-/// Build a compact or JSON snapshot result.
+/// Build a compact or JSON snapshot result for the top document only.
 pub(crate) fn render(
     ax: &Value,
     dom: &Value,
     page: &PageInfo,
     options: &Options,
 ) -> Result<Snapshot, CdpError> {
-    let entries = collect_entries(ax, dom, &page.viewport);
+    let document = dom.pointer("/documents/0");
+    let strings = dom
+        .pointer("/strings")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice);
+    let frame = FrameInput {
+        path: "",
+        ax,
+        document,
+        strings,
+        origin: (0.0, 0.0),
+        scroll: (page.viewport.scroll_x, page.viewport.scroll_y),
+    };
+    render_frames(&[frame], page, options)
+}
+
+/// Build a compact or JSON snapshot from one or more frame documents.
+pub(crate) fn render_frames(
+    frames: &[FrameInput<'_>],
+    page: &PageInfo,
+    options: &Options,
+) -> Result<Snapshot, CdpError> {
+    let mut entries = Vec::new();
+    for frame in frames {
+        entries.extend(collect_frame_entries(
+            frame.ax,
+            frame.document,
+            frame.strings,
+            frame.path,
+            frame.origin,
+            frame.scroll,
+        ));
+    }
     let mut selected = Vec::new();
     let mut truncated = false;
     for entry in entries {
@@ -266,7 +317,7 @@ fn include_entry(entry: &Entry, options: &Options) -> bool {
 }
 
 fn compact_line(entry: &Entry, include_bbox: bool) -> String {
-    match entry.kind {
+    let mut line = match entry.kind {
         Kind::Text => {
             let text = truncate_chars(&clean_text(&entry.name), 240);
             format!("# \"{}\"", escape(&text))
@@ -298,7 +349,11 @@ fn compact_line(entry: &Entry, include_bbox: bool) -> String {
             }
             line
         }
+    };
+    if !entry.frame.is_empty() {
+        line.push_str(&format!(" frame=\"{}\"", entry.frame));
     }
+    line
 }
 
 fn json_node(entry: &Entry, include_bbox: bool) -> Value {
@@ -319,6 +374,9 @@ fn json_node(entry: &Entry, include_bbox: bool) -> Value {
         if let Some(bbox) = entry.bbox {
             node["bbox"] = bbox.as_json();
         }
+    }
+    if !entry.frame.is_empty() {
+        node["frame"] = json!(entry.frame);
     }
     node
 }
@@ -483,6 +541,7 @@ fn walk<'a>(
                     value: None,
                     states: Vec::new(),
                     bbox,
+                    frame: String::new(),
                     depth,
                     interactive: false,
                 });
@@ -497,6 +556,7 @@ fn walk<'a>(
                 value,
                 states,
                 bbox,
+                frame: String::new(),
                 depth,
                 interactive,
             });
@@ -518,6 +578,247 @@ fn walk<'a>(
                 );
             }
         }
+    }
+}
+
+fn collect_frame_entries(
+    ax: &Value,
+    document: Option<&Value>,
+    strings: Option<&[Value]>,
+    frame: &str,
+    origin: (f64, f64),
+    scroll: (f64, f64),
+) -> Vec<Entry> {
+    let layout = layout_map(document, strings);
+    let Some(nodes) = ax.get("nodes").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut by_id: HashMap<&str, &Value> = HashMap::new();
+    let mut parent_of: HashMap<&str, &str> = HashMap::new();
+    for node in nodes {
+        let Some(id) = node.get("nodeId").and_then(Value::as_str) else {
+            continue;
+        };
+        by_id.insert(id, node);
+        if let Some(parent) = node.get("parentId").and_then(Value::as_str) {
+            parent_of.insert(id, parent);
+        }
+    }
+    let mut entries = Vec::new();
+    let mut visited = HashSet::new();
+    for node in nodes {
+        let Some(id) = node.get("nodeId").and_then(Value::as_str) else {
+            continue;
+        };
+        if parent_of.contains_key(id) {
+            continue;
+        }
+        walk_frame(
+            id,
+            0,
+            &by_id,
+            &layout,
+            frame,
+            origin,
+            scroll,
+            &mut visited,
+            &mut entries,
+        );
+    }
+    for node in nodes {
+        let Some(id) = node.get("nodeId").and_then(Value::as_str) else {
+            continue;
+        };
+        if !visited.contains(id) {
+            walk_frame(
+                id,
+                0,
+                &by_id,
+                &layout,
+                frame,
+                origin,
+                scroll,
+                &mut visited,
+                &mut entries,
+            );
+        }
+    }
+    entries
+}
+
+fn layout_map(
+    document: Option<&Value>,
+    strings: Option<&[Value]>,
+) -> HashMap<i64, (String, Option<[f64; 4]>)> {
+    let Some(document) = document else {
+        return HashMap::new();
+    };
+    let Some(backend) = document
+        .pointer("/nodes/backendNodeId")
+        .and_then(Value::as_array)
+    else {
+        return HashMap::new();
+    };
+    let Some(names) = document
+        .pointer("/nodes/nodeName")
+        .and_then(Value::as_array)
+    else {
+        return HashMap::new();
+    };
+    let Some(node_index) = document
+        .pointer("/layout/nodeIndex")
+        .and_then(Value::as_array)
+    else {
+        return HashMap::new();
+    };
+    let Some(bounds) = document.pointer("/layout/bounds").and_then(Value::as_array) else {
+        return HashMap::new();
+    };
+    let mut by_node_index: HashMap<i64, [f64; 4]> = HashMap::new();
+    for (position, index) in node_index.iter().enumerate() {
+        let Some(index) = index.as_i64() else {
+            continue;
+        };
+        let Some(bounds) = bounds.get(position).and_then(parse_bounds) else {
+            continue;
+        };
+        by_node_index.insert(index, bounds);
+    }
+    let mut map: HashMap<i64, (String, Option<[f64; 4]>)> = HashMap::new();
+    for (position, backend) in backend.iter().enumerate() {
+        let Some(backend) = backend.as_i64() else {
+            continue;
+        };
+        let tag = names
+            .get(position)
+            .and_then(Value::as_u64)
+            .and_then(|index| strings.and_then(|strings| strings.get(index as usize)))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let bounds = by_node_index.get(&(position as i64)).copied();
+        map.insert(backend, (tag, bounds));
+    }
+    map
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_frame<'a>(
+    id: &'a str,
+    depth: usize,
+    by_id: &HashMap<&'a str, &'a Value>,
+    layout: &HashMap<i64, (String, Option<[f64; 4]>)>,
+    frame: &str,
+    origin: (f64, f64),
+    scroll: (f64, f64),
+    visited: &mut HashSet<&'a str>,
+    entries: &mut Vec<Entry>,
+) {
+    if depth > 128 || !visited.insert(id) {
+        return;
+    }
+    let Some(node) = by_id.get(id) else { return };
+    let ignored = node
+        .get("ignored")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let role = node
+        .pointer("/role/value")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let name = node
+        .pointer("/name/value")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let value = node
+        .pointer("/value/value")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let backend_id = node
+        .get("backendDOMNodeId")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let (tag, bounds) = layout
+        .get(&backend_id)
+        .cloned()
+        .unwrap_or_else(|| (String::new(), None));
+    let bbox = bounds.map(|bounds| project_bounds(bounds, origin, scroll));
+    let states = read_states(node);
+    let focusable = read_boolean_property(node, "focusable");
+    let role_lower = role.to_ascii_lowercase();
+    let interactive = role_lower != "rootwebarea"
+        && (INTERACTIVE_ROLES.contains(&role_lower.as_str()) || focusable);
+    let tag = if tag.is_empty() {
+        match role_lower.as_str() {
+            "statictext" => "text".to_string(),
+            "rootwebarea" => "html".to_string(),
+            other => other.to_string(),
+        }
+    } else {
+        tag
+    };
+    if !ignored && backend_id > 0 {
+        if role_lower == "statictext" || tag == "#text" {
+            if !name.is_empty() {
+                entries.push(Entry {
+                    kind: Kind::Text,
+                    backend_id,
+                    tag: "text".to_string(),
+                    role: "text".to_string(),
+                    name,
+                    value: None,
+                    states: Vec::new(),
+                    bbox,
+                    frame: frame.to_string(),
+                    depth,
+                    interactive: false,
+                });
+            }
+        } else {
+            entries.push(Entry {
+                kind: Kind::Element,
+                backend_id,
+                tag,
+                role,
+                name,
+                value,
+                states,
+                bbox,
+                frame: frame.to_string(),
+                depth,
+                interactive,
+            });
+        }
+    }
+    let children = node.get("childIds").and_then(Value::as_array);
+    if let Some(children) = children {
+        let child_depth = if ignored { depth } else { depth + 1 };
+        for child in children {
+            if let Some(child) = child.as_str() {
+                walk_frame(
+                    child,
+                    child_depth,
+                    by_id,
+                    layout,
+                    frame,
+                    origin,
+                    scroll,
+                    visited,
+                    entries,
+                );
+            }
+        }
+    }
+}
+
+fn project_bounds(bounds: [f64; 4], origin: (f64, f64), scroll: (f64, f64)) -> BBox {
+    BBox {
+        x: (bounds[0] - scroll.0 + origin.0).round() as i64,
+        y: (bounds[1] - scroll.1 + origin.1).round() as i64,
+        width: bounds[2].round() as i64,
+        height: bounds[3].round() as i64,
     }
 }
 
@@ -959,5 +1260,202 @@ mod tests {
         let (regex, _) = find(&ax, &dom, "Do", None, true, 20).expect("regex");
         assert_eq!(regex[0].reference, "@c16");
         assert!(find(&ax, &dom, "(", None, true, 20).is_err());
+    }
+
+    fn child_frame() -> (Value, Value, Vec<Value>) {
+        let ax = json!({
+            "nodes": [
+                { "nodeId": "c1", "role": { "value": "button" }, "name": { "value": "Child" },
+                  "backendDOMNodeId": 21 },
+                { "nodeId": "c2", "role": { "value": "StaticText" }, "name": { "value": "Nested text" },
+                  "backendDOMNodeId": 22 }
+            ]
+        });
+        let dom = json!({
+            "nodes": { "backendNodeId": [21, 22], "nodeName": [1, 2] },
+            "layout": {
+                "nodeIndex": [0, 1],
+                "bounds": [[5.0, 7.0, 30.0, 10.0], [8.0, 20.0, 60.0, 12.0]]
+            },
+            "scrollOffsetX": 3.0,
+            "scrollOffsetY": 4.0
+        });
+        let strings = vec![json!("#document"), json!("button"), json!("#text")];
+        (ax, dom, strings)
+    }
+
+    #[test]
+    fn frame_lines_use_owner_origin_and_frame_scroll() {
+        let (ax, dom) = fixture();
+        let top_document = dom.pointer("/documents/0").expect("top document");
+        let top_strings = top_document
+            .pointer("/strings")
+            .and_then(Value::as_array)
+            .expect("top strings");
+        let (child_ax, child_dom, child_strings) = child_frame();
+        let frames = [
+            FrameInput {
+                path: "",
+                ax: &ax,
+                document: Some(top_document),
+                strings: Some(top_strings),
+                origin: (0.0, 0.0),
+                scroll: (0.0, 500.0),
+            },
+            FrameInput {
+                path: "f0",
+                ax: &child_ax,
+                document: Some(&child_dom),
+                strings: Some(&child_strings),
+                origin: (50.0, 60.0),
+                scroll: (3.0, 4.0),
+            },
+        ];
+        let snapshot = render_frames(
+            &frames,
+            &page(),
+            &Options {
+                include_bbox: true,
+                ..Options::default()
+            },
+        )
+        .expect("snapshot");
+        assert!(snapshot.text.contains("@c13 button \"Go\""));
+        assert!(snapshot.text.contains("bbox=40,700,100,40"));
+        assert!(snapshot
+            .text
+            .contains("@c21 button \"Child\" bbox=52,63,30,10 frame=\"f0\""));
+        assert!(!snapshot.text.contains("frame=\"\""));
+    }
+
+    #[test]
+    fn frame_text_lines_carry_the_frame_suffix() {
+        let (ax, dom) = fixture();
+        let top_document = dom.pointer("/documents/0").expect("top document");
+        let top_strings = top_document
+            .pointer("/strings")
+            .and_then(Value::as_array)
+            .expect("top strings");
+        let (child_ax, child_dom, child_strings) = child_frame();
+        let frames = [
+            FrameInput {
+                path: "",
+                ax: &ax,
+                document: Some(top_document),
+                strings: Some(top_strings),
+                origin: (0.0, 0.0),
+                scroll: (0.0, 500.0),
+            },
+            FrameInput {
+                path: "f0",
+                ax: &child_ax,
+                document: Some(&child_dom),
+                strings: Some(&child_strings),
+                origin: (50.0, 60.0),
+                scroll: (3.0, 4.0),
+            },
+        ];
+        let snapshot = render_frames(
+            &frames,
+            &page(),
+            &Options {
+                mode: Mode::Full,
+                ..Options::default()
+            },
+        )
+        .expect("snapshot");
+        assert!(snapshot.text.contains("# \"Nested text\" frame=\"f0\""));
+    }
+
+    #[test]
+    fn json_nodes_only_carry_non_empty_frame_paths() {
+        let (ax, dom) = fixture();
+        let top_document = dom.pointer("/documents/0").expect("top document");
+        let top_strings = top_document
+            .pointer("/strings")
+            .and_then(Value::as_array)
+            .expect("top strings");
+        let (child_ax, child_dom, child_strings) = child_frame();
+        let frames = [
+            FrameInput {
+                path: "",
+                ax: &ax,
+                document: Some(top_document),
+                strings: Some(top_strings),
+                origin: (0.0, 0.0),
+                scroll: (0.0, 500.0),
+            },
+            FrameInput {
+                path: "f0",
+                ax: &child_ax,
+                document: Some(&child_dom),
+                strings: Some(&child_strings),
+                origin: (50.0, 60.0),
+                scroll: (3.0, 4.0),
+            },
+        ];
+        let snapshot = render_frames(
+            &frames,
+            &page(),
+            &Options {
+                format: Format::Json,
+                ..Options::default()
+            },
+        )
+        .expect("snapshot");
+        let top = snapshot
+            .nodes
+            .iter()
+            .find(|node| node["ref"] == "@c13")
+            .expect("top node");
+        assert!(top.get("frame").is_none());
+        let child = snapshot
+            .nodes
+            .iter()
+            .find(|node| node["ref"] == "@c21")
+            .expect("child node");
+        assert_eq!(child["frame"], "f0");
+    }
+
+    #[test]
+    fn frame_truncation_is_global_across_documents() {
+        let (ax, dom) = fixture();
+        let top_document = dom.pointer("/documents/0").expect("top document");
+        let top_strings = top_document
+            .pointer("/strings")
+            .and_then(Value::as_array)
+            .expect("top strings");
+        let (child_ax, child_dom, child_strings) = child_frame();
+        let frames = [
+            FrameInput {
+                path: "",
+                ax: &ax,
+                document: Some(top_document),
+                strings: Some(top_strings),
+                origin: (0.0, 0.0),
+                scroll: (0.0, 500.0),
+            },
+            FrameInput {
+                path: "f0",
+                ax: &child_ax,
+                document: Some(&child_dom),
+                strings: Some(&child_strings),
+                origin: (50.0, 60.0),
+                scroll: (3.0, 4.0),
+            },
+        ];
+        let snapshot = render_frames(
+            &frames,
+            &page(),
+            &Options {
+                max_nodes: 1,
+                ..Options::default()
+            },
+        )
+        .expect("snapshot");
+        assert_eq!(snapshot.node_count, 1);
+        assert!(snapshot.truncated);
+        assert!(snapshot.text.contains("@c13 button \"Go\""));
+        assert!(!snapshot.text.contains("@c21"));
     }
 }

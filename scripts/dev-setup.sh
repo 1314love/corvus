@@ -24,8 +24,6 @@ find_cargo() {
     local candidates=(
         "${CARGO_HOME:-}/bin/cargo.exe"
         "${HOME:-}/.cargo/bin/cargo.exe"
-        "/c/Users/Administrator/.cargo/bin/cargo.exe"
-        "C:/Users/Administrator/.cargo/bin/cargo.exe"
         "${CARGO_HOME:-}/bin/cargo"
         "${HOME:-}/.cargo/bin/cargo"
     )
@@ -63,8 +61,7 @@ echo "================"
 if ! cargo_bin="$(find_cargo)"; then
     echo "error: cargo was not found." >&2
     echo "Install the Rust toolchain (https://rustup.rs) or put cargo on PATH." >&2
-    echo "On this machine cargo lives at C:/Users/Administrator/.cargo/bin/cargo.exe;" >&2
-    echo "the script checks that location directly." >&2
+    echo "The script also checks \$CARGO_HOME/bin and \$HOME/.cargo/bin." >&2
     exit 1
 fi
 

@@ -1,4 +1,4 @@
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, cp, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const source = resolve(process.cwd(), 'manifest.json');
@@ -7,4 +7,5 @@ const output = resolve(outputDir, 'manifest.json');
 
 await mkdir(outputDir, { recursive: true });
 await copyFile(source, output);
-console.log('manifest copied to', output);
+await cp(resolve(process.cwd(), '_locales'), resolve(outputDir, '_locales'), { recursive: true });
+console.log('manifest and _locales copied to', outputDir);

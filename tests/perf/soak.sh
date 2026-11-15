@@ -26,7 +26,9 @@ to_win() {
   fi
 }
 
-TMPBASE=${TMPDIR:-/tmp}
+# shellcheck source=../lib/tmp.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/tmp.sh"
+TMPBASE=$(corvus_tmp_root) || exit 1
 LIVE=${SOAK_LIVE:-0}
 WS_PORT=${SOAK_WS_PORT:-29430}
 HTTP_PORT=${SOAK_HTTP_PORT:-$((WS_PORT + 1))}

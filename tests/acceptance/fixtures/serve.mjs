@@ -23,6 +23,13 @@ const routes = new Map([
   ["/m2-csp.html", fixture("m2-csp.html")],
   ["/m2b", fixture("m2b-page.html")],
   ["/m2b.html", fixture("m2b-page.html")],
+  ["/frames", fixture("frames-page.html")],
+  ["/frames.html", fixture("frames-page.html")],
+  ["/frames-child.html", fixture("frames-child.html")],
+  ["/frames-grandchild.html", fixture("frames-grandchild.html")],
+  ["/frames-cross.html", fixture("frames-cross.html")],
+  ["/diff", fixture("diff-page.html")],
+  ["/diff.html", fixture("diff-page.html")],
 ]);
 
 const cspPaths = new Set(["/m2-csp", "/m2-csp.html"]);

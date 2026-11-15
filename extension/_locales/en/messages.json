@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "Corvus",
+    "description": "Extension name."
+  },
+  "extDescription": {
+    "message": "Local bridge between the Corvus daemon and this browser.",
+    "description": "Extension description."
+  },
+  "actionTitle": {
+    "message": "Corvus",
+    "description": "Toolbar action title."
+  }
+}

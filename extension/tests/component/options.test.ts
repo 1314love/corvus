@@ -2,9 +2,11 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia } from 'pinia';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import OptionsApp from '../../src/ui/options/App.vue';
-import { installFakeUiPort, sampleState } from '../helpers/ui-port';
+import { applyLocale, i18n, LOCALE_STORAGE_KEY } from '../../src/ui/shared/i18n';
+import { installFakeChromeStorage, installFakeUiPort, sampleState } from '../helpers/ui-port';
 
 afterEach(() => {
+  applyLocale('en');
   vi.unstubAllGlobals();
 });
 
@@ -16,8 +18,10 @@ describe('options component', () => {
       }
       return { ok: true, state: sampleState() };
     });
+    installFakeChromeStorage();
+    applyLocale('en');
 
-    const wrapper = mount(OptionsApp, { global: { plugins: [createPinia()] } });
+    const wrapper = mount(OptionsApp, { global: { plugins: [createPinia(), i18n] } });
     await flushPromises();
     await wrapper.vm.$nextTick();
 
@@ -39,6 +43,40 @@ describe('options component', () => {
     expect(saved).toBeDefined();
     expect(saved?.payload.url).toBe('ws://127.0.0.1:29331');
     expect(wrapper.text()).toContain('Saved. Reconnecting...');
+    wrapper.unmount();
+  });
+
+  it('switches locale reactively and persists the explicit choice', async () => {
+    installFakeUiPort(() => ({ ok: true, state: sampleState() }));
+    const storage = installFakeChromeStorage();
+    applyLocale('en');
+
+    const wrapper = mount(OptionsApp, { global: { plugins: [createPinia(), i18n] } });
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('Daemon connection');
+    expect(document.documentElement.lang).toBe('en');
+
+    const chinese = wrapper.findAll('button').find((button) => button.text() === '中文');
+    expect(chinese).toBeDefined();
+    await chinese?.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('守护进程连接');
+    expect(wrapper.text()).toContain('浏览器 CDP 端点');
+    expect(wrapper.text()).not.toContain('Daemon connection');
+    expect(document.documentElement.lang).toBe('zh-CN');
+    expect(storage.values[LOCALE_STORAGE_KEY]).toBe('zh-CN');
+
+    const english = wrapper.findAll('button').find((button) => button.text() === 'English');
+    expect(english).toBeDefined();
+    await english?.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Daemon connection');
+    expect(document.documentElement.lang).toBe('en');
+    expect(storage.values[LOCALE_STORAGE_KEY]).toBe('en');
     wrapper.unmount();
   });
 });

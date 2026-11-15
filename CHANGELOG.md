@@ -6,6 +6,24 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
+## 1.5.0 - Unreleased
+
+Unreleased work in the tree. The MCP surface is unchanged at 43 tools in nine categories. Version metadata now reports 1.5.0; QA acceptance and Windows installer acceptance PASS are recorded on a dirty tree, but no 1.5.0 tag or CI run exists and the local installer ZIP is not a published asset.
+
+### Added
+
+- `page_snapshot` perception v2: open shadow roots and same-origin child frames, document-order frame paths (`f0`, `f0.0`, `f1`), a `frames` summary with `cross_origin`, `unavailable` and `geometry_unavailable` skip reasons, one global `max_nodes` budget, and boxes projected into the top viewport. Cross-origin frame DOM is never read.
+- Compact snapshot diffs: `diff` defaults to false and is compact-only; passing it with JSON is typed `BAD_ARGS`. A 64-entry application-layer LRU keyed by browser, session and tab adds `baseline`, `unchanged`, `changed`, `added` and `removed`, using two-space, `+ `, `~ ` and appended `- ` markers. A non-diff compact request refreshes the baseline; diff and JSON requests do not.
+- Extension internationalization: vue-i18n with English and zh-CN catalogs, locale detection from `chrome.i18n.getUILanguage()`/`navigator.language`, persistence under `corvus.locale`, reactive switching without a reload, `document.documentElement.lang`, and MV3 `_locales`.
+
+### Changed
+
+- The extension build now contains 14 files including the two locale catalogs; the extension gate measures 41 Vitest tests in eight files and isolated Playwright 1/1.
+- Windows installer acceptance passed 98 checks and observations with 0 failures on the local ZIP; that local artifact is not the CI rebuild.
+- `browser_batch` shares the application-layer snapshot path, so a `page_snapshot` step receives the same diff treatment exactly once.
+- The 43-tool MCP catalogue, nine categories, compact envelope and `browser_batch` surface are unchanged.
+- The rule against reasoning text is now enforced in CI by `scripts/check-cot.mjs`, which scans tracked files and pull request commit messages and fails on a hit.
+
 ## 1.4.0 - 2026-11-15
 
 Structural release. The MCP surface stays at 43 tools with the same compact envelope and `browser_batch`; the backend moves to ports and adapters, a REST `/api/v1` surface is added, recording moves to SeaORM migrations, and the extension is rebuilt from TypeScript and Vue 3 sources.
@@ -189,6 +207,24 @@ First public release.
 ---
 
 ## 中文
+
+## 1.5.0 - 未发布
+
+工作树中的未发布工作。MCP 面保持 43 个工具、九个类别不变。版本元数据现为 1.5.0；QA 验收与 Windows 安装包验收已在脏工作树上 PASS，但不存在 1.5.0 标签或 CI 运行，本地安装包 ZIP 也不是已发布产物。
+
+### 新增
+
+- `page_snapshot` 感知 v2：开放 shadow root 与同源子 frame、文档顺序 frame 路径（`f0`、`f0.0`、`f1`）、带 `cross_origin`、`unavailable`、`geometry_unavailable` 跳过原因的 `frames` 摘要、全局 `max_nodes` 预算，以及投影到顶层视口的包围盒。跨源 frame 的 DOM 永不读取。
+- 紧凑快照差异：`diff` 默认 false，仅用于紧凑输出；与 JSON 同时使用返回类型化 `BAD_ARGS`。应用层按浏览器、会话与标签页为键的 64 项 LRU 增加 `baseline`、`unchanged`、`changed`、`added`、`removed`，使用两个空格、`+ `、`~ ` 与追加的 `- ` 标记。非差异紧凑请求刷新基线；差异与 JSON 请求不刷新。
+- 扩展国际化：vue-i18n、英文与 zh-CN 目录、从 `chrome.i18n.getUILanguage()`/`navigator.language` 检测语言、`corvus.locale` 持久化、无需刷新的响应式切换、`document.documentElement.lang`，以及 MV3 `_locales`。
+
+### 变更
+
+- 扩展构建现在包含 14 个文件，其中包括两份语言目录；扩展门禁实测 8 个文件中的 41 个 Vitest 测试与隔离 Playwright 1/1。
+- Windows 安装包验收在本地 ZIP 上通过 98 项检查与观察、0 失败；该本地产物不是 CI 重建产物。
+- `browser_batch` 共用应用层快照路径，因此 `page_snapshot` 步骤只按同一差异规则处理一次。
+- 43 工具 MCP 目录、九个类别、紧凑信封与 `browser_batch` 面保持不变。
+- 禁止推理文本的规则改为 CI 机械执行：`scripts/check-cot.mjs` 扫描仓库文件与拉取请求的提交信息，命中即失败。
 
 ## 1.4.0 - 2026-11-15
 

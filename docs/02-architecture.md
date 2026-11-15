@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-Status: 1.4.0 is the current surface: a ports-and-adapters backend, the unchanged 43-tool MCP surface, a REST `/api/v1` surface with optional JWT authentication, and the TypeScript and Vue 3 extension. The workspace and extension are versioned 1.4.0, and the v1.4.0 acceptance report records a passing release matrix. Audience: engineers.
+Status: 1.4.0 is the current published release: a ports-and-adapters backend, the unchanged 43-tool MCP surface, a REST `/api/v1` surface with optional JWT authentication, and the TypeScript and Vue 3 extension. The v1.4.0 acceptance report records a passing release matrix. The tree also contains unreleased v1.5.0 work: extended snapshot perception, compact snapshot diffs and extension internationalization; the workspace, extension package and manifest now report 1.5.0, with a v1.5.0 QA acceptance PASS on the dirty tree and no v1.5 release yet. Audience: engineers.
 
 ## 1. Constraints that shape the design
 
@@ -43,11 +43,11 @@ Processes: one corvusd per user session (a service on Windows and Linux; foregro
 |---|---|
 | corvus-proto | wire types: envelope, command, response, error taxonomy, versioning |
 | corvus-domain | domain model and ports for the 1.4.0 architecture; no I/O, no transport, no storage |
-| corvus-application | use cases, the ports `BrowserRegistry`, `BrowserSession`, `StepRecorder` and `ToolCatalog`, and the 32 original router specifications shared by MCP and REST |
+| corvus-application | use cases, the ports `BrowserRegistry`, `BrowserSession`, `StepRecorder` and `ToolCatalog`, the 32 original router specifications shared by MCP and REST, and the `page_snapshot` diff cache |
 | corvus-api | REST surface on `/api/v1` with an OpenAPI schema, JWT authentication and argon2 password hashing |
 | corvus-mcp | MCP server: tool registry, JSON-RPC, stdio + streamable-http transports |
 | corvus-transport | WS server, native-messaging host, long-poll fallback, browser registry |
-| corvus-record | session recorder, sqlite schema, step store, replay support |
+| corvus-record | session recorder, SeaORM SQLite schema and migration, step store, replay support |
 | corvus-cdp | browser-level CDP client, endpoint validation, event ring, raw and high-level CDP tools |
 | corvusd | daemon binary: wires everything, service lifecycle, config |
 | corvus | CLI: doctor, serve, attach, replay, bench, config print |
@@ -284,6 +284,18 @@ OpenAPI JSON is served at `/api-docs/openapi.json` and Swagger UI at `/docs`. Bo
 
 **Persistence.** The recording adapter uses SeaORM over SQLite and `sea-orm-migration`. `SCHEMA_VERSION` remains 1, and the baseline migration creates the same `sessions` and `steps` tables plus `schema_meta`, so an existing 1.3.0 database opens without a data migration and remains readable by a 1.3.0 binary. For an existing non-empty database that has no migration history, the daemon runs `VACUUM INTO <db>.backup-<millis>.db` before the migration; failure aborts startup. The pool uses one connection, WAL, `synchronous=NORMAL`, foreign keys and a 5-second busy timeout. A single recorder task drains an unbounded write queue; reads and session bookkeeping run on a dedicated record thread. Startup marks previously active sessions `abandoned`, prunes sessions older than 30 days, and truncates stored arguments and results at 262144 bytes on a UTF-8 boundary.
 
+### 5.9 Snapshot perception v2, compact diffs and extension i18n (v1.5.0, unreleased)
+
+This section describes work present in the tree but not released as 1.5.0; the workspace metadata reports 1.5.0.
+
+**Snapshot perception v2.** `page_snapshot` now traverses open shadow roots and same-origin child frames. The top document has an empty frame path; child frames use document-order paths such as `f0`, `f0.0` and `f1`. Compact lines inside a child frame append `frame="<path>"`, and JSON nodes carry `frame` only when the path is non-empty. When child frames exist the result adds `frames: {total, included, skipped: [{frame, url, reason}]}` with a reason of `cross_origin`, `unavailable` or `geometry_unavailable`; a cross-origin frame is skipped and never read. Bounding boxes are projected into the top viewport, and `max_nodes` is one budget across every included document. On CDP, `snapshot_tool` in `crates/corvus-cdp/src/tools.rs` walks the frame tree and relies on the accessibility tree for open shadow DOM; the extension path in `extension/src/content/runtime.ts` performs the same traversal.
+
+**Compact diffs.** `crates/corvus-application/src/snapshot_diff.rs` keeps a 64-entry LRU keyed by browser, session and tab. `Router::finish_page_snapshot` in `crates/corvus-application/src/router.rs:483` applies it once to compact results, so the extension path, the direct CDP path (`crates/corvusd/src/lib.rs`) and `browser_batch` steps share one grammar. A compact request with `diff: false` refreshes the baseline; diff and JSON requests do not. See [09-tools.md](09-tools.md) for prefixes and reset behavior.
+
+**Extension internationalization.** The Vue UI uses vue-i18n 11.4.20 with 64-key English and Simplified Chinese catalogues under `extension/src/ui/shared/i18n/`. Locale detection uses `chrome.i18n.getUILanguage()` and `navigator.language` (`zh*` maps to `zh-CN`, everything else to English); an explicit choice is persisted under `corvus.locale`, switches reactively without a reload, and sets `document.documentElement.lang`. The manifest declares `default_locale: en` and mirrors the catalogs in `_locales/en` and `_locales/zh_CN`.
+
+This work is unreleased: no 1.5.0 release or published asset exists, although [v1.5.0.md](../tests/acceptance/v1.5.0.md) records QA PASS on dirty HEAD 73092ea and the cargo workspace, extension package and manifest report 1.5.0.
+
 ## 6. Extension design
 
 Three runtime contexts and two small UI surfaces, all built from `extension/src` by three Vite passes into `extension/build/extension`:
@@ -292,7 +304,7 @@ Three runtime contexts and two small UI surfaces, all built from `extension/src`
 2. **content script**: DOM snapshot, click/type synthesis, waits, mutation observers.
 3. **offscreen document**: WebSocket owner (SW cannot hold a socket reliably), keepalive, reconnect loop.
 
-The popup and options page are Vue 3 applications with Pinia and Naive UI; the service worker, content script and offscreen document stay framework-free TypeScript. A Pinia session store is a read-only projection of the daemon-pushed UI state, and the UI talks to the worker through typed RPC. `pnpm build` cleans the output, runs the three passes, copies the manifest last and validates the required files, version, 10 permissions, module service worker and absence of source maps.
+The popup and options page are Vue 3 applications with Pinia and Naive UI; the service worker, content script and offscreen document stay framework-free TypeScript. A Pinia session store is a read-only projection of the daemon-pushed UI state, and the UI talks to the worker through typed RPC. `pnpm build` cleans the output, runs the three passes, copies the manifest last and validates the required files, version, 10 permissions, module service worker and absence of source maps. The UI uses vue-i18n: locale detection reads `chrome.i18n.getUILanguage()` and `navigator.language` (`zh*` -> `zh-CN`, otherwise English), an explicit choice is stored under `corvus.locale`, switching is reactive without a reload and updates `document.documentElement.lang`, and the manifest `_locales` mirror the two catalogs.
 
 The popup is status-only: one connection dot and one status line, with no controls. The options page is optional and stores the daemon WebSocket URL (`ws://` or `wss://`, default `ws://127.0.0.1:7330`) under `corvus.daemonUrl`, plus the optional CDP endpoint under `corvus.cdpEndpoint`; neither setting is part of the command path. The `cdp` capability is advertised only when endpoint detection succeeded. The debugger capability is advertised as a base capability and attached on demand when a CDP-backed tool needs it; a refused attach is the only reason the debugger channel becomes unavailable.
 
@@ -402,7 +414,8 @@ Non-goal: protecting the user from their own agent. That is out of scope by desi
              corvus-cdp, corvusd, corvus
       extension/
         src/background, src/content, src/offscreen, src/shared,
-        src/ui/popup, src/ui/options
+        src/ui/popup, src/ui/options, src/ui/shared/i18n,
+        _locales/en, _locales/zh_CN
         manifest.json, vite.background.config.ts, vite.content.config.ts,
         vite.ui.config.ts, package.json
       tests/archive/            superseded playbooks and reports

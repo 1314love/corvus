@@ -27,8 +27,6 @@ find_cargo() {
     local candidates=(
         "${CARGO_HOME:-}/bin/cargo.exe"
         "${HOME:-}/.cargo/bin/cargo.exe"
-        "/c/Users/Administrator/.cargo/bin/cargo.exe"
-        "C:/Users/Administrator/.cargo/bin/cargo.exe"
         "${CARGO_HOME:-}/bin/cargo"
         "${HOME:-}/.cargo/bin/cargo"
     )

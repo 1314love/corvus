@@ -68,11 +68,22 @@ v1.4.0 splits the backend into ports-and-adapters crates, adds a REST surface be
 | Version alignment | One 1.4.0 version across the cargo workspace, the extension package and the manifest before the release tag. |
 | Release | 1.4.0 binaries, changelog and bilingual release notes. QA acceptance is recorded in `tests/acceptance/v1.4.0.md`; final CI run 43690906863 and the published-asset hashes are recorded in the release notes; NFR-3 and the Firefox deviation remain open. |
 
-State: 1.4.0 is delivered. The workspace and extension are versioned 1.4.0, and [v1.4.0.md](../tests/acceptance/v1.4.0.md) records PASS for 199 workspace tests in 25 suites, 135 conformance checks and the extension gate. NFR-3 remains unpassed, no live 1.4.0 deployment is claimed, and final CI run 43690906863 and the published-asset hashes are recorded in the release notes. 1.5.0 is the next milestone.
+State: 1.4.0 is delivered. The 1.4.0 release shipped with the workspace and extension versioned 1.4.0, and [v1.4.0.md](../tests/acceptance/v1.4.0.md) records PASS for 199 workspace tests in 25 suites, 135 conformance checks and the extension gate. NFR-3 remains unpassed, no live 1.4.0 deployment is claimed, and final CI run 43690906863 and the published-asset hashes are recorded in the release notes. 1.5.0 is the next milestone.
 
-## v1.5.0 next
+## v1.5.0 next (QA and installer PASS on dirty tree; unreleased)
 
-1.5.0 is the next milestone and is not yet scoped. Its scope, exit criteria and dates will be recorded before implementation; no deliverable or live-deployment claim is made for it here.
+1.5.0 work is present in the tree, but it is not released and has no date. The cargo workspace, extension package and manifest report 1.5.0; [v1.5.0.md](../tests/acceptance/v1.5.0.md) records QA acceptance PASS for dirty HEAD 73092ea, but no tag or CI run exists for 1.5.0, and the local installer ZIP is not a published asset. The 43-tool surface and its nine categories are unchanged.
+
+| Item | Work in the tree | Evidence status |
+|---|---|---|
+| Perception v2 | `page_snapshot` traverses open shadow roots and same-origin child frames, adds frame paths and `frames` metadata, skips cross-origin frames, budgets `max_nodes` globally and projects boxes to the top viewport. | Code in `corvus-cdp` and the extension runtime. |
+| Compact diffs | `diff` is compact-only and computed once by the application layer from a 64-entry cache keyed by browser, session and tab; markers and baseline reset are documented in [09-tools.md](09-tools.md). | Code in `snapshot_diff.rs`; `browser_batch` shares the path. |
+| Extension i18n | vue-i18n with English and zh-CN catalogs, detection and persistence, reactive switching, and manifest `_locales`. | 14 build files and 41 Vitest tests in eight files measured. |
+| Surface | 43 MCP tools in nine categories; no new tool. | Catalog unchanged. |
+| Version alignment | Cargo workspace, extension package and manifest report 1.5.0. | Keep aligned through the 1.5.0 release. |
+| QA acceptance | 220 workspace tests and 136 conformance checks passed; 43-tool snapshot 23,561 B. | PASS on dirty HEAD 73092ea; installer PASS 98/0; CI and release evidence Pending. |
+
+Measured in the unreleased tree: 220 workspace tests passed on 25 result lines, 136 conformance checks passed, extension build 14 files, 41 Vitest tests in eight files and isolated Playwright 1/1; Windows installer acceptance passed 98 checks and observations with 0 failures on the local ZIP. QA acceptance is PASS on dirty HEAD 73092ea; CI runs, published asset hashes and the GitHub release remain Pending. NFR-3 is still unpassed, no live 1.5.0 deployment is claimed, and the version metadata is now aligned at 1.5.0.
 
 ## Suggested schedule (one main developer + AI pairing)
 

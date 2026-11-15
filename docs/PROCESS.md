@@ -63,6 +63,9 @@ A change is done when all of the following hold:
    push and pull request.
 5. A failed gate returns the task to its owner with the failing command and its
    output on the task, not just a verdict.
+6. CI runs `node scripts/check-cot.mjs` on every push and pull request. It fails
+   when a tracked file or a pull request commit message carries reasoning text,
+   per section 5 of [LANGUAGE.md](LANGUAGE.md).
 
 ## 5. Commit messages
 
@@ -103,6 +106,8 @@ relax it.
   and verifies that the workspace resolves with `cargo metadata --offline`.
 - `scripts/build.sh` builds `corvusd` and `corvus` in release mode into `dist/`
   and writes `dist/SHA256SUMS`.
+- `scripts/check-cot.mjs` scans tracked files, or the commits in a range with
+  `--commits`, for reasoning text; `--self-test` proves the rules still fire.
 - Local builds use `--offline` because this machine keeps a warm cargo cache
   and has no general network access. CI installs from the network normally; the
   two environments differ only in that flag, and CI is the authority on a clean

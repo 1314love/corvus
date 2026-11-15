@@ -2,7 +2,7 @@
 
 [English](07-cdp.md) | [中文](07-cdp.zh.md)
 
-状态：1.4.0。读者：希望在扩展传输之外使用浏览器级 CDP 控制的运维与开发人员。
+状态：1.4.0 是当前发布版本。工作树还包含未发布的 v1.5.0 工作：页面快照遍历开放 shadow root 与同源子 frame，紧凑差异由守护进程计算。读者：希望在扩展传输之外使用浏览器级 CDP 控制的运维与开发人员。
 
 Corvus 1.4.0 可以由 Rust 守护进程通过 Chrome DevTools Protocol（CDP）直接驱动 Chromium 浏览器，也可以继续走 Manifest V3 扩展。扩展仍是零配置路径，也是用户浏览器的默认选择。CDP 是可选路径：它要求浏览器已经在回环调试端口上监听；在 1.4.0 中覆盖全部 33 个浏览器类工具，包括紧凑快照与 `@c` 元素引用。
 
@@ -172,6 +172,8 @@ corvusd serve --home /opt/corvus --channel extension
 ```
 
 `format: "json"` 返回节点对象而不是文本；`viewport_only`、`include_bbox` 与 `max_nodes` 的行为见 [09-tools.zh.md](09-tools.zh.md)。引用只在产生它的快照内有效；导航或 DOM 变化后请重新快照。
+
+在 CDP 通道上，快照同样遍历开放 shadow root 与同源子 frame。顶层文档没有 frame 路径；子 frame 使用文档顺序路径，例如 `f0`、`f0.0` 与 `f1`。子 frame 内的内容会在紧凑行末尾追加 `frame="<path>"`，JSON 节点仅在路径非空时带 `frame`。页面有子 frame 时，结果添加 `frames: {total, included, skipped: [{frame, url, reason}]}`；`reason` 为 `cross_origin`、`unavailable` 或 `geometry_unavailable`。跨源 frame 的 DOM 永不读取，`max_nodes` 是全部已包含文档共用的一个预算，包围盒投影到顶层视口。紧凑差异由守护进程应用层计算，而不是 CDP；差异契约见 [09-tools.zh.md](09-tools.zh.md)。
 
 `@c` 引用仅属于 CDP，`@eN` 引用仅属于扩展。交给另一通道会返回类型化 `BAD_ARGS`；省略 `tab_id` 可对活动目标操作。此前仅扩展的八个工具现在在强制 `cdp` 下也接受 `@c` 引用；1.4.0 中仅扩展可用性为零。
 

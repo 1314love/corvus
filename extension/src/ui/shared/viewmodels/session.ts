@@ -80,17 +80,17 @@ export function useSessionViewModel(pollMs = 1500) {
     daemonError.value = '';
     const checked = validateDaemonUrl(daemonDraft.value);
     if (!checked.ok) {
-      daemonError.value = checked.error || 'Enter a valid daemon URL.';
+      daemonError.value = 'validation.daemon';
       return;
     }
     daemonDraft.value = checked.value || daemonDraft.value;
-    await perform(() => uiService.saveDaemon(daemonDraft.value), 'Saved. Reconnecting...');
+    await perform(() => uiService.saveDaemon(daemonDraft.value), 'notice.daemonSaved');
   }
 
   async function resetDaemon(): Promise<void> {
     daemonError.value = '';
     daemonDraft.value = DEFAULT_DAEMON_URL;
-    await perform(() => uiService.resetDaemon(), 'Reset to the local default. Reconnecting...');
+    await perform(() => uiService.resetDaemon(), 'notice.daemonReset');
   }
 
   async function saveCdp(): Promise<void> {
@@ -98,25 +98,25 @@ export function useSessionViewModel(pollMs = 1500) {
     const text = cdpDraft.value.trim() || DEFAULT_CDP_ENDPOINT;
     const checked = validateCdpEndpoint(text);
     if (!checked.ok) {
-      cdpError.value = checked.error || 'Enter auto or a loopback http:// URL.';
+      cdpError.value = 'validation.cdp';
       return;
     }
     cdpDraft.value = checked.value || text;
-    await perform(() => uiService.saveCdp(cdpDraft.value), 'CDP setting saved. Detection refreshed.');
+    await perform(() => uiService.saveCdp(cdpDraft.value), 'notice.cdpSaved');
   }
 
   async function resetCdp(): Promise<void> {
     cdpError.value = '';
     cdpDraft.value = DEFAULT_CDP_ENDPOINT;
-    await perform(() => uiService.resetCdp(), 'CDP setting reset to auto.');
+    await perform(() => uiService.resetCdp(), 'notice.cdpReset');
   }
 
   async function detectCdp(): Promise<void> {
-    await perform(() => uiService.refreshCdp(), 'CDP detection refreshed.');
+    await perform(() => uiService.refreshCdp(), 'notice.cdpRefreshed');
   }
 
   async function reconnect(): Promise<void> {
-    await perform(() => uiService.reconnect(), 'Reconnecting...');
+    await perform(() => uiService.reconnect(), 'notice.reconnecting');
   }
 
   function openOptions(): void {

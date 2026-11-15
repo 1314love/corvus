@@ -1,6 +1,6 @@
 {
   "name": "corvus-extension",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "description": "Corvus browser bridge extension: MV3, Vue 3 UI, typed service worker.",
@@ -25,6 +25,7 @@
     "naive-ui": "^2.41.0",
     "pinia": "^3.0.1",
     "vue": "^3.5.13",
+    "vue-i18n": "^11.4.20",
     "zod": "^3.24.2"
   },
   "devDependencies": {

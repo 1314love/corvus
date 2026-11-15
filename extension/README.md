@@ -5,6 +5,8 @@ The shipped extension is built from TypeScript and Vue 3 sources. There is no
 remote code and no inline script. Content scripts stay framework-free, and
 `build/extension` is the directory to load or package.
 
+Status: this document describes the unreleased 1.5.0 work in the tree. The extension package, manifest and build check now report 1.5.0; QA acceptance PASS is recorded in [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md) on a dirty tree, while package and release evidence remain absent.
+
 The visible surfaces are one read-only popup status card and a small options page.
 The popup shows the connection dot and state, browser id, extension version,
 capabilities, the configured daemon URL and CDP state, and a Change link to the
@@ -15,14 +17,17 @@ and can reset either to the default. Everything else runs without a page.
 
 | File                             | Role                                                                                                                                                                                     |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| manifest.json                    | MV3 manifest: permissions, content script, service worker, popup and options page.                                                                                                       |
+| manifest.json                    | MV3 manifest: permissions, content script, service worker, popup and options page; localized name, description and action title via _*MSG**__ placeholders.                              |
+| _locales/en/messages.json        | English manifest strings (default_locale) for the extension name, description and action title.                                                                                          |
+| _locales/zh_CN/messages.json     | Simplified Chinese manifest strings; Chrome locale directory uses an underscore.                                                                                                         |
 | src/background/runtime.ts        | Service worker: protocol envelopes, command routing, tab resolution, content-script injection, network capture, downloads, uploads, the managed debugger channel and the watchdog alarm. |
 | src/shared/storage/daemon-url.ts | Shared daemon URL validation and chrome.storage.local helpers; loaded by the worker, offscreen document, popup and options page.                                                         |
 | src/shared/cdp-endpoint.ts       | CDP endpoint detection: read-only loopback probe of ports 9222, 9223 and 9333, endpoint validation and browser-family matching.                                                          |
 | src/offscreen/index.ts           | Offscreen document: owns the only WebSocket to the configured daemon URL, reconnects with backoff, relays frames to the service worker.                                                  |
 | src/content/runtime.ts           | Content script: page-scoped tools inside the page (snapshot, text, HTML, find, click, type, hover, press, scroll, select, wait probes, upload target resolution).                        |
-| src/ui/popup/App.vue             | Read-only status card: connection dot and state, browser id, version, capabilities, configured daemon URL and a Change link.                                                             |
-| src/ui/options/App.vue           | Daemon URL and CDP endpoint settings: connection and detection status, editable fields, Save, Reset to default and inline validation.                                                    |
+| src/ui/popup/App.vue             | Read-only status card: connection dot and state, browser id, version, capabilities, configured daemon URL and a Change link; all text comes from the active locale.                      |
+| src/ui/options/App.vue           | Daemon URL and CDP endpoint settings: connection and detection status, editable fields, Save, Reset to default, inline validation and the language switch.                               |
+| src/ui/shared/i18n/              | Shared vue-i18n 11.4.20 setup: locale parsing/detection, persistence under corvus.locale, document.lang updates and the en/zh-CN catalogs.                                               |
 | README.md                        | This document.                                                                                                                                                                           |
 
 ## Development
@@ -55,16 +60,44 @@ pnpm build
 Three Vite passes produce the ESM service worker, the IIFE content script and
 the multi-page popup/options/offscreen bundle. The manifest is copied last and
 `scripts/check-build.mjs` verifies the required files, version, ten permissions,
-module worker and absence of source maps. Tool argument types and Zod schemas are
-generated from `../tests/conformance/schema-snapshot.v1.3.0.json`; rerun
+module worker and absence of source maps. It also requires `default_locale: "en"`,
+both `_locales` catalogs and every `__MSG_*__` placeholder referenced by the
+manifest. Tool argument types and Zod schemas are generated from
+`../tests/conformance/schema-snapshot.v1.3.0.json`; rerun
 `pnpm generate:contracts` when that snapshot changes. The Vitest suite covers
-21 unit, contract and component tests before any browser is launched.
+41 unit, contract and component tests before any browser is launched.
 
 `pnpm test:e2e` launches a separate headless Chrome with the built extension and
 an in-process mock daemon on port 29330. It copies `build/extension` and patches
 the CDP probe ports to 29331, so it never contacts a live daemon or the user's
-browser CDP endpoint. Set `CORVUS_CHROME_PATH` when Chrome for Testing is not in
-its default temporary location.
+browser CDP endpoint. The fixture page also exercises an open shadow root and
+same-origin and cross-origin iframes. Set `CORVUS_CHROME_PATH` when Chrome for
+Testing is not in its default temporary location. The same test also switches
+the options page between English and Simplified Chinese and checks that the
+choice persists into a fresh popup.
+
+## Localization
+
+The popup and options bundle uses vue-i18n 11.4.20 with 64-key English (`en`) and Simplified
+Chinese (`zh-CN`) catalogs under `src/ui/shared/i18n/locales/`. At startup the UI
+reads `corvus.locale`; when unset it uses `chrome.i18n.getUILanguage()` and falls
+back to `navigator.language`. The options page language buttons switch
+immediately without a reload, persist the explicit choice and update
+`document.documentElement.lang`. The MV3 manifest is localized through
+`default_locale: "en"` and `_locales/en` + `_locales/zh_CN`; `pnpm build` copies
+both catalogs into `build/extension` and the build check verifies their key
+parity and placeholders.
+
+### 本地化说明
+
+弹出页和选项页使用 vue-i18n 11.4.20，英文与简体中文各 64 个键，界面文案位于 `src/ui/shared/i18n/locales/`
+的英文（`en`）和简体中文（`zh-CN`）目录中。启动时优先读取
+`corvus.locale`；未设置时使用 `chrome.i18n.getUILanguage()`，再回退到
+`navigator.language`。选项页的语言按钮可即时切换，无需重新加载扩展，并会把
+显式选择写入 `corvus.locale`，同时更新 `document.documentElement.lang`。
+MV3 清单通过 `default_locale: "en"` 以及 `_locales/en`、`_locales/zh_CN`
+本地化；构建会把两个语言包复制到 `build/extension`，构建检查会校验键集合
+一致性和占位符。
 
 ## Message flow
 
@@ -304,51 +337,53 @@ Common rules:
   stable while the document lives.
 - Every command resolves. A tool-level failure is a response envelope whose
   args is null and whose top-level error carries one of the codes below.
-- Page commands run in the top frame only.
+- DOM commands start in the top document. page_snapshot also traverses open
+  shadow roots and same-origin iframe/frame documents; cross-origin frames are
+  reported in frames.skipped and their DOM is never read.
 - meta.timeout_ms defaults to 60000 and is capped at 125000. download_wait uses
   the larger of that value and its own timeout_ms plus 5 s, so a long download
   wait is not cut short by the daemon default.
 
 ### Payload table
 
-| Tool             | Arguments                                                                                                                                                                                                       | Success result                                                                                                                                                                                                                              |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| browser_navigate | { "url": string, "tab_id"?: string }                                                                                                                                                                            | { navigated, loaded, url, previous, same_document, started_at }                                                                                                                                                                             |
-| page_snapshot    | { "tab_id"?: string, "mode"?: "interactive" \| "full", "format"?: "compact" \| "json", "max_nodes"?: 40..3000, "viewport_only"?: boolean, "include_bbox"?: boolean }                                            | compact: { format: "compact", tab_id, url, title, viewport, mode, node_count, truncated, text }; json: { format: "json", tab_id, url, title, viewport, mode, node_cap, node_count, element_count, text_count, ref_count, truncated, nodes } |
-| page_text        | { "tab_id"?: string, "max_chars"?: 1..200000 }                                                                                                                                                                  | { url, title, text, truncated }                                                                                                                                                                                                             |
-| page_html        | { "tab_id"?: string, "target"?: string, "max_chars"?: 1..500000 }                                                                                                                                               | { url, html, truncated }                                                                                                                                                                                                                    |
-| page_find        | { "query": string, "tab_id"?: string, "role"?: string, "limit"?: 1..100, "regex"?: boolean }                                                                                                                    | { url, count, matches: [{ ref, tag, role, text }] }                                                                                                                                                                                         |
-| browser_click    | { "target": string, "tab_id"?: string }                                                                                                                                                                         | { clicked, ref, selector, tag, role, name, bbox, point, events, url }                                                                                                                                                                       |
-| browser_type     | { "target": string, "text": string, "clear"?: boolean, "blur"?: boolean, "tab_id"?: string }                                                                                                                    | { typed, ref, selector, tag, role, cleared, events, value, value_length, url }                                                                                                                                                              |
-| browser_hover    | { "target": string, "tab_id"?: string }                                                                                                                                                                         | { hovered: true, url, target: { ref, tag, text? } }                                                                                                                                                                                         |
-| browser_press    | { "keys": string \| string[], "target"?: string, "tab_id"?: string }                                                                                                                                            | { pressed: true, keys, url }                                                                                                                                                                                                                |
-| browser_scroll   | { "direction": "up" \| "down" \| "left" \| "right", "pages"?: 0..50, "target"?: string, "tab_id"?: string }                                                                                                     | { scrolled: true, x, y, url }                                                                                                                                                                                                               |
-| browser_select   | { "target": string, "values": string[], "tab_id"?: string }                                                                                                                                                     | { selected, value, url }                                                                                                                                                                                                                    |
-| browser_eval     | { "expression": string, "world"?: "main" \| "isolated", "tab_id"?: string }                                                                                                                                     | { ok: true, value } or { ok: false, error: { name, message } }                                                                                                                                                                              |
-| browser_wait     | { "tab_id"?: string, "selector"?: string, "text"?: string, "url_contains"?: string, "timeout_ms"?: 100..120000 }                                                                                                | { matched: true, waited_ms, url }                                                                                                                                                                                                           |
-| browser_history  | { "action": "back" \| "forward" \| "reload", "tab_id"?: string }                                                                                                                                                | { action, url, loaded }                                                                                                                                                                                                                     |
-| net_capture      | { "action": "start" \| "stop" \| "status", "tab_id"?: string }                                                                                                                                                  | start: { capturing: true, tab_id, started_at, capacity }; stop: { capturing: false, tab_id, entries }; status: { capturing, tab_id, started_at?, entries }                                                                                  |
-| net_log          | { "tab_id"?: string, "since_seq"?: number, "limit"?: 1..1000, "url_contains"?: string, "method"?: string, "resource_type"?: string, "status_min"?: 0..999, "status_max"?: 0..999, "include_headers"?: boolean } | { entries, next_seq, capturing }                                                                                                                                                                                                            |
-| net_clear        | { "tab_id"?: string }                                                                                                                                                                                           | { cleared }                                                                                                                                                                                                                                 |
-| net_intercept    | { "action": "set" \| "clear", "tab_id"?: string, "rules"?: object[] }                                                                                                                                           | { ok: true, scope: "tab" \| "browser", tab_id?, rules, applied }                                                                                                                                                                            |
-| download_list    | { "limit"?: 1..200 }                                                                                                                                                                                            | { downloads: [{ id, filename, url, state, bytes_received, total_bytes, danger, exists, started_at, tab_id? }] }                                                                                                                             |
-| download_wait    | { "id"?: number \| string, "timeout_ms"?: 100..120000 }                                                                                                                                                         | { id, state, filename, url, bytes_received, total_bytes }                                                                                                                                                                                   |
-| upload_file      | { "target": string, "files": string[1..10], "tab_id"?: string }                                                                                                                                                 | { uploaded: true, files, target: { ref?, tag, text }, input: { accept?, multiple } }                                                                                                                                                        |
-| tab_list         | {}                                                                                                                                                                                                              | { tabs: [{ tab_id, index, active, url, title, status }] }                                                                                                                                                                                   |
-| tab_new          | { "url"?: string, "active"?: boolean }                                                                                                                                                                          | { tab_id, url, loaded, previous_tab_id }                                                                                                                                                                                                    |
-| tab_close        | { "tab_id": string }                                                                                                                                                                                            | { closed: true, tab_id, next_tab_id? }                                                                                                                                                                                                      |
-| tab_switch       | { "tab_id": string }                                                                                                                                                                                            | { tab_id, url, title, active: true }                                                                                                                                                                                                        |
-| browser_list     | {}                                                                                                                                                                                                              | { browsers: [{ browser_id, profile, version, capabilities, connected_at_ms }] }                                                                                                                                                             |
+| Tool             | Arguments                                                                                                                                                                                                       | Success result                                                                                                                                                                                                                                                                                                                  |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| browser_navigate | { "url": string, "tab_id"?: string }                                                                                                                                                                            | { navigated, loaded, url, previous, same_document, started_at }                                                                                                                                                                                                                                                                 |
+| page_snapshot    | { "tab_id"?: string, "mode"?: "interactive" \| "full", "format"?: "compact" \| "json", "max_nodes"?: 40..3000, "viewport_only"?: boolean, "include_bbox"?: boolean, "diff"?: boolean }                          | compact: { format: "compact", tab_id, url, title, viewport, mode, node_count, truncated, text, frames? }; json: { format: "json", tab_id, url, title, viewport, mode, node_cap, node_count, element_count, text_count, ref_count, truncated, nodes, frames? }; frames is { total, included, skipped: [{ frame, url, reason }] } |
+| page_text        | { "tab_id"?: string, "max_chars"?: 1..200000 }                                                                                                                                                                  | { url, title, text, truncated }                                                                                                                                                                                                                                                                                                 |
+| page_html        | { "tab_id"?: string, "target"?: string, "max_chars"?: 1..500000 }                                                                                                                                               | { url, html, truncated }                                                                                                                                                                                                                                                                                                        |
+| page_find        | { "query": string, "tab_id"?: string, "role"?: string, "limit"?: 1..100, "regex"?: boolean }                                                                                                                    | { url, count, matches: [{ ref, tag, role, text }] }                                                                                                                                                                                                                                                                             |
+| browser_click    | { "target": string, "tab_id"?: string }                                                                                                                                                                         | { clicked, ref, selector, tag, role, name, bbox, point, events, url }                                                                                                                                                                                                                                                           |
+| browser_type     | { "target": string, "text": string, "clear"?: boolean, "blur"?: boolean, "tab_id"?: string }                                                                                                                    | { typed, ref, selector, tag, role, cleared, events, value, value_length, url }                                                                                                                                                                                                                                                  |
+| browser_hover    | { "target": string, "tab_id"?: string }                                                                                                                                                                         | { hovered: true, url, target: { ref, tag, text? } }                                                                                                                                                                                                                                                                             |
+| browser_press    | { "keys": string \| string[], "target"?: string, "tab_id"?: string }                                                                                                                                            | { pressed: true, keys, url }                                                                                                                                                                                                                                                                                                    |
+| browser_scroll   | { "direction": "up" \| "down" \| "left" \| "right", "pages"?: 0..50, "target"?: string, "tab_id"?: string }                                                                                                     | { scrolled: true, x, y, url }                                                                                                                                                                                                                                                                                                   |
+| browser_select   | { "target": string, "values": string[], "tab_id"?: string }                                                                                                                                                     | { selected, value, url }                                                                                                                                                                                                                                                                                                        |
+| browser_eval     | { "expression": string, "world"?: "main" \| "isolated", "tab_id"?: string }                                                                                                                                     | { ok: true, value } or { ok: false, error: { name, message } }                                                                                                                                                                                                                                                                  |
+| browser_wait     | { "tab_id"?: string, "selector"?: string, "text"?: string, "url_contains"?: string, "timeout_ms"?: 100..120000 }                                                                                                | { matched: true, waited_ms, url }                                                                                                                                                                                                                                                                                               |
+| browser_history  | { "action": "back" \| "forward" \| "reload", "tab_id"?: string }                                                                                                                                                | { action, url, loaded }                                                                                                                                                                                                                                                                                                         |
+| net_capture      | { "action": "start" \| "stop" \| "status", "tab_id"?: string }                                                                                                                                                  | start: { capturing: true, tab_id, started_at, capacity }; stop: { capturing: false, tab_id, entries }; status: { capturing, tab_id, started_at?, entries }                                                                                                                                                                      |
+| net_log          | { "tab_id"?: string, "since_seq"?: number, "limit"?: 1..1000, "url_contains"?: string, "method"?: string, "resource_type"?: string, "status_min"?: 0..999, "status_max"?: 0..999, "include_headers"?: boolean } | { entries, next_seq, capturing }                                                                                                                                                                                                                                                                                                |
+| net_clear        | { "tab_id"?: string }                                                                                                                                                                                           | { cleared }                                                                                                                                                                                                                                                                                                                     |
+| net_intercept    | { "action": "set" \| "clear", "tab_id"?: string, "rules"?: object[] }                                                                                                                                           | { ok: true, scope: "tab" \| "browser", tab_id?, rules, applied }                                                                                                                                                                                                                                                                |
+| download_list    | { "limit"?: 1..200 }                                                                                                                                                                                            | { downloads: [{ id, filename, url, state, bytes_received, total_bytes, danger, exists, started_at, tab_id? }] }                                                                                                                                                                                                                 |
+| download_wait    | { "id"?: number \| string, "timeout_ms"?: 100..120000 }                                                                                                                                                         | { id, state, filename, url, bytes_received, total_bytes }                                                                                                                                                                                                                                                                       |
+| upload_file      | { "target": string, "files": string[1..10], "tab_id"?: string }                                                                                                                                                 | { uploaded: true, files, target: { ref?, tag, text }, input: { accept?, multiple } }                                                                                                                                                                                                                                            |
+| tab_list         | {}                                                                                                                                                                                                              | { tabs: [{ tab_id, index, active, url, title, status }] }                                                                                                                                                                                                                                                                       |
+| tab_new          | { "url"?: string, "active"?: boolean }                                                                                                                                                                          | { tab_id, url, loaded, previous_tab_id }                                                                                                                                                                                                                                                                                        |
+| tab_close        | { "tab_id": string }                                                                                                                                                                                            | { closed: true, tab_id, next_tab_id? }                                                                                                                                                                                                                                                                                          |
+| tab_switch       | { "tab_id": string }                                                                                                                                                                                            | { tab_id, url, title, active: true }                                                                                                                                                                                                                                                                                            |
+| browser_list     | {}                                                                                                                                                                                                              | { browsers: [{ browser_id, profile, version, capabilities, connected_at_ms }] }                                                                                                                                                                                                                                                 |
 
 Defaults: page_snapshot format is "compact", mode is "interactive" and
-max_nodes is 300 (clamped to 40 through 3000), and viewport_only/include_bbox
-are false; browser_type clear is true and blur is false; page_text
-max_chars is 100000; page_html max_chars is 200000; page_find limit is 20 and
-regex is false; browser_press keys is one chord when a string is given;
-browser_scroll pages is 1; browser_eval world is "isolated"; browser_wait
-timeout_ms is 10000; tab_new active is true; net_log since_seq is 0, limit is
-100 and include_headers is false; net_intercept status for a mock rule is 200;
-download_list limit is 50; download_wait timeout_ms is 30000.
+max_nodes is 300 (clamped to 40 through 3000), and
+viewport_only/include_bbox/diff are false; browser_type clear is true and blur
+is false; page_text max_chars is 100000; page_html max_chars is 200000;
+page_find limit is 20 and regex is false; browser_press keys is one chord when a
+string is given; browser_scroll pages is 1; browser_eval world is "isolated";
+browser_wait timeout_ms is 10000; tab_new active is true; net_log since_seq is
+0, limit is 100 and include_headers is false; net_intercept status for a mock
+rule is 200; download_list limit is 50; download_wait timeout_ms is 30000.
 
 ### Navigation and snapshot
 
@@ -394,7 +429,8 @@ page_snapshot
 The service worker adds tab_id (a string) to every result. format "compact" (the
 default) returns
 {format:"compact", tab_id, url, title, viewport {width,height,scrollX,scrollY},
-mode, node_count, truncated, text}. text holds one line per node, in DOM order:
+mode, node_count, truncated, text, frames?}. text holds one line per node, in
+DOM order:
 
 ```text
 # "Surrounding text"
@@ -402,37 +438,69 @@ mode, node_count, truncated, text}. text holds one line per node, in DOM order:
 ```
 
 Element lines start with the ref, then the lowercase role (or tag when no role
-is known), then the name in quotes, optional states, optional value and optional
-bbox. Backslash and double quote are escaped, whitespace is collapsed, name is
-limited to 120 characters and value to 80. states appear only when active and in
-this fixed order: disabled, checked, mixed, focused, required, expanded,
-selected. bbox appears only when include_bbox is true. Text lines use
-`# "text"` with the text limited to 240 characters; in "full" mode they preserve
-the visible text around elements.
+is known), then the name in quotes, optional states, optional value, optional
+bbox and optional frame suffix. Backslash and double quote are escaped,
+whitespace is collapsed, name is limited to 120 characters and value to 80.
+states appear only when active and in this fixed order: disabled, checked,
+mixed, focused, required, expanded, selected. bbox appears only when
+include_bbox is true. Text lines use `# "text"` with the text limited to 240
+characters; in "full" mode they preserve the visible text around elements.
+
+Elements and text inside a child frame append ` frame="<path>"` as the last
+field of their line:
+
+```text
+# "Frame text" frame="f0"
+@e12 button "Submit" [disabled] value="..." frame="f0.0"
+```
+
+The top document has no frame suffix. Frame paths follow document order: the
+first child frame is f0, its first child is f0.0, and the next sibling is f1.
+page_snapshot walks the top document, every open shadow root reachable from it
+and every same-origin iframe/frame document. A closed shadow root is not
+traversable. Cross-origin, detached or otherwise inaccessible frames are never
+read: they are still counted in the optional
+frames:{total, included, skipped:[{frame, url, reason}]} field with reason
+cross_origin or unavailable, so a skipped frame is visible rather than silently
+missing. Each walk entry is one frame, including nested frames.
 
 format "json" returns the former shape: url, title, viewport, mode, node_cap,
 node_count, element_count, text_count, ref_count, truncated and nodes, plus
 format:"json". Each element node is
 {kind:"element", ref:"@e12", tag:"button", role:"button", name:"Submit",
 bbox:{x,y,w,h}, depth, states, attributes?}; each text node is
-{kind:"text", depth, text}.
+{kind:"text", depth, text}. A node inside a child frame also carries
+frame:"f0.0"; top-document nodes omit the field.
 
 mode "interactive" (the default) keeps actionable elements: buttons, links,
 form controls, and elements with an interactive role, tabindex or
 contenteditable. Text nodes that surround those elements are kept as context;
 the visible text of the actionable element itself is folded into its name.
 mode "full" returns the complete tree. max_nodes is clamped to 40 through 3000
-nodes and defaults to 300; the walk stops at the cap and sets truncated:true.
-Hidden subtrees are skipped.
+nodes globally across frames and defaults to 300; the walk stops at the cap and
+sets truncated:true. Hidden subtrees are skipped.
 
 viewport_only true keeps only nodes whose box intersects window.visualViewport,
 including the visualViewport offset, so offscreen elements and text are dropped.
-include_bbox true adds the rounded border box to each compact element line.
-Neither option changes the JSON node objects.
+Frame content uses top-viewport coordinates: each frame's border-box origin plus
+its clientLeft/clientTop is added to the child box, recursively through nested
+frames, and the top window's visualViewport decides visibility. Shadow content
+uses the host document's coordinates. include_bbox true adds the rounded
+top-viewport border box to each compact element line. Neither option changes the
+JSON node objects.
 
 The refs come from a per-document element map and are stable while the document
-lives: two snapshots in a row return the same @eN for the same element. A ref
-from a previous document is stale and answers NOT_FOUND.
+lives: two snapshots in a row return the same @eN for the same element. Refs for
+elements in open shadow roots and same-origin frames stay @eN and can be passed
+to browser_click, browser_type, browser_hover and the other target-taking tools;
+those actions hit-test in the owning document and scroll the frame chain into
+view before dispatching. A ref from a previous document is stale and answers
+NOT_FOUND.
+
+diff is accepted as an optional boolean and defaults to false. This extension
+does not compute diffs: a diff-aware daemon applies it to the compact result on
+the application side. Passing diff with format "json" is rejected by that
+daemon as BAD_ARGS.
 
 ### Page content
 
@@ -737,7 +805,9 @@ registry to resolve browser_id for the other tools.
    capabilities, configured daemon URL and CDP endpoint, and the automatic
    debugger channel note. Click Change in the popup, or open the extension
    options page, to edit the daemon URL and the CDP endpoint. Save applies the
-   settings and reconnects immediately; Reset restores that field's default.
+   settings and reconnects immediately; Reset restores that field's default. The
+   Language section switches the popup and options UI between English and
+   Simplified Chinese without reloading the extension.
 4. If the daemon was not running when the extension loaded, start it and wait
    for the watchdog (at most 30 s), or reopen the options page. The status card
    turns green when hello_ack has been processed.
@@ -751,7 +821,10 @@ A full probe loads this directory unpacked, connects to a running daemon and
 sends command envelopes through the daemon's MCP surface. A minimal check:
 
 1. Navigate to a test page and call page_snapshot. The compact result must have
-   text lines and refs such as @e1; a second snapshot must keep the same refs.
+   text lines and refs such as @e1; a second snapshot must keep the same refs. On
+   a page with an open shadow root and a same-origin iframe, the shadow and frame
+   elements must also appear; frame lines end with frame="f0" and any
+   cross-origin frame must be listed in frames.skipped.
 2. Call net_capture with action start and the returned tab_id. Reload the page
    with browser_history, then call net_log with include_headers true. The
    entries must include the document and its subresources, seq must increase, and

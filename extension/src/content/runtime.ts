@@ -20,7 +20,7 @@ declare global {
   if (window.__corvusContentLoaded === true) return;
   window.__corvusContentLoaded = true;
 
-  const CONTENT_VERSION = '1.4.0';
+  const CONTENT_VERSION = '1.5.0';
   const MAX_NODES_DEFAULT = 300;
   const MAX_NODES_LIMIT = 3000;
   const MIN_NODES_LIMIT = 40;
@@ -232,7 +232,9 @@ declare global {
     } catch (error: any) {
       // Fall through to the style based check.
     }
-    const style = window.getComputedStyle(element);
+    const view = element.ownerDocument && element.ownerDocument.defaultView;
+    if (!view || typeof view.getComputedStyle !== 'function') return false;
+    const style = view.getComputedStyle(element);
     if (!style) return false;
     if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
     if (style.opacity === '0') return false;
@@ -248,6 +250,24 @@ declare global {
       } catch (inner: any) {
         // Ignore: the hit test below reports the real problem.
       }
+    }
+    let doc = element.ownerDocument;
+    let guard = 0;
+    while (doc && doc !== document && guard < 32) {
+      guard += 1;
+      const view = doc.defaultView;
+      const frame = view && view.frameElement;
+      if (!frame) break;
+      try {
+        frame.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' });
+      } catch (error: any) {
+        try {
+          frame.scrollIntoView();
+        } catch (inner: any) {
+          // Ignore: the target can still be clicked if the frame is visible.
+        }
+      }
+      doc = frame.ownerDocument;
     }
   }
 
@@ -483,7 +503,7 @@ declare global {
     return false;
   }
 
-  function buildNode(element: any, depth: any, rect: any) {
+  function buildNode(element: any, depth: any, rect: any, framePath?: any) {
     const box = rect || element.getBoundingClientRect();
     const tag = element.tagName.toLowerCase();
     const node: any = {
@@ -501,6 +521,7 @@ declare global {
       depth: depth,
       states: statesOf(element),
     };
+    if (framePath) node.frame = framePath;
 
     const attrs: Record<string, any> = {};
     if (tag === 'a' && element.href) attrs.href = truncate(element.href, 300);
@@ -555,9 +576,14 @@ declare global {
     return compactEscaped(value, COMPACT_VALUE_LIMIT);
   }
 
+  function frameSuffix(frame: any) {
+    if (!frame) return '';
+    return ' frame="' + compactEscaped(frame, COMPACT_NAME_LIMIT) + '"';
+  }
+
   function compactLineForNode(node: any, includeBbox: any) {
     if (node.kind === 'text') {
-      return '# "' + compactEscaped(node.text, MAX_TEXT) + '"';
+      return '# "' + compactEscaped(node.text, MAX_TEXT) + '"' + frameSuffix(node.frame);
     }
     const role = String(node.role || node.tag || '').toLowerCase();
     let line = node.ref + ' ' + role + ' "' + compactEscaped(node.name, COMPACT_NAME_LIMIT) + '"';
@@ -569,7 +595,7 @@ declare global {
       const bbox = node.bbox || { x: 0, y: 0, w: 0, h: 0 };
       line += ' bbox=' + bbox.x + ',' + bbox.y + ',' + bbox.w + ',' + bbox.h;
     }
-    return line;
+    return line + frameSuffix(node.frame);
   }
 
   function visualViewportBounds() {
@@ -592,14 +618,24 @@ declare global {
     return rect.right > bounds.left && rect.left < bounds.right && rect.bottom > bounds.top && rect.top < bounds.bottom;
   }
 
-  function textBoundingRect(node: any) {
-    if (!node || !node.parentNode || typeof document.createRange !== 'function') return null;
+  function textBoundingRect(node: any, origin?: any) {
+    if (!node || !node.parentNode) return null;
+    const doc = node.ownerDocument || document;
+    if (!doc || typeof doc.createRange !== 'function') return null;
     try {
-      const range = document.createRange();
+      const range = doc.createRange();
       range.selectNodeContents(node);
       const rect = range.getBoundingClientRect();
       if (!rect || (rect.width === 0 && rect.height === 0)) return null;
-      return rect;
+      if (!origin) return rect;
+      return {
+        left: rect.left + origin.x,
+        top: rect.top + origin.y,
+        right: rect.right + origin.x,
+        bottom: rect.bottom + origin.y,
+        width: rect.width,
+        height: rect.height,
+      };
     } catch (error: any) {
       return null;
     }
@@ -617,21 +653,25 @@ declare global {
     }
     const viewportOnly = readBooleanFlag(args.viewport_only, false, 'args.viewport_only');
     const includeBbox = readBooleanFlag(args.include_bbox, false, 'args.include_bbox');
+    readBooleanFlag(args.diff, false, 'args.diff');
     let mode = 'interactive';
     if (args.mode !== undefined && args.mode !== null) {
-      const requested = String(args.mode).trim().toLowerCase();
-      if (requested !== 'interactive' && requested !== 'full') {
+      const requestedMode = String(args.mode).trim().toLowerCase();
+      if (requestedMode !== 'interactive' && requestedMode !== 'full') {
         throw badArgs('args.mode must be "interactive" or "full"', { mode: truncate(String(args.mode), 40) });
       }
-      mode = requested;
+      mode = requestedMode;
     }
+
     const interesting = mode === 'interactive' ? isActionable : isInteresting;
     const bounds = viewportOnly ? visualViewportBounds() : null;
     const nodes: any[] = [];
-    const seenRefs = new Set();
+    const seenRefs = new Set<any>();
     let elementCount = 0;
     let textCount = 0;
     let truncated = false;
+    const frames: any = { total: 0, included: 0, skipped: [] };
+    const visitedFrames = new Set<any>();
 
     function budgetLeft() {
       if (nodes.length >= cap) {
@@ -642,19 +682,94 @@ declare global {
     }
 
     function inViewport(rect: any) {
-      return !viewportOnly || rectIntersectsBounds(rect, bounds);
+      if (!rect) return false;
+      if (!viewportOnly) return true;
+      return rectIntersectsBounds(rect, bounds);
     }
 
-    function emitText(node: any, depth: any) {
+    function topRect(rect: any, origin: any) {
+      const width = Number(rect.width) || 0;
+      const height = Number(rect.height) || 0;
+      const left = (Number(rect.left) || 0) + origin.x;
+      const top = (Number(rect.top) || 0) + origin.y;
+      return { left: left, top: top, right: left + width, bottom: top + height, width: width, height: height };
+    }
+
+    function frameOrigin(origin: any, frame: any, rect: any) {
+      return {
+        x: origin.x + (Number(rect.left) || 0) + Number(frame.clientLeft || 0),
+        y: origin.y + (Number(rect.top) || 0) + Number(frame.clientTop || 0),
+      };
+    }
+
+    function frameUrl(frame: any) {
+      let url = '';
+      try {
+        if (typeof frame.src === 'string') url = frame.src;
+      } catch (error: any) {
+        url = '';
+      }
+      if (!url) {
+        try {
+          url = String(frame.getAttribute('src') || '');
+        } catch (error: any) {
+          url = '';
+        }
+      }
+      return truncate(url, 300);
+    }
+
+    function emitText(node: any, depth: any, framePath: any, origin: any) {
       if (!budgetLeft()) return;
       const text = collapse(node.nodeValue);
       if (!text) return;
-      if (viewportOnly && !inViewport(textBoundingRect(node))) return;
-      nodes.push({ kind: 'text', depth: depth, text: truncate(text, MAX_TEXT) });
+      if (viewportOnly && !inViewport(textBoundingRect(node, origin))) return;
+      const item: any = { kind: 'text', depth: depth, text: truncate(text, MAX_TEXT) };
+      if (framePath) item.frame = framePath;
+      nodes.push(item);
       textCount += 1;
     }
 
-    function walk(element: any, depth: any) {
+    function noteFrame(element: any, framePath: any, origin: any, depth: any, localRect: any) {
+      frames.total += 1;
+      const tag = String(element.tagName || '').toUpperCase();
+      if (tag !== 'IFRAME' && tag !== 'FRAME') return;
+      let documentRef: any = null;
+      let reason: string | null = null;
+      try {
+        documentRef = element.contentDocument || null;
+      } catch (error: any) {
+        reason = 'cross_origin';
+      }
+      if (!documentRef) {
+        let accessibleWindow = false;
+        try {
+          accessibleWindow = !!element.contentWindow;
+        } catch (error: any) {
+          accessibleWindow = false;
+        }
+        frames.skipped.push({
+          frame: framePath,
+          url: frameUrl(element),
+          reason: reason || (accessibleWindow ? 'cross_origin' : 'unavailable'),
+        });
+        return;
+      }
+      if (!documentRef.documentElement) {
+        frames.skipped.push({ frame: framePath, url: frameUrl(element), reason: 'unavailable' });
+        return;
+      }
+      if (visitedFrames.has(documentRef)) {
+        frames.skipped.push({ frame: framePath, url: frameUrl(element), reason: 'unavailable' });
+        return;
+      }
+      visitedFrames.add(documentRef);
+      frames.included += 1;
+      const childOrigin = frameOrigin(origin, element, localRect);
+      walk(documentRef.documentElement, depth + 1, framePath, childOrigin, { index: 0 });
+    }
+
+    function walk(element: any, depth: any, framePath: any, origin: any, cursor: any) {
       if (!budgetLeft()) return;
       if (!element || element.nodeType !== 1) return;
       if (depth > MAX_DEPTH) {
@@ -665,50 +780,84 @@ declare global {
       if (SKIP_TAGS[tag] === true) return;
       if (!isRendered(element)) return;
 
-      if (interesting(element)) {
-        const rect = element.getBoundingClientRect();
-        if (inViewport(rect)) {
-          const node = buildNode(element, depth, rect);
-          if (!seenRefs.has(node.ref)) {
-            nodes.push(node);
-            seenRefs.add(node.ref);
-            elementCount += 1;
-          }
+      const actionable = interesting(element);
+      const frameTag = tag === 'IFRAME' || tag === 'FRAME';
+      let localRect: any = null;
+      let rect: any = null;
+      if (actionable || frameTag) {
+        localRect = element.getBoundingClientRect();
+        rect = topRect(localRect, origin);
+      }
+
+      let childPath = framePath;
+      if (frameTag) {
+        childPath = framePath ? framePath + '.' + cursor.index : 'f' + cursor.index;
+        cursor.index += 1;
+      }
+
+      if (actionable && inViewport(rect)) {
+        const node = buildNode(element, depth, rect, framePath);
+        if (!seenRefs.has(node.ref)) {
+          nodes.push(node);
+          seenRefs.add(node.ref);
+          elementCount += 1;
         }
-        const children = element.children;
-        for (let i = 0; i < children.length; i += 1) {
-          if (!budgetLeft()) return;
-          walk(children[i], depth + 1);
+      }
+
+      if (frameTag) {
+        noteFrame(element, childPath, origin, depth, localRect);
+      }
+
+      if (actionable) {
+        if (element.shadowRoot) {
+          walkContainer(element.shadowRoot, depth, framePath, origin, cursor, false);
         }
+        walkContainer(element, depth, framePath, origin, cursor, false);
         return;
       }
 
-      const childNodes = element.childNodes;
-      for (let i = 0; i < childNodes.length; i += 1) {
-        if (!budgetLeft()) return;
-        const child = childNodes[i];
-        if (child.nodeType === 3) {
-          emitText(child, depth);
-        } else if (child.nodeType === 1) {
-          walk(child, depth + 1);
+      if (element.shadowRoot) {
+        walkContainer(element.shadowRoot, depth, framePath, origin, cursor, true);
+      }
+      walkContainer(element, depth, framePath, origin, cursor, true);
+    }
+
+    function walkContainer(container: any, depth: any, framePath: any, origin: any, cursor: any, includeText: any) {
+      if (!container) return;
+      if (includeText) {
+        const childNodes = container.childNodes || [];
+        for (let i = 0; i < childNodes.length; i += 1) {
+          if (!budgetLeft()) return;
+          const child = childNodes[i];
+          if (child.nodeType === 3) {
+            emitText(child, depth, framePath, origin);
+          } else if (child.nodeType === 1) {
+            walk(child, depth + 1, framePath, origin, cursor);
+          }
         }
+        return;
+      }
+      const children = container.children || [];
+      for (let i = 0; i < children.length; i += 1) {
+        if (!budgetLeft()) return;
+        walk(children[i], depth + 1, framePath, origin, cursor);
       }
     }
 
-    walk(document.documentElement, 0);
+    walk(document.documentElement, 0, '', { x: 0, y: 0 }, { index: 0 });
 
     const viewport = {
-      width: window.innerWidth,
-      height: window.innerHeight,
+      width: Math.round(window.innerWidth),
+      height: Math.round(window.innerHeight),
       scrollX: Math.round(window.scrollX),
       scrollY: Math.round(window.scrollY),
     };
     if (format === 'compact') {
-      const lines = [];
+      const lines: any[] = [];
       for (let i = 0; i < nodes.length; i += 1) {
         lines.push(compactLineForNode(nodes[i], includeBbox));
       }
-      return {
+      const result: any = {
         format: 'compact',
         url: location.href,
         title: truncate(document.title, 300),
@@ -716,11 +865,12 @@ declare global {
         mode: mode,
         node_count: lines.length,
         truncated: truncated,
-        text: lines.join('\n'),
       };
+      if (frames.total > 0) result.frames = frames;
+      result.text = lines.join('\n');
+      return result;
     }
-
-    return {
+    const jsonResult: any = {
       format: 'json',
       url: location.href,
       title: truncate(document.title, 300),
@@ -732,8 +882,10 @@ declare global {
       text_count: textCount,
       ref_count: refToElement.size,
       truncated: truncated,
-      nodes: nodes,
     };
+    if (frames.total > 0) jsonResult.frames = frames;
+    jsonResult.nodes = nodes;
+    return jsonResult;
   }
 
   // -------------------------------------------------------------------------
@@ -1498,20 +1650,74 @@ declare global {
     return rect;
   }
 
+  function containsDeep(container: any, node: any) {
+    let current = node;
+    let guard = 0;
+    while (current && guard < 64) {
+      guard += 1;
+      if (current === container) return true;
+      if (typeof current.getRootNode === 'function') {
+        const root = current.getRootNode();
+        if (root && root.host) {
+          current = root.host;
+          continue;
+        }
+      }
+      current = current.parentNode;
+    }
+    return false;
+  }
+
+  function frameOffsetFor(element: any) {
+    let x = 0;
+    let y = 0;
+    let doc = element.ownerDocument;
+    let guard = 0;
+    while (doc && doc !== document && guard < 32) {
+      guard += 1;
+      const view = doc.defaultView;
+      const frame = view && view.frameElement;
+      if (!frame) break;
+      const rect = frame.getBoundingClientRect();
+      x += rect.left + Number(frame.clientLeft || 0);
+      y += rect.top + Number(frame.clientTop || 0);
+      doc = frame.ownerDocument;
+    }
+    return { x: x, y: y };
+  }
+
   function hitTest(element: any, rect: any, action: any) {
-    const viewportWidth = Math.max(window.innerWidth, 1);
-    const viewportHeight = Math.max(window.innerHeight, 1);
+    const doc = element.ownerDocument || document;
+    const view = (doc && doc.defaultView) || window;
+    const viewportWidth = Math.max(Number(view.innerWidth) || 1, 1);
+    const viewportHeight = Math.max(Number(view.innerHeight) || 1, 1);
     const x = Math.min(Math.max(rect.left + rect.width / 2, 0), viewportWidth - 1);
     const y = Math.min(Math.max(rect.top + rect.height / 2, 0), viewportHeight - 1);
-    const hit = document.elementFromPoint(x, y);
+    let hit = null;
+    try {
+      const root = typeof element.getRootNode === 'function' ? element.getRootNode() : doc;
+      if (root && typeof root.elementFromPoint === 'function') {
+        hit = root.elementFromPoint(x, y);
+      }
+    } catch (error: any) {
+      hit = null;
+    }
+    if (!hit) {
+      try {
+        if (doc && typeof doc.elementFromPoint === 'function') hit = doc.elementFromPoint(x, y);
+      } catch (error: any) {
+        hit = null;
+      }
+    }
     if (!hit) {
       throw notInteractable('the element is outside the viewport', {
         action: action,
         element: describeElement(element),
       });
     }
-    if (hit === element || element.contains(hit)) {
-      return { x: x, y: y, hit: hit };
+    if (containsDeep(element, hit)) {
+      const offset = frameOffsetFor(element);
+      return { x: x, y: y, topX: x + offset.x, topY: y + offset.y, hit: hit };
     }
     throw notInteractable('another element covers the target', {
       action: action,
@@ -1525,18 +1731,25 @@ declare global {
   // -------------------------------------------------------------------------
 
   function dispatchPointer(element: any, type: any, point: any) {
-    if (typeof window.PointerEvent !== 'function') return false;
+    const view = (element.ownerDocument && element.ownerDocument.defaultView) || window;
+    const PointerEventCtor =
+      typeof view.PointerEvent === 'function'
+        ? view.PointerEvent
+        : typeof window.PointerEvent === 'function'
+          ? window.PointerEvent
+          : null;
+    if (!PointerEventCtor) return false;
     try {
-      const event = new PointerEvent(type, {
+      const event = new PointerEventCtor(type, {
         bubbles: type !== 'pointerenter',
         cancelable: type !== 'pointerenter',
         composed: true,
-        view: window,
+        view: view,
         detail: 1,
         clientX: point.x,
         clientY: point.y,
-        screenX: window.screenX + point.x,
-        screenY: window.screenY + point.y,
+        screenX: window.screenX + (point.topX === undefined ? point.x : point.topX),
+        screenY: window.screenY + (point.topY === undefined ? point.y : point.topY),
         button: 0,
         buttons: type === 'pointerup' ? 0 : 1,
         pointerId: 1,
@@ -1553,17 +1766,25 @@ declare global {
   }
 
   function dispatchMouse(element: any, type: any, point: any) {
+    const view = (element.ownerDocument && element.ownerDocument.defaultView) || window;
+    const MouseEventCtor =
+      typeof view.MouseEvent === 'function'
+        ? view.MouseEvent
+        : typeof window.MouseEvent === 'function'
+          ? window.MouseEvent
+          : null;
+    if (!MouseEventCtor) return false;
     try {
-      const event = new MouseEvent(type, {
+      const event = new MouseEventCtor(type, {
         bubbles: true,
         cancelable: true,
         composed: true,
-        view: window,
+        view: view,
         detail: 1,
         clientX: point.x,
         clientY: point.y,
-        screenX: window.screenX + point.x,
-        screenY: window.screenY + point.y,
+        screenX: window.screenX + (point.topX === undefined ? point.x : point.topX),
+        screenY: window.screenY + (point.topY === undefined ? point.y : point.topY),
         button: 0,
         buttons: type === 'mouseup' ? 0 : 1,
       });

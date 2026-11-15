@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Corvus Frames Page</title>
+<style>
+body { margin: 0; font-family: sans-serif; }
+iframe { display: block; width: 360px; height: 220px; border: 1px solid #888; }
+#cross { margin-top: 40px; }
+#spacer { height: 1800px; }
+</style>
+</head>
+<body>
+<h1 id="frames-title">Frames Fixture</h1>
+<button id="top-btn">Top Button</button>
+<div id="shadow-host"></div>
+<iframe id="same" src="/frames-child.html" title="same-origin child"></iframe>
+<iframe id="cross" src="http://127.0.0.1:8813/frames-cross.html" title="cross-origin child"></iframe>
+<p id="spacer">spacer marker</p>
+<p id="footer">Footer Marker</p>
+<script>
+const host = document.getElementById('shadow-host');
+const root = host.attachShadow({ mode: 'open' });
+root.innerHTML = '<button id="shadow-btn">Shadow Button</button><span>Shadow text</span>';
+</script>
+</body>
+</html>

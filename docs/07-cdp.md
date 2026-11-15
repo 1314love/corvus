@@ -2,7 +2,7 @@
 
 [English](07-cdp.md) | [中文](07-cdp.zh.md)
 
-Status: 1.4.0. Audience: operators and developers who want browser-level CDP control in addition to the extension transport.
+Status: 1.4.0 is the current release. The tree also carries unreleased v1.5.0 work: page snapshots traverse open shadow DOM and same-origin child frames, and compact diffs are computed by the daemon. Audience: operators and developers who want browser-level CDP control in addition to the extension transport.
 
 Corvus 1.4.0 can drive a Chromium browser through the Chrome DevTools Protocol (CDP) directly from the Rust daemon, or through the Manifest V3 extension as before. The extension remains the zero-setup path and the default for user browsers. CDP is an opt-in path for a browser that is already listening on a loopback debugging port; in 1.4.0 it covers all 33 browser-facing tools, including compact snapshots and `@c` element references.
 
@@ -172,6 +172,8 @@ The ring holds 1000 events. `next_seq` is the cursor for the next read and `drop
 ```
 
 `format: "json"` returns node objects instead of text; `viewport_only`, `include_bbox` and `max_nodes` behave as documented in [09-tools.md](09-tools.md). A reference is valid only for the snapshot that produced it; take a new snapshot after navigation or DOM changes.
+
+On the CDP channel the snapshot also traverses open shadow DOM and same-origin child frames. The top document has no frame path; child frames use document-order paths such as `f0`, `f0.0` and `f1`. Content inside a child frame appends `frame="<path>"` to its compact line, and a JSON node carries `frame` only when it is non-empty. When the page has child frames, the result adds `frames: {total, included, skipped: [{frame, url, reason}]}`; `reason` is `cross_origin`, `unavailable` or `geometry_unavailable`. Cross-origin frame DOM is never read, `max_nodes` is one budget across every included document, and bounding boxes are projected into the top viewport. Compact diffs are computed by the daemon application layer, not by CDP; see [09-tools.md](09-tools.md) for the diff contract.
 
 `@c` references are CDP-only and `@eN` references are extension-only. Passing one to the other channel returns typed `BAD_ARGS`; omit `tab_id` to act on the active target. The eight former extension-only tools now accept `@c` references under forced `cdp`; extension-only availability is zero in 1.4.0.
 

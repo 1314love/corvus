@@ -1342,11 +1342,138 @@ impl CdpClient {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         };
-        let (ax, dom, page) = self.snapshot_inputs(&session).await?;
-        let snapshot = snapshot::render(&ax, &dom, &page, &options)?;
+        let (dom, page) = self.snapshot_page(&session).await?;
+        let frame_tree = self
+            .send(
+                "Page.getFrameTree",
+                json!({}),
+                Some(&session),
+                None,
+                Some(15_000),
+            )
+            .await
+            .ok();
+        let frame_nodes = frame_tree
+            .as_ref()
+            .map(flatten_frame_tree)
+            .unwrap_or_default();
+        let mut frames_json = None;
+        let snapshot = if frame_nodes.len() <= 1 {
+            let ax = self
+                .send(
+                    "Accessibility.getFullAXTree",
+                    json!({}),
+                    Some(&session),
+                    None,
+                    Some(15_000),
+                )
+                .await?;
+            snapshot::render(&ax, &dom, &page, &options)?
+        } else {
+            let strings: Vec<Value> = dom
+                .pointer("/strings")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let documents: Vec<Value> = dom
+                .pointer("/documents")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let _ = self
+                .send(
+                    "DOM.getDocument",
+                    json!({ "depth": 0 }),
+                    Some(&session),
+                    None,
+                    Some(10_000),
+                )
+                .await;
+            let mut collected: Vec<FrameData> = Vec::new();
+            let mut skipped: Vec<Value> = Vec::new();
+            for node in &frame_nodes {
+                let is_top = node.path.is_empty();
+                if !is_top && !same_origin(&page.url, &node.url) {
+                    skipped.push(json!({
+                        "frame": node.path,
+                        "url": node.url,
+                        "reason": "cross_origin",
+                    }));
+                    continue;
+                }
+                let document_index = snapshot_document_index(&documents, &strings, &node.frame_id);
+                let (origin, scroll) = if is_top {
+                    let scroll = document_index
+                        .map(|index| document_scroll(&documents[index]))
+                        .unwrap_or((page.viewport.scroll_x, page.viewport.scroll_y));
+                    ((0.0, 0.0), scroll)
+                } else {
+                    let Some(document_index) = document_index else {
+                        skipped.push(json!({
+                            "frame": node.path,
+                            "url": node.url,
+                            "reason": "geometry_unavailable",
+                        }));
+                        continue;
+                    };
+                    match self.frame_owner_origin(&session, &node.frame_id).await {
+                        Ok(Some(origin)) => (origin, document_scroll(&documents[document_index])),
+                        _ => {
+                            skipped.push(json!({
+                                "frame": node.path,
+                                "url": node.url,
+                                "reason": "geometry_unavailable",
+                            }));
+                            continue;
+                        }
+                    }
+                };
+                let ax = match self
+                    .send(
+                        "Accessibility.getFullAXTree",
+                        json!({ "frameId": node.frame_id }),
+                        Some(&session),
+                        None,
+                        Some(15_000),
+                    )
+                    .await
+                {
+                    Ok(ax) => ax,
+                    Err(error) if is_top => return Err(error),
+                    Err(_) => {
+                        skipped.push(json!({
+                            "frame": node.path,
+                            "url": node.url,
+                            "reason": "unavailable",
+                        }));
+                        continue;
+                    }
+                };
+                collected.push(FrameData {
+                    path: node.path.clone(),
+                    ax,
+                    document_index,
+                    origin,
+                    scroll,
+                });
+            }
+            frames_json = frames_summary(&frame_nodes, &collected, skipped);
+            let inputs: Vec<snapshot::FrameInput<'_>> = collected
+                .iter()
+                .map(|frame| snapshot::FrameInput {
+                    path: &frame.path,
+                    ax: &frame.ax,
+                    document: frame.document_index.and_then(|index| documents.get(index)),
+                    strings: Some(strings.as_slice()),
+                    origin: frame.origin,
+                    scroll: frame.scroll,
+                })
+                .collect();
+            snapshot::render_frames(&inputs, &page, &options)?
+        };
         let viewport = page.viewport.as_json();
-        match format {
-            Format::Compact => Ok(json!({
+        let mut result = match format {
+            Format::Compact => json!({
                 "format": "compact",
                 "tab_id": target_id,
                 "url": page.url,
@@ -1356,8 +1483,8 @@ impl CdpClient {
                 "node_count": snapshot.node_count,
                 "truncated": snapshot.truncated,
                 "text": snapshot.text,
-            })),
-            Format::Json => Ok(json!({
+            }),
+            Format::Json => json!({
                 "format": "json",
                 "tab_id": target_id,
                 "url": page.url,
@@ -1367,8 +1494,12 @@ impl CdpClient {
                 "node_count": snapshot.node_count,
                 "truncated": snapshot.truncated,
                 "nodes": snapshot.nodes,
-            })),
+            }),
+        };
+        if let Some(frames) = frames_json {
+            result["frames"] = frames;
         }
+        Ok(result)
     }
 
     async fn find_tool(&self, args: &Value) -> Result<Value, CdpError> {
@@ -1399,6 +1530,7 @@ impl CdpClient {
     }
 
     async fn snapshot_inputs(&self, session: &str) -> Result<(Value, Value, PageInfo), CdpError> {
+        let (dom, page) = self.snapshot_page(session).await?;
         let ax = self
             .send(
                 "Accessibility.getFullAXTree",
@@ -1408,6 +1540,10 @@ impl CdpClient {
                 Some(15_000),
             )
             .await?;
+        Ok((ax, dom, page))
+    }
+
+    async fn snapshot_page(&self, session: &str) -> Result<(Value, PageInfo), CdpError> {
         let dom = self
             .send(
                 "DOMSnapshot.captureSnapshot",
@@ -1447,7 +1583,50 @@ impl CdpClient {
                 .to_string(),
             viewport,
         };
-        Ok((ax, dom, page))
+        Ok((dom, page))
+    }
+
+    async fn frame_owner_origin(
+        &self,
+        session: &str,
+        frame_id: &str,
+    ) -> Result<Option<(f64, f64)>, CdpError> {
+        let owner = self
+            .send(
+                "DOM.getFrameOwner",
+                json!({ "frameId": frame_id }),
+                Some(session),
+                None,
+                Some(10_000),
+            )
+            .await?;
+        let backend_id = owner
+            .get("backendNodeId")
+            .and_then(Value::as_i64)
+            .or_else(|| owner.pointer("/node/backendNodeId").and_then(Value::as_i64));
+        let Some(backend_id) = backend_id else {
+            return Ok(None);
+        };
+        let model = self
+            .send(
+                "DOM.getBoxModel",
+                json!({ "backendNodeId": backend_id }),
+                Some(session),
+                None,
+                Some(10_000),
+            )
+            .await?;
+        let content = model.pointer("/model/content").and_then(Value::as_array);
+        let x = content
+            .and_then(|content| content.first())
+            .and_then(Value::as_f64);
+        let y = content
+            .and_then(|content| content.get(1))
+            .and_then(Value::as_f64);
+        match (x, y) {
+            (Some(x), Some(y)) if x.is_finite() && y.is_finite() => Ok(Some((x, y))),
+            _ => Ok(None),
+        }
     }
 
     async fn click_tool(&self, args: &Value) -> Result<Value, CdpError> {
@@ -2059,6 +2238,136 @@ impl CdpClient {
 }
 
 #[derive(Clone, Debug)]
+struct FrameNode {
+    path: String,
+    frame_id: String,
+    url: String,
+}
+
+#[derive(Clone, Debug)]
+struct FrameData {
+    path: String,
+    ax: Value,
+    document_index: Option<usize>,
+    origin: (f64, f64),
+    scroll: (f64, f64),
+}
+
+fn frames_summary(
+    frame_nodes: &[FrameNode],
+    included: &[FrameData],
+    skipped: Vec<Value>,
+) -> Option<Value> {
+    let total = frame_nodes
+        .iter()
+        .filter(|node| !node.path.is_empty())
+        .filter(|node| {
+            let parent = node.path.rsplit_once('.').map_or("", |(parent, _)| parent);
+            included.iter().any(|frame| frame.path == parent)
+        })
+        .count();
+    if total == 0 {
+        return None;
+    }
+    Some(json!({
+        "total": total,
+        "included": included.iter().filter(|frame| !frame.path.is_empty()).count(),
+        "skipped": skipped,
+    }))
+}
+
+fn flatten_frame_tree(tree: &Value) -> Vec<FrameNode> {
+    fn visit(node: &Value, path: &str, out: &mut Vec<FrameNode>) {
+        let frame_id = node
+            .pointer("/frame/id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let url = node
+            .pointer("/frame/url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        out.push(FrameNode {
+            path: path.to_string(),
+            frame_id,
+            url,
+        });
+        let Some(children) = node.get("childFrames").and_then(Value::as_array) else {
+            return;
+        };
+        for (index, child) in children.iter().enumerate() {
+            let child_path = if path.is_empty() {
+                format!("f{index}")
+            } else {
+                format!("{path}.{index}")
+            };
+            visit(child, &child_path, out);
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(root) = tree.get("frameTree") {
+        visit(root, "", &mut out);
+    }
+    out
+}
+
+fn snapshot_string(strings: &[Value], value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(_) => value
+            .and_then(Value::as_u64)
+            .and_then(|index| strings.get(index as usize))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+fn snapshot_document_index(
+    documents: &[Value],
+    strings: &[Value],
+    frame_id: &str,
+) -> Option<usize> {
+    documents.iter().position(|document| {
+        snapshot_string(strings, document.get("frameId")).as_deref() == Some(frame_id)
+    })
+}
+
+fn document_scroll(document: &Value) -> (f64, f64) {
+    (
+        document
+            .get("scrollOffsetX")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        document
+            .get("scrollOffsetY")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+    )
+}
+
+fn url_origin(url: &str) -> Option<&str> {
+    let (_, rest) = url.split_once("://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let prefix = url.len() - rest.len();
+    Some(&url[..prefix + end])
+}
+
+fn same_origin(left: &str, right: &str) -> bool {
+    if left.is_empty() || right.is_empty() {
+        return true;
+    }
+    if left.starts_with("about:") || right.starts_with("about:") {
+        return true;
+    }
+    match (url_origin(left), url_origin(right)) {
+        (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+        _ => true,
+    }
+}
+
+#[derive(Clone, Debug)]
 struct ElementInfo {
     tag: String,
     role: String,
@@ -2466,5 +2775,168 @@ mod tests {
             "/admin/",
             "https://example.test/api/items"
         ));
+    }
+
+    #[test]
+    fn frame_paths_follow_document_order() {
+        let tree = json!({
+            "frameTree": {
+                "frame": { "id": "TOP", "url": "https://example.test/" },
+                "childFrames": [
+                    {
+                        "frame": { "id": "F0", "url": "https://example.test/frame" },
+                        "childFrames": [
+                            { "frame": { "id": "F00", "url": "https://example.test/nested" } }
+                        ]
+                    },
+                    { "frame": { "id": "F1", "url": "https://other.test/" } }
+                ]
+            }
+        });
+        let nodes = flatten_frame_tree(&tree);
+        let paths: Vec<&str> = nodes.iter().map(|node| node.path.as_str()).collect();
+        assert_eq!(paths, vec!["", "f0", "f0.0", "f1"]);
+        assert_eq!(nodes[2].frame_id, "F00");
+        assert_eq!(nodes[3].url, "https://other.test/");
+    }
+
+    #[test]
+    fn frame_summary_counts_only_child_documents() {
+        let tree = json!({
+            "frameTree": {
+                "frame": { "id": "TOP", "url": "https://example.test/" },
+                "childFrames": [
+                    {
+                        "frame": { "id": "F0", "url": "https://example.test/frame" },
+                        "childFrames": [
+                            { "frame": { "id": "F00", "url": "https://example.test/nested" } }
+                        ]
+                    },
+                    { "frame": { "id": "F1", "url": "https://other.test/" } }
+                ]
+            }
+        });
+        let nodes = flatten_frame_tree(&tree);
+        let collected = vec![frame_data(""), frame_data("f0"), frame_data("f0.0")];
+        let summary = frames_summary(
+            &nodes,
+            &collected,
+            vec![json!({
+                "frame": "f1",
+                "url": "https://other.test/",
+                "reason": "cross_origin",
+            })],
+        )
+        .expect("child frames");
+        assert_eq!(summary.get("total").and_then(Value::as_u64), Some(3));
+        assert_eq!(summary.get("included").and_then(Value::as_u64), Some(2));
+        assert_eq!(
+            summary
+                .get("skipped")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    fn frame_data(path: &str) -> FrameData {
+        FrameData {
+            path: path.to_string(),
+            ax: json!({ "nodes": [] }),
+            document_index: None,
+            origin: (0.0, 0.0),
+            scroll: (0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn frame_summary_is_omitted_without_child_documents() {
+        let tree = json!({
+            "frameTree": { "frame": { "id": "TOP", "url": "https://example.test/" } }
+        });
+        let nodes = flatten_frame_tree(&tree);
+        assert!(frames_summary(&nodes, &[frame_data("")], Vec::new()).is_none());
+        assert!(frames_summary(&[], &[], Vec::new()).is_none());
+    }
+
+    #[test]
+    fn frame_summary_omits_descendants_of_skipped_frames() {
+        let tree = json!({
+            "frameTree": {
+                "frame": { "id": "TOP", "url": "https://example.test/" },
+                "childFrames": [
+                    {
+                        "frame": { "id": "F0", "url": "https://other.test/" },
+                        "childFrames": [
+                            { "frame": { "id": "F00", "url": "https://other.test/nested" } }
+                        ]
+                    }
+                ]
+            }
+        });
+        let nodes = flatten_frame_tree(&tree);
+        let summary = frames_summary(
+            &nodes,
+            &[frame_data("")],
+            vec![json!({
+                "frame": "f0",
+                "url": "https://other.test/",
+                "reason": "cross_origin",
+            })],
+        )
+        .expect("one child");
+        assert_eq!(summary.get("total").and_then(Value::as_u64), Some(1));
+        assert_eq!(summary.get("included").and_then(Value::as_u64), Some(0));
+    }
+
+    #[test]
+    fn cross_origin_frames_are_identified_for_skipping() {
+        assert!(same_origin(
+            "https://example.test/top",
+            "https://example.test/frame"
+        ));
+        assert!(same_origin(
+            "https://EXAMPLE.test/",
+            "https://example.test/frame"
+        ));
+        assert!(!same_origin(
+            "https://example.test/",
+            "https://other.test/frame"
+        ));
+        assert!(!same_origin(
+            "http://example.test/",
+            "https://example.test/"
+        ));
+        assert!(!same_origin(
+            "https://example.test:8443/",
+            "https://example.test/"
+        ));
+        assert!(same_origin("about:blank", "https://example.test/"));
+    }
+
+    #[test]
+    fn snapshot_documents_decode_root_strings_and_scroll() {
+        let strings = json!([
+            "",
+            "https://example.test/",
+            "https://example.test/frame",
+            "FRAME-ID"
+        ]);
+        let documents = json!([
+            {
+                "frameId": 3,
+                "scrollOffsetX": 12.5,
+                "scrollOffsetY": 34.5,
+                "nodes": { "backendNodeId": [], "nodeName": [] }
+            }
+        ]);
+        let documents = documents.as_array().expect("documents");
+        let strings = strings.as_array().expect("strings");
+        assert_eq!(
+            snapshot_document_index(documents, strings, "FRAME-ID"),
+            Some(0)
+        );
+        assert_eq!(snapshot_document_index(documents, strings, "MISSING"), None);
+        assert_eq!(document_scroll(&documents[0]), (12.5, 34.5));
     }
 }

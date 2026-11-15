@@ -16,6 +16,12 @@ interface HelloWaiter {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+interface ResponseWaiter {
+  resolve: (frame: Record<string, unknown>) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
 export interface MockDaemonSnapshot {
   connections: number;
   hellos: number;
@@ -27,6 +33,7 @@ export interface MockDaemon {
   hellos: Array<Record<string, unknown>>;
   snapshot: () => MockDaemonSnapshot;
   waitForHello: (timeoutMs?: number) => Promise<Record<string, unknown>>;
+  sendCommand: (tool: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<Record<string, unknown>>;
   close: () => Promise<void>;
 }
 
@@ -86,6 +93,8 @@ export async function startMockDaemon(port: number): Promise<MockDaemon> {
   const hellos: Array<Record<string, unknown>> = [];
   const sockets = new Set<Duplex>();
   const waiters = new Set<HelloWaiter>();
+  const responseWaiters = new Map<string, ResponseWaiter>();
+  let commandSeq = 0;
   let connections = 0;
   let lastUpgradeAt: number | null = null;
 
@@ -103,6 +112,16 @@ export async function startMockDaemon(port: number): Promise<MockDaemon> {
       if (waiter.timer) clearTimeout(waiter.timer);
       waiter.reject(error);
     }
+  };
+
+  const settleResponse = (frame: Record<string, unknown>): void => {
+    const id = typeof frame.id === 'string' ? frame.id : null;
+    if (!id) return;
+    const waiter = responseWaiters.get(id);
+    if (!waiter) return;
+    responseWaiters.delete(id);
+    if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.resolve(frame);
   };
 
   const server: Server = createServer((_request, response) => {
@@ -161,6 +180,10 @@ export async function startMockDaemon(port: number): Promise<MockDaemon> {
 
         if (parsed.kind === 'ping') {
           sendText(socket, JSON.stringify({ v: 1, id: parsed.id, kind: 'pong' }));
+          continue;
+        }
+        if (parsed.kind === 'response') {
+          settleResponse(parsed);
           continue;
         }
         if (parsed.kind !== 'hello') continue;
@@ -222,8 +245,40 @@ export async function startMockDaemon(port: number): Promise<MockDaemon> {
         waiters.add(waiter);
       });
     },
+    sendCommand: (tool, args, timeoutMs = 20000) => {
+      const socket = [...sockets].find((candidate) => !candidate.destroyed && candidate.writable);
+      if (!socket) return Promise.reject(new Error('mock daemon has no connected socket'));
+      const id = 'cmd-' + String((commandSeq += 1));
+      return new Promise<Record<string, unknown>>((resolve, reject) => {
+        const waiter: ResponseWaiter = { resolve, reject, timer: null };
+        responseWaiters.set(id, waiter);
+        const timer = setTimeout(() => {
+          if (!responseWaiters.has(id)) return;
+          responseWaiters.delete(id);
+          reject(new Error('timed out waiting for a response to ' + tool + ' after ' + String(timeoutMs) + ' ms'));
+        }, timeoutMs);
+        waiter.timer = timer;
+        timer.unref?.();
+        sendText(
+          socket,
+          JSON.stringify({
+            v: 1,
+            id,
+            kind: 'command',
+            tool,
+            args,
+            meta: { timeout_ms: timeoutMs },
+          }),
+        );
+      });
+    },
     close: async () => {
       rejectWaiters(new Error('mock daemon closed'));
+      for (const [id, waiter] of responseWaiters) {
+        responseWaiters.delete(id);
+        if (waiter.timer) clearTimeout(waiter.timer);
+        waiter.reject(new Error('mock daemon closed'));
+      }
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },

@@ -53,6 +53,36 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  language:
+    name: Language gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Self-test the scanner
+        run: node scripts/check-cot.mjs --self-test
+
+      - name: Scan tracked files
+        run: node scripts/check-cot.mjs
+
+      - name: Scan pull request commits
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-cot.mjs --commits "origin/${{ github.base_ref }}..HEAD"
+
+      - name: Scan pushed commits
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: node scripts/check-cot.mjs --commits "$BEFORE..$AFTER"
+
   extension:
     name: Browser extension (Node and pnpm)
     runs-on: ubuntu-latest
@@ -180,7 +210,7 @@ jobs:
           set -euo pipefail
           version="$(docker run --rm --entrypoint /usr/local/bin/corvusd corvus:test --version)"
           echo "$version"
-          echo "$version" | grep -q '1.4.0'
+          echo "$version" | grep -q '1.5.0'
 
       - name: Run container and verify health and tools
         run: |
@@ -212,7 +242,7 @@ jobs:
             sleep 1
           done
           test -n "$ready"
-          grep -Eq '"version"[[:space:]]*:[[:space:]]*"1\.4\.0"' /tmp/corvus-health.json
+          grep -Eq '"version"[[:space:]]*:[[:space:]]*"1\.5\.0"' /tmp/corvus-health.json
           echo "health: $(cat /tmp/corvus-health.json)"
           headers="$(mktemp)"
           init_body="$(mktemp)"

@@ -608,7 +608,7 @@ impl CdpClient {
         // enabled for the session that was just attached. This is best
         // effort: an unsupported domain must not fail the attachment.
         let enable_timeout = Some(timeout_ms.unwrap_or(5_000).min(5_000));
-        for method in ["Page.enable", "Runtime.enable", "Log.enable"] {
+        for method in ["Page.enable", "Runtime.enable", "Log.enable", "DOM.enable"] {
             let _ = self
                 .send_raw(method, json!({}), Some(session.as_str()), enable_timeout)
                 .await;
@@ -1588,7 +1588,13 @@ mod tests {
             .collect();
         assert_eq!(
             sequence,
-            vec!["Page.enable", "Runtime.enable", "Log.enable", "Test.echo"]
+            vec![
+                "Page.enable",
+                "Runtime.enable",
+                "Log.enable",
+                "DOM.enable",
+                "Test.echo"
+            ]
         );
         drop(entries);
         client.disconnect();

@@ -528,6 +528,23 @@ async fn run_batch(
     }))
 }
 
+/// Apply the shared snapshot diff to a successful CDP page snapshot.
+///
+/// Both a top-level tool call and a browser_batch step reach the CDP client
+/// through `dispatch_tool`, so this is the single application point for the
+/// CDP channel. Extension snapshots are diffed by `Router::execute`.
+fn finish_cdp_page_snapshot(
+    router: &Router,
+    name: &str,
+    arguments: &Value,
+    session: Option<&SessionContext>,
+    value: &mut Value,
+) {
+    if name == "page_snapshot" {
+        router.finish_page_snapshot("cdp", session, arguments, value);
+    }
+}
+
 async fn dispatch_tool(
     cdp: &Arc<CdpClient>,
     channel: &Arc<ChannelState>,
@@ -579,6 +596,7 @@ async fn dispatch_tool(
                         object.insert("descriptor".to_string(), json!(channel.descriptor()));
                     }
                 }
+                finish_cdp_page_snapshot(router, name, arguments, session, &mut value);
                 (Ok(value), true)
             }
             Err(error) => (Err(cdp_error_body(error)), true),
@@ -600,7 +618,10 @@ async fn dispatch_tool(
     if is_cdp_tool(name) && mode != ChannelMode::Extension {
         if cdp.is_connected() {
             return match cdp.call_tool(name, arguments).await {
-                Ok(value) => (Ok(value), true),
+                Ok(mut value) => {
+                    finish_cdp_page_snapshot(router, name, arguments, session, &mut value);
+                    (Ok(value), true)
+                }
                 Err(error) if fall_back_to_extension(mode, &error) => (
                     route(router, name.to_string(), arguments.clone(), session).await,
                     false,
@@ -1483,6 +1504,144 @@ impl Daemon {
 #[cfg(test)]
 mod channel_routing_tests {
     use super::*;
+    use futures::{SinkExt, StreamExt};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio_tungstenite::tungstenite::Message;
+
+    fn snapshot_ax(rich: bool) -> Value {
+        let mut nodes = vec![json!({
+            "nodeId": "1",
+            "ignored": false,
+            "role": { "value": "button" },
+            "name": { "value": "Go" },
+            "backendDOMNodeId": 13,
+        })];
+        if rich {
+            nodes.push(json!({
+                "nodeId": "2",
+                "ignored": false,
+                "role": { "value": "link" },
+                "name": { "value": "Docs" },
+                "backendDOMNodeId": 14,
+            }));
+        }
+        json!({ "nodes": nodes })
+    }
+
+    fn snapshot_dom(rich: bool) -> Value {
+        let mut names = vec![json!(1)];
+        let mut backends = vec![json!(13)];
+        let mut indexes = vec![json!(0)];
+        let mut bounds = vec![json!([10, 20, 30, 40])];
+        if rich {
+            names.push(json!(2));
+            backends.push(json!(14));
+            indexes.push(json!(1));
+            bounds.push(json!([50, 60, 70, 20]));
+        }
+        json!({
+            "strings": ["", "BUTTON", "A"],
+            "documents": [{
+                "frameId": 0,
+                "documentURL": 1,
+                "scrollOffsetX": 0,
+                "scrollOffsetY": 0,
+                "nodes": { "nodeName": names, "backendNodeId": backends },
+                "layout": { "nodeIndex": indexes, "bounds": bounds },
+            }],
+        })
+    }
+
+    async fn mock_snapshot_cdp() -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock cdp");
+        let address = listener.local_addr().expect("mock address");
+        let captures = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&captures);
+        tokio::spawn(async move {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let Ok(socket) = tokio_tungstenite::accept_async(stream).await else {
+                return;
+            };
+            let (mut sink, mut stream) = socket.split();
+            while let Some(frame) = stream.next().await {
+                let Ok(Message::Text(text)) = frame else {
+                    continue;
+                };
+                let Ok(value) = serde_json::from_str::<Value>(text.as_str()) else {
+                    continue;
+                };
+                let Some(id) = value.get("id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let method = value
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                if method == "Target.setDiscoverTargets" {
+                    let event = json!({
+                        "method": "Target.targetCreated",
+                        "params": { "targetInfo": {
+                            "targetId": "T1",
+                            "type": "page",
+                            "title": "Mock page",
+                            "url": "https://example.test/",
+                        }},
+                    });
+                    if sink
+                        .send(Message::Text(event.to_string().into()))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let result = match method {
+                    "Browser.getVersion" => json!({
+                        "product": "MockChrome/1.0",
+                        "protocolVersion": "1.3",
+                    }),
+                    "Target.attachToTarget" => json!({ "sessionId": "SESSION-1" }),
+                    "Page.getFrameTree" => json!({
+                        "frameTree": { "frame": {
+                            "id": "T1",
+                            "url": "https://example.test/",
+                        }},
+                    }),
+                    "DOMSnapshot.captureSnapshot" => {
+                        let index = counter.fetch_add(1, Ordering::SeqCst);
+                        snapshot_dom(index > 0)
+                    }
+                    "Accessibility.getFullAXTree" => {
+                        snapshot_ax(counter.load(Ordering::SeqCst) > 1)
+                    }
+                    "Runtime.evaluate" => json!({
+                        "result": { "value": {
+                            "url": "https://example.test/",
+                            "title": "Mock page",
+                            "width": 800,
+                            "height": 600,
+                            "scrollX": 0,
+                            "scrollY": 0,
+                        }},
+                    }),
+                    _ => json!({}),
+                };
+                let response = json!({ "id": id, "result": result });
+                if sink
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        (format!("ws://{address}/devtools/browser/mock"), captures)
+    }
 
     #[test]
     fn non_loopback_bind_without_auth_or_opt_out_is_refused() {
@@ -1655,6 +1814,192 @@ mod channel_routing_tests {
         .expect_err("browser_batch must never recurse");
         assert_eq!(error.code, ErrorCode::BadArgs);
         assert_eq!(error.message, "browser_batch cannot call itself");
+    }
+
+    #[test]
+    fn cdp_batch_snapshots_share_one_router_baseline() {
+        let registry = Arc::new(Registry::new());
+        let router = Router::new(
+            registry as Arc<dyn BrowserRegistry>,
+            RouterConfig::default(),
+        );
+        let session = SessionContext::new("session-1", "http", None);
+        let url = "https://example.test/";
+
+        let mut baseline = json!({
+            "format": "compact",
+            "tab_id": "tab-1",
+            "url": url,
+            "text": "@c1 button \"Go\"\n# \"Hello\"",
+        });
+        finish_cdp_page_snapshot(
+            &router,
+            "page_snapshot",
+            &json!({}),
+            Some(&session),
+            &mut baseline,
+        );
+        assert!(baseline.get("diff").is_none());
+
+        let mut changed = json!({
+            "format": "compact",
+            "tab_id": "tab-1",
+            "url": url,
+            "text": "@c1 button \"Go\"\n@c2 link \"Docs\"\n# \"Hello\"",
+        });
+        finish_cdp_page_snapshot(
+            &router,
+            "page_snapshot",
+            &json!({ "diff": true }),
+            Some(&session),
+            &mut changed,
+        );
+        assert_eq!(changed["diff"]["baseline"], true);
+        assert_eq!(changed["diff"]["unchanged"], 2);
+        assert_eq!(changed["diff"]["changed"], 0);
+        assert_eq!(changed["diff"]["added"], 1);
+        assert_eq!(changed["diff"]["removed"], 0);
+        assert_eq!(
+            changed["text"],
+            "  @c1 button \"Go\"\n+ @c2 link \"Docs\"\n  # \"Hello\""
+        );
+
+        let mut refreshed = json!({
+            "format": "compact",
+            "tab_id": "tab-1",
+            "url": url,
+            "text": "@c1 button \"Go\"\n@c2 link \"Docs\"\n# \"Hello\"",
+        });
+        finish_cdp_page_snapshot(
+            &router,
+            "page_snapshot",
+            &json!({}),
+            Some(&session),
+            &mut refreshed,
+        );
+
+        let mut stable = json!({
+            "format": "compact",
+            "tab_id": "tab-1",
+            "url": url,
+            "text": "@c1 button \"Go\"\n@c2 link \"Docs\"\n# \"Hello\"",
+        });
+        finish_cdp_page_snapshot(
+            &router,
+            "page_snapshot",
+            &json!({ "diff": true }),
+            Some(&session),
+            &mut stable,
+        );
+        assert_eq!(stable["diff"]["baseline"], true);
+        assert_eq!(stable["diff"]["added"], 0);
+        assert_eq!(stable["diff"]["removed"], 0);
+        assert_eq!(stable["diff"]["changed"], 0);
+        assert_eq!(stable["diff"]["unchanged"], 3);
+        assert_eq!(
+            stable["text"],
+            "  @c1 button \"Go\"\n  @c2 link \"Docs\"\n  # \"Hello\""
+        );
+    }
+
+    #[tokio::test]
+    async fn cdp_batch_snapshot_diff_refreshes_one_baseline() {
+        let (endpoint, _captures) = mock_snapshot_cdp().await;
+        let cdp = Arc::new(CdpClient::new());
+        cdp.connect(&endpoint).expect("connect mock cdp");
+        assert!(cdp.wait_connected(Duration::from_secs(3)).await);
+        for _ in 0..100 {
+            if !cdp.targets().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!cdp.targets().is_empty(), "mock target was not discovered");
+
+        let registry = Arc::new(Registry::new());
+        let channel = Arc::new(ChannelState::new(
+            ChannelMode::Cdp,
+            Arc::clone(&cdp),
+            Arc::clone(&registry),
+            true,
+        ));
+        let router = Router::new(
+            registry.clone() as Arc<dyn BrowserRegistry>,
+            RouterConfig::default(),
+        );
+        let session = SessionContext::new("snapshot-session", "http", None);
+
+        let baseline = run_batch(
+            &cdp,
+            &channel,
+            &registry,
+            &router,
+            &json!({ "steps": [{ "tool": "page_snapshot", "args": { "max_nodes": 100 } }] }),
+            Some(&session),
+        )
+        .await
+        .expect("baseline batch");
+        assert_eq!(baseline["results"][0]["data"]["text"], "@c13 button \"Go\"");
+
+        let changed = run_batch(
+            &cdp,
+            &channel,
+            &registry,
+            &router,
+            &json!({ "steps": [{ "tool": "page_snapshot", "args": {
+                "max_nodes": 100,
+                "diff": true,
+            } }] }),
+            Some(&session),
+        )
+        .await
+        .expect("diff batch");
+        let changed = &changed["results"][0]["data"];
+        assert_eq!(changed["diff"]["baseline"], true);
+        assert_eq!(changed["diff"]["unchanged"], 1);
+        assert_eq!(changed["diff"]["changed"], 0);
+        assert_eq!(changed["diff"]["added"], 1);
+        assert_eq!(changed["diff"]["removed"], 0);
+        assert_eq!(
+            changed["text"],
+            "  @c13 button \"Go\"\n+ @c14 link \"Docs\""
+        );
+
+        let refreshed = run_batch(
+            &cdp,
+            &channel,
+            &registry,
+            &router,
+            &json!({ "steps": [{ "tool": "page_snapshot", "args": { "max_nodes": 100 } }] }),
+            Some(&session),
+        )
+        .await
+        .expect("refresh batch");
+        assert_eq!(
+            refreshed["results"][0]["data"]["text"],
+            "@c13 button \"Go\"\n@c14 link \"Docs\""
+        );
+
+        let stable = run_batch(
+            &cdp,
+            &channel,
+            &registry,
+            &router,
+            &json!({ "steps": [{ "tool": "page_snapshot", "args": {
+                "max_nodes": 100,
+                "diff": true,
+            } }] }),
+            Some(&session),
+        )
+        .await
+        .expect("stable batch");
+        let stable = &stable["results"][0]["data"];
+        assert_eq!(stable["diff"]["baseline"], true);
+        assert_eq!(stable["diff"]["unchanged"], 2);
+        assert_eq!(stable["diff"]["changed"], 0);
+        assert_eq!(stable["diff"]["added"], 0);
+        assert_eq!(stable["diff"]["removed"], 0);
+        assert_eq!(stable["text"], "  @c13 button \"Go\"\n  @c14 link \"Docs\"");
     }
 
     #[tokio::test]

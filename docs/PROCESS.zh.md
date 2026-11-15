@@ -47,6 +47,7 @@
 3. 门禁通过后由 Lead 提交；门禁未关闭期间任何人不得提交或推送。
 4. `main` 使用 squash 合流，且必须保持全绿；CI 是每次推送与拉取请求的第二道门禁。
 5. 门禁失败时，把失败的命令与输出附在任务上退回作者，而不是只给一句结论。
+6. CI 在每次推送与拉取请求上运行 `node scripts/check-cot.mjs`；仓库文件或拉取请求的提交信息中出现推理文本即失败，规则见 [LANGUAGE.md](LANGUAGE.md) 第 5 节。
 
 ## 5. 提交信息
 
@@ -77,5 +78,6 @@
 
 - `scripts/dev-setup.sh` 定位 Rust 工具链、打印所用版本，并用 `cargo metadata --offline` 验证工作区可以解析。
 - `scripts/build.sh` 以 release 模式构建 `corvusd` 与 `corvus` 到 `dist/`，并生成 `dist/SHA256SUMS`。
+- `scripts/check-cot.mjs` 扫描仓库文件，或用 `--commits` 扫描提交区间中的推理文本；`--self-test` 验证规则仍然生效。
 - 本机使用 `--offline` 构建，因为依赖来自已预热的 cargo 缓存、且没有通用外网。CI 正常从网络安装；两种环境的差别只有这个参数，干净构建以 CI 为准。
 - CI 在 `ubuntu-latest`、`windows-latest`、`macos-latest` 上运行同样的三道门禁，见 [.github/workflows/ci.yml](../.github/workflows/ci.yml)。

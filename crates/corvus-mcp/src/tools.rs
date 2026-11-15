@@ -31,7 +31,7 @@ const SPECS: [Spec; 43] = [
     Spec {
         name: "page_snapshot",
         title: "Page snapshot",
-        description: "Return a compact tree of the page. Element references from the snapshot are the values browser_click and browser_type accept as target.",
+        description: "Return a compact tree of the page. Element references from the snapshot are the values browser_click and browser_type accept as target. In compact format, pass diff true on a later snapshot of the same tab to mark added, changed and removed lines against the previous snapshot.",
         schema: snapshot_schema,
         read_only: true,
         destructive: false,
@@ -770,6 +770,11 @@ fn snapshot_schema() -> Value {
                 "type": "boolean",
                 "default": false,
                 "description": "Include viewport-relative bounding boxes in compact lines.",
+            },
+            "diff": {
+                "type": "boolean",
+                "default": false,
+                "description": "Compact format only: mark added, changed and removed lines against the previous snapshot of the same tab.",
             },
         },
         "additionalProperties": false,
@@ -1787,9 +1792,19 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
             optional_choice(&object, "format", &["compact", "json"], name)?;
             optional_bool(&object, "viewport_only", name)?;
             optional_bool(&object, "include_bbox", name)?;
+            optional_bool(&object, "diff", name)?;
             fill_default(&mut object, "format", json!("compact"));
             fill_default(&mut object, "viewport_only", json!(false));
             fill_default(&mut object, "include_bbox", json!(false));
+            fill_default(&mut object, "diff", json!(false));
+            if object.get("diff").and_then(Value::as_bool) == Some(true)
+                && object.get("format").and_then(Value::as_str) != Some("compact")
+            {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "page_snapshot diff is only supported with compact format",
+                ));
+            }
         }
         "browser_click" => {
             required_string(&object, "target", name)?;
@@ -2874,6 +2889,19 @@ mod tests {
         );
         let export = validate("session_export", &json!({ "session_id": "s-1" })).expect("export");
         assert_eq!(export.get("format").and_then(Value::as_str), Some("jsonl"));
+    }
+
+    #[test]
+    fn snapshot_diff_is_compact_only() {
+        let defaults = validate("page_snapshot", &json!({})).expect("defaults");
+        assert_eq!(defaults.get("diff").and_then(Value::as_bool), Some(false));
+        let diff = validate("page_snapshot", &json!({ "diff": true })).expect("diff");
+        assert_eq!(diff.get("diff").and_then(Value::as_bool), Some(true));
+        assert_eq!(diff.get("format").and_then(Value::as_str), Some("compact"));
+        let error = validate("page_snapshot", &json!({ "diff": true, "format": "json" }))
+            .expect_err("json diff");
+        assert_eq!(error.code, ErrorCode::BadArgs);
+        assert!(error.message.contains("compact"));
     }
 
     #[test]

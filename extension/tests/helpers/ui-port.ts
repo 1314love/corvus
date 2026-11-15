@@ -23,7 +23,7 @@ export function sampleState(overrides: Partial<UiState> = {}): UiState {
       reason: null,
       detected_at: 1,
     },
-    version: '1.4.0',
+    version: '1.5.0',
     capabilities: ['dom', 'scripting', 'debugger', 'cdp'],
     debuggerChannel: { managed: true, attached_tabs: [] },
     ...overrides,
@@ -70,4 +70,43 @@ export function installFakeUiPort(
   const connect = vi.fn(() => port);
   vi.stubGlobal('chrome', { runtime: { connect, openOptionsPage: vi.fn(async () => undefined) } });
   return { messages, connect };
+}
+
+interface FakeStorageHarness {
+  values: Record<string, unknown>;
+  set: ReturnType<typeof vi.fn>;
+  get: ReturnType<typeof vi.fn>;
+  remove: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * Attach an in-memory chrome.storage.local to the chrome object installed by
+ * installFakeUiPort. Keeps UI tests independent of a real extension profile.
+ */
+export function installFakeChromeStorage(initial: Record<string, unknown> = {}): FakeStorageHarness {
+  const values: Record<string, unknown> = { ...initial };
+  const get = vi.fn(async (keys?: string | string[] | Record<string, unknown> | null) => {
+    if (typeof keys === 'string') return keys in values ? { [keys]: values[keys] } : {};
+    if (Array.isArray(keys)) {
+      const result: Record<string, unknown> = {};
+      for (const key of keys) if (key in values) result[key] = values[key];
+      return result;
+    }
+    if (keys && typeof keys === 'object') {
+      const result: Record<string, unknown> = {};
+      for (const key of Object.keys(keys)) result[key] = key in values ? values[key] : keys[key];
+      return result;
+    }
+    return { ...values };
+  });
+  const set = vi.fn(async (items: Record<string, unknown>) => {
+    Object.assign(values, items);
+  });
+  const remove = vi.fn(async (keys: string | string[]) => {
+    for (const key of Array.isArray(keys) ? keys : [keys]) delete values[key];
+  });
+  const chromeGlobal = (globalThis as { chrome?: Record<string, unknown> }).chrome;
+  if (!chromeGlobal) throw new Error('installFakeUiPort must run before installFakeChromeStorage');
+  chromeGlobal.storage = { local: { get, set, remove } };
+  return { values, set, get, remove };
 }

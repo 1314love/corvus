@@ -116,7 +116,7 @@ Channel values: `both` means the tool works over either browser channel; `cdp` m
 
 ## 5. page_snapshot
 
-`page_snapshot` returns the page tree used for references. The default output is compact text; `format: "json"` keeps the legacy node objects.
+`page_snapshot` returns the page tree used for references. The default output is compact text; `format: "json"` keeps the legacy node objects. The tree includes open shadow roots and same-origin child frames; cross-origin frames are never read.
 
 | Input | Type | Default | Meaning |
 |---|---|---|---|
@@ -126,6 +126,7 @@ Channel values: `both` means the tool works over either browser channel; `cdp` m
 | `format` | `compact` or `json` | `compact` | `compact` uses the line grammar below; `json` returns node objects. |
 | `viewport_only` | boolean | `false` | Keep only nodes intersecting the current viewport. |
 | `include_bbox` | boolean | `false` | Add viewport-relative bounding boxes. |
+| `diff` | boolean | `false` | Compact output only: mark lines against the previous compact snapshot for the same tab. With `format: "json"` it returns typed `BAD_ARGS`. |
 
 The compact result is:
 
@@ -143,7 +144,9 @@ The compact result is:
 }
 ```
 
-The JSON result has the same metadata but replaces `text` with `nodes`. On the extension channel, JSON includes `node_cap`, `element_count`, `text_count` and `ref_count`. On CDP, JSON nodes carry `kind`, `ref`, `tag`, `role`, `name`, `depth`, `states`, `attributes`, and optional `value` and `bbox`; the CDP JSON result does not add the extension-only counts.
+When the page has child frames the compact result also carries `frames`: `{ "total": 2, "included": 1, "skipped": [{ "frame": "f1", "url": "https://other.example/", "reason": "cross_origin" }] }`. `total` counts every child frame, `included` counts the documents that were read, and `skipped` gives a reason of `cross_origin`, `unavailable` or `geometry_unavailable`. A skipped frame is never silently dropped.
+
+The JSON result has the same metadata but replaces `text` with `nodes`. On the extension channel, JSON includes `node_cap`, `element_count`, `text_count` and `ref_count`. On CDP, JSON nodes carry `kind`, `ref`, `tag`, `role`, `name`, `depth`, `states`, `attributes`, and optional `value` and `bbox`; the CDP JSON result does not add the extension-only counts. A JSON node inside a child frame carries `frame` only when the frame path is non-empty; top-document nodes omit the field.
 
 ### Compact line grammar
 
@@ -171,16 +174,23 @@ The parts are fixed:
 4. Optional `[states]` in fixed order: `disabled`, `checked` or `mixed`, `focused`, `required`, `expanded`, `selected`.
 5. Optional `value="..."`, capped at 80 characters.
 6. Optional `bbox=x,y,w,h`, only with `include_bbox: true`; coordinates are relative to the viewport.
+7. Optional `frame="<path>"` as the final field when the node is inside a child frame. The top document has no suffix. Paths follow document order: the first child frame is `f0`, its first child is `f0.0`, and the next sibling is `f1`.
 
-Text lines use `# "..."`, cap text at 240 characters and use the same escaping. `max_nodes` truncates the tree after the requested number of nodes and sets `truncated: true`.
+Text lines use `# "..."`, cap text at 240 characters and use the same escaping; text inside a child frame carries the same `frame` suffix. `max_nodes` is one budget across the top document, open shadow roots and included frames, and truncation sets `truncated: true`.
 
 ### References and JSON compatibility
 
 - Extension references are `@eN`; CDP references are `@c<backendNodeId>`. A reference from one channel is not valid on the other. Cross-channel use returns typed `BAD_ARGS` with a `details.hint` that says to use the matching reference or omit `tab_id` for the active tab.
 - References remain valid while the page snapshot that produced them is current. Re-snapshot after navigation or DOM changes instead of reusing old references.
-- Extension tab ids are numeric (for example `7`); CDP target ids are 32-hex strings from `cdp_targets`. v1.3 does not translate between the two namespaces. Omit `tab_id` to use the active tab in either channel.
+- Extension tab ids are numeric (for example `7`); CDP target ids are 32-hex strings from `cdp_targets`. 1.4.0 does not translate between the two namespaces. Omit `tab_id` to use the active tab in either channel.
 - `format: "json"` is the compatibility path for clients that need node objects. `include_bbox` adds boxes to compact lines on both channels; on the extension path JSON already includes `bbox` in its node objects and `include_bbox` does not change JSON.
 - `viewport_only` intersects the node box with the current viewport. It does not scroll the page.
+
+### Compact diffs
+
+`diff: true` is available only for compact output; passing it with `format: "json"` is typed `BAD_ARGS`. The daemon application layer computes the diff once per call from a baseline cache of the 64 most recent snapshots, keyed by browser, session and tab. The browser channels do not compute diffs, so the extension and CDP paths share one grammar, and a `browser_batch` step gets the same treatment exactly once.
+
+A compact request with `diff: false` refreshes the baseline. A diff request never refreshes it, and JSON requests do not touch it. If a baseline exists for the same URL, the result adds `diff: { baseline: true, unchanged, changed, added, removed }` and every current line is prefixed: two spaces for unchanged, `+ ` for added and `~ ` for changed. Baseline lines with no current match are appended in their old order with `- `. If there is no baseline, or the tab moved to a different URL, `diff` is `{ baseline: false, unchanged: 0, changed: 0, added: 0, removed: 0 }` and the text is unmarked.
 
 ## 6. browser_batch
 
@@ -237,7 +247,7 @@ Unknown names and unknown categories return typed `BAD_ARGS`. `tool_help` is dae
 `browser_channel` reports and changes the active mode:
 
 - `auto` (default) prefers a connected CDP endpoint; it falls back to the extension only when the CDP route reports `Unsupported`.
-- `cdp` requires CDP and never falls back. v1.3 supports all 33 browser-facing tools over forced CDP, including the eight tools that previously required the extension.
+- `cdp` requires CDP and never falls back. 1.4.0 supports all 33 browser-facing tools over forced CDP, including the eight tools that previously required the extension.
 - `extension` ignores CDP. It supports the original 25 browser-facing tools and rejects the eight CDP-only tools with typed `CAPABILITY_UNAVAILABLE`.
 
 The ten daemon-local tools work in every mode. `browser_channel` changes only the running daemon; the next start uses `--channel` or `CORVUS_CHANNEL`.
@@ -274,6 +284,6 @@ The release-candidate benchmark measured compact output against the JSON compati
 | Mean snapshot payload | 364.83 B / 91.21 tokens | 2,077.33 B / 519.33 tokens | 82.44% smaller |
 | Mean tool result payload | 646.33 B | 2,077.33 B | 68.89% smaller |
 
-Token counts use the benchmark's tokenizer estimate. The default brief `tools/list` is 20,452 bytes for 43 tools; full detail is 37,067 bytes. These are release-candidate measurements; live acceptance evidence belongs in the release notes when QA attaches it.
+Token counts use the benchmark's tokenizer estimate. The 1.5.0 QA report measures the default brief `tools/list` at 20,493 B (array 20,449 B) for 43 tools and full detail at 37,372 B (array 37,328 B); the release notes cite that report.
 
-Version: 1.4.0. Tool catalogues and schemas in this document were checked against the 1.4.0 workspace; the MCP catalogue is unchanged from 1.3.0.
+Version: 1.4.0 is the current published release. The tree also contains unreleased v1.5.0 work with source metadata at 1.5.0: snapshot perception v2 and compact diffs, documented above. Tool catalogues and schemas were checked against the tree; the MCP catalogue is unchanged from 1.3.0 and still has 43 tools in nine categories. No 1.5.0 release or published asset exists yet; QA acceptance PASS is recorded in [v1.5.0.md](../tests/acceptance/v1.5.0.md) at dirty HEAD 73092ea.

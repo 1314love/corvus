@@ -4,7 +4,17 @@ import { extname, relative, resolve } from 'node:path';
 
 const root = process.cwd();
 const out = resolve(root, 'build', 'extension');
-const required = ['manifest.json', 'background.js', 'content.js', 'popup.html', 'options.html', 'offscreen.html'];
+const localeNames = ['en', 'zh_CN'];
+const required = [
+  'manifest.json',
+  'background.js',
+  'content.js',
+  'popup.html',
+  'options.html',
+  'offscreen.html',
+  '_locales/en/messages.json',
+  '_locales/zh_CN/messages.json',
+];
 const failures = [];
 
 function walk(dir) {
@@ -27,14 +37,16 @@ for (const name of required) {
 }
 
 let manifest = null;
+let manifestText = '';
 try {
-  manifest = JSON.parse(readFileSync(resolve(out, 'manifest.json'), 'utf8'));
+  manifestText = readFileSync(resolve(out, 'manifest.json'), 'utf8');
+  manifest = JSON.parse(manifestText);
 } catch (error) {
   failures.push('manifest.json is not valid JSON: ' + error.message);
 }
 if (manifest) {
   if (manifest.manifest_version !== 3) failures.push('manifest_version is not 3');
-  if (manifest.version !== '1.4.0') failures.push('manifest version is not 1.4.0');
+  if (manifest.version !== '1.5.0') failures.push('manifest version is not 1.5.0');
   if (!Array.isArray(manifest.permissions) || manifest.permissions.length !== 10)
     failures.push('permissions must contain exactly 10 entries');
   if (
@@ -50,7 +62,45 @@ if (manifest) {
     failures.push('content script must be content.js');
   if (!manifest.options_ui || manifest.options_ui.page !== 'options.html')
     failures.push('options_ui must point at options.html');
+  if (manifest.default_locale !== 'en') failures.push('default_locale must be en');
+  const localizedFields = [
+    ['name', manifest.name],
+    ['description', manifest.description],
+    ['action.default_title', manifest.action && manifest.action.default_title],
+  ];
+  for (const [field, value] of localizedFields) {
+    if (typeof value !== 'string' || !/^__MSG_[A-Za-z0-9_]+__$/.test(value))
+      failures.push(field + ' must be an __MSG_*__ placeholder');
+  }
 }
+
+const localeCatalogs = {};
+for (const name of localeNames) {
+  try {
+    const data = JSON.parse(readFileSync(resolve(out, '_locales', name, 'messages.json'), 'utf8'));
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('not a JSON object');
+    localeCatalogs[name] = data;
+  } catch (error) {
+    failures.push('_locales/' + name + '/messages.json is missing or invalid: ' + error.message);
+  }
+}
+
+if (manifest) {
+  const placeholders = [...new Set([...manifestText.matchAll(/__MSG_([A-Za-z0-9_]+)__/g)].map((match) => match[1]))];
+  if (placeholders.length === 0) failures.push('manifest does not reference any __MSG_*__ placeholders');
+  for (const key of placeholders) {
+    for (const name of localeNames) {
+      const entry = localeCatalogs[name] && localeCatalogs[name][key];
+      if (!entry || typeof entry.message !== 'string' || entry.message.trim() === '')
+        failures.push('missing message ' + key + ' in _locales/' + name + '/messages.json');
+    }
+  }
+}
+
+const enKeys = localeCatalogs.en ? Object.keys(localeCatalogs.en).sort() : [];
+const zhKeys = localeCatalogs.zh_CN ? Object.keys(localeCatalogs.zh_CN).sort() : [];
+if (enKeys.length && zhKeys.length && JSON.stringify(enKeys) !== JSON.stringify(zhKeys))
+  failures.push('locale catalogs must have the same keys');
 
 const files = (() => {
   try {
@@ -80,10 +130,10 @@ const content = (() => {
 })();
 if (/^import\s/m.test(content)) failures.push('content.js must be standalone IIFE output');
 
-const snapshot = resolve(root, '..', 'tests', 'conformance', 'schema-snapshot.v1.3.0.json');
+const snapshot = resolve(root, '..', 'tests', 'conformance', 'schema-snapshot.v1.5.0.json');
 const snapshotHash = createHash('sha256').update(readFileSync(snapshot)).digest('hex');
 const generated = readFileSync(resolve(root, 'src', 'shared', 'contracts', 'tools.generated.ts'), 'utf8');
-if (!generated.includes('schema-snapshot.v1.3.0.json')) failures.push('generated contracts do not name the snapshot');
+if (!generated.includes('schema-snapshot.v1.5.0.json')) failures.push('generated contracts do not name the snapshot');
 
 const sizes = {};
 for (const name of ['background.js', 'content.js']) {

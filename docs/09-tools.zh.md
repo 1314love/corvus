@@ -116,7 +116,7 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 
 ## 5. page_snapshot
 
-`page_snapshot` 返回用于引用的页面树。默认输出为紧凑文本；`format: "json"` 保留旧版节点对象。
+`page_snapshot` 返回用于引用的页面树。默认输出为紧凑文本；`format: "json"` 保留旧版节点对象。遍历包含开放 shadow root 与同源子 frame；跨源 frame 永不读取。
 
 | 输入 | 类型 | 默认 | 含义 |
 |---|---|---|---|
@@ -126,6 +126,7 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 | `format` | `compact` 或 `json` | `compact` | `compact` 使用下文的行语法；`json` 返回节点对象。 |
 | `viewport_only` | boolean | false | 只保留与当前视口相交的节点。 |
 | `include_bbox` | boolean | false | 加入视口相对包围盒。 |
+| `diff` | boolean | false | 仅紧凑输出：对同一标签页的上一次紧凑快照标记行差异。与 `format: "json"` 同时使用返回类型化 `BAD_ARGS`。 |
 
 紧凑结果如下：
 
@@ -143,7 +144,9 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 }
 ```
 
-JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通道的 JSON 额外包含 `node_cap`、`element_count`、`text_count` 与 `ref_count`。CDP 的 JSON 节点包含 `kind`、`ref`、`tag`、`role`、`name`、`depth`、`states`、`attributes`，以及可选的 `value` 与 `bbox`；CDP JSON 结果不增加扩展专属计数。
+当页面包含子 frame 时，紧凑结果还带有 `frames`：`{ "total": 2, "included": 1, "skipped": [{ "frame": "f1", "url": "https://other.example/", "reason": "cross_origin" }] }`。`total` 统计所有子 frame，`included` 统计已读取的文档，`skipped` 给出 `cross_origin`、`unavailable` 或 `geometry_unavailable` 原因。被跳过的 frame 绝不会被静默丢弃。
+
+JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通道的 JSON 额外包含 `node_cap`、`element_count`、`text_count` 与 `ref_count`。CDP 的 JSON 节点包含 `kind`、`ref`、`tag`、`role`、`name`、`depth`、`states`、`attributes`，以及可选的 `value` 与 `bbox`；CDP JSON 结果不增加扩展专属计数。子 frame 内的 JSON 节点仅在 frame 路径非空时带 `frame`；顶层文档节点省略该字段。
 
 ### 紧凑行语法
 
@@ -171,16 +174,23 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 4. 可选 `[states]`，顺序固定为：`disabled`、`checked` 或 `mixed`、`focused`、`required`、`expanded`、`selected`。
 5. 可选 `value="..."`，最多 80 字符。
 6. 可选 `bbox=x,y,w,h`，仅在 `include_bbox: true` 时出现；坐标相对视口。
+7. 节点位于子 frame 时，可选 `frame="<path>"` 作为最后一个字段。顶层文档没有后缀。路径按文档顺序：第一个子 frame 为 `f0`，其第一个子 frame 为 `f0.0`，下一个兄弟为 `f1`。
 
-文本行使用 `# "..."`，文本最多 240 字符，并使用同样的转义。`max_nodes` 在达到请求节点数后截断，并把 `truncated` 置为 true。
+文本行使用 `# "..."`，文本最多 240 字符，并使用同样的转义；子 frame 内的文本带同样的 `frame` 后缀。`max_nodes` 是顶层文档、开放 shadow root 与已包含 frame 共用的一个预算；截断时把 `truncated` 置为 true。
 
 ### 引用与 JSON 兼容
 
 - 扩展引用为 `@eN`，CDP 引用为 `@c<backendNodeId>`。一种通道的引用不能用于另一种通道。跨通道使用时返回类型化 `BAD_ARGS`，`details.hint` 会提示改用匹配的引用，或省略 `tab_id` 对活动标签操作。
 - 引用在产生它的页面快照仍有效时可用。导航或 DOM 变化后请重新快照，不要复用旧引用。
-- 扩展标签 id 是数字（例如 `7`）；CDP 目标 id 是 `cdp_targets` 返回的 32 位十六进制字符串。v1.3 不在两个命名空间之间转换。任一通道都可省略 `tab_id` 使用活动标签页。
+- 扩展标签 id 是数字（例如 `7`）；CDP 目标 id 是 `cdp_targets` 返回的 32 位十六进制字符串。1.4.0 不在两个命名空间之间转换。任一通道都可省略 `tab_id` 使用活动标签页。
 - `format: "json"` 是需要节点对象的客户端的兼容路径。`include_bbox` 在两种通道上都影响紧凑行；扩展路径的 JSON 节点本身已包含 `bbox`，`include_bbox` 不改变 JSON。
 - `viewport_only` 只做节点包围盒与当前视口的相交判断，不会滚动页面。
+
+### 紧凑差异
+
+`diff: true` 只适用于紧凑输出；与 `format: "json"` 同时使用返回类型化 `BAD_ARGS`。守护进程应用层用最近 64 个快照的基线缓存，按浏览器、会话与标签页为键，在每次调用中计算一次差异。浏览器通道不计算差异，因此扩展与 CDP 路径共用同一语法，`browser_batch` 中的步骤也只计算一次。
+
+`diff: false` 的紧凑请求会刷新基线；差异请求从不刷新，JSON 请求也不触碰基线。若同一 URL 存在基线，结果添加 `diff: { baseline: true, unchanged, changed, added, removed }`，当前每一行都带前缀：未变为两个空格，新增为 `+ `，变化为 `~ `。基线中无当前匹配的行按旧顺序以 `- ` 追加。没有基线，或标签页已切换到不同 URL 时，`diff` 为 `{ baseline: false, unchanged: 0, changed: 0, added: 0, removed: 0 }`，文本不带标记。
 
 ## 6. browser_batch
 
@@ -237,7 +247,7 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 `browser_channel` 查看并切换当前模式：
 
 - `auto`（默认）优先使用已连接的 CDP 端点；只有 CDP 路由返回 `Unsupported` 时才回退到扩展。
-- `cdp` 要求 CDP，并且从不回退。v1.3 在强制 CDP 下支持全部 33 个浏览器类工具，包括此前必须依赖扩展的八个工具。
+- `cdp` 要求 CDP，并且从不回退。1.4.0 在强制 CDP 下支持全部 33 个浏览器类工具，包括此前必须依赖扩展的八个工具。
 - `extension` 忽略 CDP。它支持原有 25 个浏览器类工具，对八个仅 CDP 工具返回类型化 `CAPABILITY_UNAVAILABLE`。
 
 十个守护进程本地工具在任何模式下都可用。`browser_channel` 只改变运行中的守护进程；下次启动仍使用 `--channel` 或 `CORVUS_CHANNEL`。
@@ -274,6 +284,6 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 | 快照平均载荷 | 364.83 B / 91.21 tokens | 2,077.33 B / 519.33 tokens | 小 82.44% |
 | 工具结果平均载荷 | 646.33 B | 2,077.33 B | 小 68.89% |
 
-token 数使用基准的 tokenizer 估算。默认简版 `tools/list` 为 43 个工具 20,452 字节；完整详情为 37,067 字节。以上是候选发布测量；QA 附上实机验收证据后，发布说明再记录对应数据。
+token 数使用基准的 tokenizer 估算。1.5.0 QA 报告实测：43 个工具的默认简版 `tools/list` 为 20,493 B（数组 20,449 B），完整详情为 37,372 B（数组 37,328 B）；发布说明引用该报告。
 
-版本：1.4.0。本文的工具目录与 schema 已对照 1.4.0 工作区检查；MCP 目录与 1.3.0 相同。
+版本：1.4.0 是当前已发布版本。工作树还包含未发布的 v1.5.0 工作，源版本元数据为 1.5.0：上文的快照感知 v2 与紧凑差异。工具目录与 schema 已对照工作树检查；MCP 目录与 1.3.0 相同，仍为 43 个工具、九个类别。尚不存在 1.5.0 发布或已发布产物；QA 验收 PASS 记录于 [v1.5.0.md](../tests/acceptance/v1.5.0.md)（脏工作树 HEAD 73092ea）。

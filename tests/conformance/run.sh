@@ -3,12 +3,12 @@
 #
 # Starts corvusd with an isolated temporary SQLite database, waits for the MCP
 # HTTP endpoint on 127.0.0.1:7331, drives initialize / notifications/initialized
-# / tools/list / tools/call with curl, and asserts the frozen v1.3.0 contract from
+# / tools/list / tools/call with curl, and asserts the frozen v1.5.0 contract from
 # docs/02-architecture.md section 5.3.
 # A stateful mock extension is started when available so positive tool calls
 # exercise the complete daemon -> extension -> daemon path.
 #
-# Coverage: all 43 v1.3.0 tools with at least one happy call and one negative per
+# Coverage: all 43 v1.5.0 tools with at least one happy call and one negative per
 # family, browser_id routing (one browser, two browsers, ambiguous, unknown),
 # network capture/log/intercept, downloads, uploads, navigation loaded/url,
 # immediate-snapshot checks, recording/list/steps/replay/export, metrics and
@@ -27,7 +27,7 @@
 #   CORVUS_METRICS_URL default <MCP origin>/metrics
 #   CARGO              cargo binary (default: cargo, then the known Windows path)
 #   EXPECTED_PROTOCOL_VERSION  default 2025-06-18
-#   EXPECTED_TOOLS     comma separated, default the 43 v1.3.0 tools
+#   EXPECTED_TOOLS     comma separated, default the 43 v1.5.0 tools
 #   KEEP_TMP=1         keep logs even on success
 #
 # Exit codes: 0 all checks passed (skips allowed), 1 one or more checks failed.
@@ -63,15 +63,23 @@ done
 if [ -z "${CARGO:-}" ]; then
   if command -v cargo >/dev/null 2>&1; then
     CARGO=$(command -v cargo)
-  elif [ -x "C:/Users/Administrator/.cargo/bin/cargo.exe" ]; then
-    CARGO="C:/Users/Administrator/.cargo/bin/cargo.exe"
+  elif [ -n "${HOME:-}" ] && [ -x "$HOME/.cargo/bin/cargo.exe" ]; then
+    CARGO="$HOME/.cargo/bin/cargo.exe"
+  elif [ -n "${HOME:-}" ] && [ -x "$HOME/.cargo/bin/cargo" ]; then
+    CARGO="$HOME/.cargo/bin/cargo"
   else
     CARGO=""
   fi
 fi
 CARGO_BIN=${CARGO:-cargo}
 
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/corvus-conformance.XXXXXX") || {
+# shellcheck source=../lib/tmp.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/tmp.sh"
+TMPROOT=$(corvus_tmp_root) || {
+  echo "cannot create the test artifact directory" >&2
+  exit 1
+}
+TMP=$(mktemp -d "$TMPROOT/corvus-conformance.XXXXXX") || {
   echo "cannot create a temporary directory" >&2
   exit 1
 }
@@ -640,7 +648,7 @@ if [ "$LIST_STATUS" != "200" ]; then
 else
   if OUT=$(node "$ROOT/tests/conformance/mcp_assert.mjs" tools "$TMP/tools.json" 2>&1); then
     NAME_LINE=$(printf '%s\n' "$OUT" | sed -n '1p')
-    record PASS "tools/list exactly 43 v1.3.0 tools" "$NAME_LINE"
+    record PASS "tools/list exactly 43 v1.5.0 tools" "$NAME_LINE"
     record PASS "tools/list annotation hints" "$(printf '%s\n' "$OUT" | sed -n '2p')"
     record PASS "tools/list input schema shapes" "$(printf '%s\n' "$OUT" | sed -n '3p')"
   else
@@ -966,10 +974,10 @@ fi
 # --- M4 per-tab scheduling and MCP cancellation -----------------------------
 
 if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ] && [ -n "$SESSION" ]; then
-  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" schema-check "$TMP/tools.json" "$ROOT/tests/conformance/schema-snapshot.v1.3.0.json" 2>&1); then
-    record PASS "tools/list schemas match the v1.3.0 snapshot" "$OUT"
+  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" schema-check "$TMP/tools.json" "$ROOT/tests/conformance/schema-snapshot.v1.5.0.json" 2>&1); then
+    record PASS "tools/list schemas match the v1.5.0 snapshot" "$OUT"
   else
-    record FAIL "tools/list schemas match the v1.3.0 snapshot" "$OUT"
+    record FAIL "tools/list schemas match the v1.5.0 snapshot" "$OUT"
   fi
 
   expect_result "M4 opens a second tab for parallel waits" tab_new '{"url":"http://127.0.0.1:8808/c","active":true}' \

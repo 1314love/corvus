@@ -13,6 +13,7 @@ use corvus_domain::TimeoutPolicy;
 use corvus_proto::{ids, Envelope, ErrorBody, ErrorCode, Kind, Meta};
 
 use crate::ports::{BrowserEvent, BrowserRegistry, BrowserSession, StepRecorder};
+use crate::snapshot_diff::{SnapshotDiffCache, SnapshotKey};
 use crate::spec::{self, ToolSpec};
 
 /// Result of routing one command.
@@ -308,6 +309,7 @@ pub struct Router {
     config: RouterConfig,
     inner: Inner,
     step_sink: OnceLock<Arc<dyn StepRecorder>>,
+    snapshot_diff: Mutex<SnapshotDiffCache>,
 }
 
 impl Router {
@@ -322,6 +324,7 @@ impl Router {
                 idempotency: Mutex::new(IdempotencyState::default()),
             },
             step_sink: OnceLock::new(),
+            snapshot_diff: Mutex::new(SnapshotDiffCache::default()),
         })
     }
 
@@ -469,6 +472,33 @@ impl Router {
             }
         };
         (result, Some(browser_id))
+    }
+
+    /// Apply the shared snapshot diff cache to a successful page snapshot.
+    ///
+    /// CDP snapshots bypass the envelope path, so the daemon calls this same
+    /// method after the CDP result; extension snapshots reach it from
+    /// `execute`. Keeping both entry points here means one cache and one line
+    /// grammar.
+    pub fn finish_page_snapshot(
+        &self,
+        browser: &str,
+        session: Option<&SessionContext>,
+        args: &Value,
+        result: &mut Value,
+    ) {
+        let key = SnapshotKey::new(
+            browser.to_string(),
+            session
+                .map(|session| session.session_id.clone())
+                .unwrap_or_default(),
+            result
+                .get("tab_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        );
+        lock(&self.snapshot_diff).apply(key, args, result);
     }
 
     fn resolve_browser(&self, browser: Option<&str>) -> Result<Arc<dyn BrowserSession>, ErrorBody> {
@@ -655,7 +685,18 @@ impl Router {
                 pending.disarm();
                 match response.error {
                     Some(error) => Err(DispatchFailure::Failed(error)),
-                    None => Ok(response.args),
+                    None => {
+                        let mut args = response.args;
+                        if request.tool == "page_snapshot" {
+                            self.finish_page_snapshot(
+                                connection.id(),
+                                request.session.as_ref(),
+                                &request.args,
+                                &mut args,
+                            );
+                        }
+                        Ok(args)
+                    }
                 }
             }
             Ok(Err(_)) => {
@@ -909,15 +950,15 @@ mod tests {
         }
     }
 
-    struct OneRegistry(Arc<FakeSession>);
+    struct OneRegistry(Arc<dyn BrowserSession>);
 
     impl BrowserRegistry for OneRegistry {
         fn list(&self) -> Vec<Arc<dyn BrowserSession>> {
-            vec![self.0.clone() as Arc<dyn BrowserSession>]
+            vec![Arc::clone(&self.0)]
         }
 
         fn get(&self, id: &str) -> Option<Arc<dyn BrowserSession>> {
-            (id == "fake:default").then(|| self.0.clone() as Arc<dyn BrowserSession>)
+            (id == self.0.id()).then(|| Arc::clone(&self.0))
         }
     }
 
@@ -928,7 +969,7 @@ mod tests {
             alive: AtomicBool::new(true),
         });
         let router = Router::new(
-            Arc::new(OneRegistry(Arc::clone(&session))),
+            Arc::new(OneRegistry(Arc::clone(&session) as Arc<dyn BrowserSession>)),
             RouterConfig {
                 default_timeout_ms: 20,
                 max_timeout_ms: 50,
@@ -946,6 +987,93 @@ mod tests {
         let sent = lock(&session.sent);
         assert!(!sent.is_empty());
         assert_eq!(sent[0].tool.as_deref(), Some("browser_click"));
+    }
+
+    struct RespondingSession {
+        sent: Mutex<Vec<Envelope>>,
+        alive: AtomicBool,
+        response: Mutex<Value>,
+        router: Mutex<std::sync::Weak<Router>>,
+    }
+
+    impl BrowserSession for RespondingSession {
+        fn id(&self) -> &str {
+            "fake:default"
+        }
+
+        fn capabilities(&self) -> Vec<String> {
+            vec!["dom".to_string()]
+        }
+
+        fn supports(&self, capability: &str) -> bool {
+            capability == "dom"
+        }
+
+        fn is_alive(&self) -> bool {
+            self.alive.load(Ordering::SeqCst)
+        }
+
+        fn send(&self, envelope: Envelope) -> Result<(), ErrorBody> {
+            lock(&self.sent).push(envelope.clone());
+            let Some(router) = lock(&self.router).upgrade() else {
+                return Ok(());
+            };
+            let response = lock(&self.response).clone();
+            let command_id = envelope.id.clone();
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                router.handle_inbound("fake:default", Envelope::response_ok(command_id, response));
+            });
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn page_snapshot_diff_uses_the_router_baseline() {
+        let session = Arc::new(RespondingSession {
+            sent: Mutex::new(Vec::new()),
+            alive: AtomicBool::new(true),
+            response: Mutex::new(json!({
+                "format": "compact",
+                "url": "https://example.test/",
+                "tab_id": "tab-1",
+                "text": "@c1 button \"Go\"",
+            })),
+            router: Mutex::new(std::sync::Weak::new()),
+        });
+        let router = Router::new(
+            Arc::new(OneRegistry(Arc::clone(&session) as Arc<dyn BrowserSession>)),
+            RouterConfig {
+                default_timeout_ms: 2_000,
+                max_timeout_ms: 2_000,
+                idempotency_capacity: 8,
+            },
+        );
+        *lock(&session.router) = Arc::downgrade(&router);
+
+        let first = router
+            .dispatch(CommandRequest::new("page_snapshot", json!({})))
+            .await
+            .expect("first snapshot");
+        assert_eq!(first["text"], "@c1 button \"Go\"");
+
+        *lock(&session.response) = json!({
+            "format": "compact",
+            "url": "https://example.test/",
+            "tab_id": "tab-1",
+            "text": "@c1 button \"Go\"\n@c2 link \"Docs\"",
+        });
+        let second = router
+            .dispatch(CommandRequest::new(
+                "page_snapshot",
+                json!({ "diff": true }),
+            ))
+            .await
+            .expect("diff snapshot");
+        assert_eq!(second["diff"]["baseline"], true);
+        assert_eq!(second["diff"]["unchanged"], 1);
+        assert_eq!(second["diff"]["added"], 1);
+        assert_eq!(second["text"], "  @c1 button \"Go\"\n+ @c2 link \"Docs\"");
     }
 
     #[tokio::test]

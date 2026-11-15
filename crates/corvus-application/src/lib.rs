@@ -10,6 +10,7 @@ pub mod backend;
 pub mod dto;
 pub mod ports;
 pub mod router;
+pub mod snapshot_diff;
 pub mod spec;
 
 pub use backend::{BackendFuture, ToolBackend, ToolCall};
@@ -17,4 +18,5 @@ pub use corvus_domain::recording::{now_millis, SessionContext, StepRecord};
 pub use router::{
     CommandCancel, CommandRequest, CommandResult, DispatchFailure, Router, RouterConfig,
 };
+pub use snapshot_diff::{SnapshotDiffCache, SnapshotKey, SNAPSHOT_DIFF_CAPACITY};
 pub use spec::{lookup as lookup_tool, ToolSpec, TOOLS};

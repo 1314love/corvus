@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：1.4.0 是当前交付面：端口与适配器后端、保持不变的 43 工具 MCP 面、带可选 JWT 认证的 REST `/api/v1` 面，以及 TypeScript 与 Vue 3 扩展。cargo 工作区与扩展均为 1.4.0；v1.4.0 验收报告记录了通过的发布矩阵。读者：工程实现者。
+状态：1.4.0 是当前已发布版本：端口与适配器后端、保持不变的 43 工具 MCP 面、带可选 JWT 认证的 REST `/api/v1` 面，以及 TypeScript 与 Vue 3 扩展。v1.4.0 验收报告记录了通过的发布矩阵。工作树还包含未发布的 v1.5.0 工作：扩展的快照感知、紧凑快照差异与扩展国际化；cargo 工作区、扩展 package 与 manifest 现均报告 1.5.0，v1.5.0 QA 验收已在脏工作树上 PASS，但尚无 v1.5 发布。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
@@ -43,11 +43,11 @@
 |---|---|
 | corvus-proto | 线格式：信封、命令、响应、错误分类、版本协商 |
 | corvus-domain | 1.4.0 架构的领域模型与端口；不含 I/O、传输与存储 |
-| corvus-application | 用例、`BrowserRegistry`、`BrowserSession`、`StepRecorder`、`ToolCatalog` 四个端口，以及 MCP 与 REST 共用的原有 32 条路由器规格 |
+| corvus-application | 用例、`BrowserRegistry`、`BrowserSession`、`StepRecorder`、`ToolCatalog` 四个端口、MCP 与 REST 共用的原有 32 条路由器规格，以及 `page_snapshot` 差异缓存 |
 | corvus-api | `/api/v1` REST 面，附 OpenAPI 描述、JWT 认证与 argon2 口令散列 |
 | corvus-mcp | MCP 服务端：工具注册表、JSON-RPC、stdio 与 streamable-http 传输 |
 | corvus-transport | WS 服务端、native-messaging 宿主、long-poll 兜底、浏览器注册表 |
-| corvus-record | 会话录制、SQLite schema、步骤存储、回放支撑 |
+| corvus-record | 会话录制、SeaORM SQLite schema 与迁移、步骤存储、回放支撑 |
 | corvus-cdp | 浏览器级 CDP 客户端、端点校验、事件环、原始与高层 CDP 工具 |
 | corvusd | 守护进程二进制：装配、服务生命周期、配置 |
 | corvus | CLI：doctor、serve、attach、replay、bench、打印配置 |
@@ -284,6 +284,18 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 
 **持久化。** 录制适配器使用 SeaORM 与 SQLite，迁移由 `sea-orm-migration` 管理。`SCHEMA_VERSION` 仍为 1，基线迁移创建相同的 `sessions`、`steps` 表以及 `schema_meta`，因此既有 1.3.0 数据库无需数据迁移即可打开，也仍可被 1.3.0 二进制读取。对于没有迁移历史且非空的既有数据库，守护进程在迁移前执行 `VACUUM INTO <db>.backup-<millis>.db`；备份失败则中止启动。连接池只使用一条连接，启用 WAL、`synchronous=NORMAL`、外键与 5 秒 busy timeout。单个录制任务消费无界写入队列；读取与会话记账在专用录制线程上执行。启动时把此前活动的会话标记为 `abandoned`，删除超过 30 天的会话，并在 UTF-8 边界处把参数与结果截断到 262144 字节。
 
+### 5.9 快照感知 v2、紧凑差异与扩展国际化（v1.5.0，未发布）
+
+本节描述工作树中已有、但尚未作为 1.5.0 发布的工作；工作区版本元数据为 1.5.0。
+
+**快照感知 v2。** `page_snapshot` 现在遍历开放 shadow root 与同源子 frame。顶层文档的 frame 路径为空；子 frame 使用文档顺序路径，例如 `f0`、`f0.0` 与 `f1`。子 frame 内的紧凑行追加 `frame="<path>"`，JSON 节点仅在路径非空时带 `frame`。存在子 frame 时，结果添加 `frames: {total, included, skipped: [{frame, url, reason}]}`，reason 为 `cross_origin`、`unavailable` 或 `geometry_unavailable`；跨源 frame 被跳过且永不读取。包围盒投影到顶层视口，`max_nodes` 是全部已包含文档共用的一个预算。在 CDP 上，`crates/corvus-cdp/src/tools.rs` 的 `snapshot_tool` 遍历 frame 树，并依赖可访问性树覆盖开放 shadow DOM；`extension/src/content/runtime.ts` 的扩展路径执行同样的遍历。
+
+**紧凑差异。** `crates/corvus-application/src/snapshot_diff.rs` 维护按浏览器、会话与标签页为键的 64 项 LRU。`crates/corvus-application/src/router.rs:483` 的 `Router::finish_page_snapshot` 对紧凑结果只应用一次，因此扩展路径、CDP 直连路径（`crates/corvusd/src/lib.rs`）与 `browser_batch` 步骤共用同一语法。`diff: false` 的紧凑请求刷新基线；差异请求与 JSON 请求不刷新。前缀与重置行为见 [09-tools.zh.md](09-tools.zh.md)。
+
+**扩展国际化。** Vue 界面使用 vue-i18n 11.4.20，英文与简体中文各 64 个键的目录位于 `extension/src/ui/shared/i18n/`。语言检测使用 `chrome.i18n.getUILanguage()` 与 `navigator.language`（`zh*` 映射为 `zh-CN`，其余为英文）；显式选择保存在 `corvus.locale`，无需刷新即可响应式切换，并设置 `document.documentElement.lang`。manifest 声明 `default_locale: en`，并在 `_locales/en` 与 `_locales/zh_CN` 中镜像目录。
+
+本工作尚未发布：不存在 1.5.0 发布或已发布产物，尽管 [v1.5.0.md](../tests/acceptance/v1.5.0.md) 记录了脏工作树 HEAD 73092ea 上的 QA PASS，且 cargo 工作区、扩展 package 与 manifest 报告 1.5.0。
+
 ## 6. 扩展设计
 
 三个运行时上下文与两个小型界面，源码都在 `extension/src`，由三次 Vite 构建输出到 `extension/build/extension`：
@@ -292,7 +304,7 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 2. **内容脚本**：DOM 快照、点击与输入合成、等待、变更观察。
 3. **offscreen 文档**：WebSocket 持有者（Service Worker 无法可靠持有长连接）、保活、重连循环。
 
-弹窗与设置页是使用 Pinia 与 Naive UI 的 Vue 3 应用；Service Worker、内容脚本与 offscreen 文档保持无框架 TypeScript。Pinia 会话 store 只是守护进程下发 UI 状态的只读投影，界面通过类型化 RPC 与 worker 通信。`pnpm build` 先清理输出，再执行三次构建，最后复制 manifest，并校验必需文件、版本、10 项权限、ESM Service Worker 与无 source map。
+弹窗与设置页是使用 Pinia 与 Naive UI 的 Vue 3 应用；Service Worker、内容脚本与 offscreen 文档保持无框架 TypeScript。Pinia 会话 store 只是守护进程下发 UI 状态的只读投影，界面通过类型化 RPC 与 worker 通信。`pnpm build` 先清理输出，再执行三次构建，最后复制 manifest，并校验必需文件、版本、10 项权限、ESM Service Worker 与无 source map。界面使用 vue-i18n：语言检测读取 `chrome.i18n.getUILanguage()` 与 `navigator.language`（`zh*` -> `zh-CN`，其余为英文），显式选择保存在 `corvus.locale`，无需刷新即可响应式切换并更新 `document.documentElement.lang`，manifest 的 `_locales` 镜像两份目录。
 
 弹窗只读：一个连接状态点加一行状态文字，没有任何控件。设置页是可选的，把守护进程 WebSocket URL（`ws://` 或 `wss://`，默认 `ws://127.0.0.1:7330`）保存在 `corvus.daemonUrl`，并把可选 CDP 端点保存在 `corvus.cdpEndpoint`；两者都不参与命令链路。只有端点探测成功时才声明 `cdp` 能力。debugger 作为基础能力声明，需要 CDP 的工具按需挂载；只有浏览器拒绝挂载时该 debugger 通道才不可用。
 
@@ -402,7 +414,8 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
              corvus-cdp, corvusd, corvus
       extension/
         src/background, src/content, src/offscreen, src/shared,
-        src/ui/popup, src/ui/options
+        src/ui/popup, src/ui/options, src/ui/shared/i18n,
+        _locales/en, _locales/zh_CN
         manifest.json, vite.background.config.ts, vite.content.config.ts,
         vite.ui.config.ts, package.json
       tests/archive/            已归档的旧手册与报告
