@@ -66,9 +66,9 @@ v1.4.0 把后端拆成端口与适配器 crate，在 MCP 之外增加 REST 面�
 | 持久化 | SeaORM 与 `sea-orm-migration` 管理 schema 版本 1；既有 1.3.0 数据库无需数据迁移即可打开，迁移前的 `VACUUM INTO` 备份提供保护；适配器保持 WAL、单写入者、5 秒 busy timeout、30 天保留与 262144 字节截断。 |
 | 扩展重写 | `extension/src` 下的 TypeScript 与 Vue 3 源码，使用 Pinia 与 Naive UI；三次 Vite 构建产出 `extension/build/extension`；21 个单元、契约与组件测试加隔离 Playwright 端到端套件覆盖构建。 |
 | 版本对齐 | 发布打标签前，cargo 工作区、扩展 package 与 manifest 统一为 1.4.0。 |
-| 发布 | 1.4.0 二进制、变更日志与双语发布说明。QA 验收记录在 `tests/acceptance/v1.4.0.md`；CI 运行标识与已发布资产哈希仍待补；NFR-3 与 Firefox 偏差仍未关闭。 |
+| 发布 | 1.4.0 二进制、变更日志与双语发布说明。QA 验收记录在 `tests/acceptance/v1.4.0.md`；最终 CI 运行 43690906863 与已发布资产哈希已记录在发布说明中；NFR-3 与 Firefox 偏差仍未关闭。 |
 
-现状：1.4.0 已交付。cargo 工作区与扩展均为 1.4.0，[v1.4.0.md](../tests/acceptance/v1.4.0.md) 记录了 199 个 workspace 测试（25 个套件）、135 项一致性检查与扩展门禁的 PASS。NFR-3 仍未通过，不宣称已有 1.4.0 实机部署，CI 标识与已发布资产哈希仍待补。下一里程碑为 1.5.0。
+现状：1.4.0 已交付。cargo 工作区与扩展均为 1.4.0，[v1.4.0.md](../tests/acceptance/v1.4.0.md) 记录了 199 个 workspace 测试（25 个套件）、135 项一致性检查与扩展门禁的 PASS。NFR-3 仍未通过，不宣称已有 1.4.0 实机部署，最终 CI 运行 43690906863 与已发布资产哈希已记录在发布说明中。下一里程碑为 1.5.0。
 
 ## v1.5.0 下一步
 

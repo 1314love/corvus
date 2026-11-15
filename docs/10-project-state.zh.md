@@ -16,7 +16,7 @@
 - `extension/` 重写为 TypeScript 与 Vue 3，使用 Pinia、Naive UI、Vite、Vitest 与 Playwright；三次 Vite 构建产出 `extension/build/extension`。
 - `Cargo.toml`、`extension/package.json`、`extension/manifest.json` 均为 1.4.0。
 
-MCP 面保持不变：43 个工具、九个类别、紧凑单文本信封与 `browser_batch`。[tests/acceptance/v1.4.0.md](../tests/acceptance/v1.4.0.md) 记录了必需矩阵的 PASS：199 个 workspace 测试（25 个套件）、135 项一致性检查，以及扩展 21 个测试与 Playwright 门禁。CI 运行标识与发布产物哈希仍待补。
+MCP 面保持不变：43 个工具、九个类别、紧凑单文本信封与 `browser_batch`。[tests/acceptance/v1.4.0.md](../tests/acceptance/v1.4.0.md) 记录了必需矩阵的 PASS：199 个 workspace 测试（25 个套件）、135 项一致性检查，以及扩展 21 个测试与 Playwright 门禁。最终 CI 运行 43690906863 与发布产物哈希已记录在 1.4.0 发布说明中。
 
 ## 2. 事实来源
 

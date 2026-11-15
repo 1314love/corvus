@@ -19,7 +19,7 @@ commit. 每份文档在同一目录下维护英文与中文两版，同一提交
 | Logging convention / 日志规范 | [08-logging.md](08-logging.md) | [08-logging.zh.md](08-logging.zh.md) | done |
 | Tool reference / 工具参考 | [09-tools.md](09-tools.md) | [09-tools.zh.md](09-tools.zh.md) | done |
 | Project state / 项目现状 | [10-project-state.md](10-project-state.md) | [10-project-state.zh.md](10-project-state.zh.md) | done |
-| Release notes 1.4.0 / 发布说明 1.4.0 | [release-notes/v1.4.0.md](release-notes/v1.4.0.md) | [release-notes/v1.4.0.zh.md](release-notes/v1.4.0.zh.md) | done; CI/assets pending |
+| Release notes 1.4.0 / 发布说明 1.4.0 | [release-notes/v1.4.0.md](release-notes/v1.4.0.md) | [release-notes/v1.4.0.zh.md](release-notes/v1.4.0.zh.md) | done; CI and published assets recorded |
 | Release notes 1.3.0 / 发布说明 1.3.0 | [release-notes/v1.3.0.md](release-notes/v1.3.0.md) | [release-notes/v1.3.0.zh.md](release-notes/v1.3.0.zh.md) | done |
 | Release notes 1.2.0 / 发布说明 1.2.0 | [release-notes/v1.2.0.md](release-notes/v1.2.0.md) | [release-notes/v1.2.0.zh.md](release-notes/v1.2.0.zh.md) | done |
 | Release notes 1.1.0 / 发布说明 1.1.0 | [release-notes/v1.1.0.md](release-notes/v1.1.0.md) | [release-notes/v1.1.0.zh.md](release-notes/v1.1.0.zh.md) | done |
@@ -29,7 +29,7 @@ commit. 每份文档在同一目录下维护英文与中文两版，同一提交
 
 Reading order: charter -> requirements -> architecture -> roadmap. 阅读顺序：立项书 → 需求规格 → 架构 → 路线图。
 
-Current release: 1.4.0. Acceptance evidence: [tests/acceptance/v1.4.0.md](../tests/acceptance/v1.4.0.md); CI and published-asset rows remain pending. 当前版本：1.4.0。验收证据见 [tests/acceptance/v1.4.0.md](../tests/acceptance/v1.4.0.md)；CI 与发布产物行仍待补。
+Current release: 1.4.0. Acceptance evidence: [tests/acceptance/v1.4.0.md](../tests/acceptance/v1.4.0.md); CI and published-asset values are recorded in the release notes. 当前版本：1.4.0。验收证据见 [tests/acceptance/v1.4.0.md](../tests/acceptance/v1.4.0.md)；CI 与发布产物数值已记录在发布说明中。
 
 Superseded playbooks and reports live in [../tests/archive/](../tests/archive/README.md); they are kept for traceability and are not reading material. 已被取代的手册与报告放在 [../tests/archive/](../tests/archive/README.md)，只作追溯，不属于阅读材料。
 

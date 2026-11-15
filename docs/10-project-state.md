@@ -16,7 +16,7 @@ The 1.4.0 release ships:
 - `extension/` is rewritten in TypeScript and Vue 3 with Pinia, Naive UI, Vite, Vitest and Playwright; three Vite passes produce `extension/build/extension`.
 - `Cargo.toml`, `extension/package.json` and `extension/manifest.json` all report 1.4.0.
 
-The MCP surface is unchanged: 43 tools, nine categories, the compact single-text envelope and `browser_batch`. [tests/acceptance/v1.4.0.md](../tests/acceptance/v1.4.0.md) records PASS for the required matrix: 199 workspace tests in 25 suites, 135 conformance checks and the extension 21-test plus Playwright gates. CI run identifiers and published-asset hashes remain pending.
+The MCP surface is unchanged: 43 tools, nine categories, the compact single-text envelope and `browser_batch`. [tests/acceptance/v1.4.0.md](../tests/acceptance/v1.4.0.md) records PASS for the required matrix: 199 workspace tests in 25 suites, 135 conformance checks and the extension 21-test plus Playwright gates. Final CI run 43690906863 and the published-asset hashes are recorded in the 1.4.0 release notes.
 
 ## 2. Source of truth
 

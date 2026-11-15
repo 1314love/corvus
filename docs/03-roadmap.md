@@ -66,9 +66,9 @@ v1.4.0 splits the backend into ports-and-adapters crates, adds a REST surface be
 | Persistence | SeaORM and `sea-orm-migration` manage schema version 1; an existing 1.3.0 database opens without a data migration, a pre-migration `VACUUM INTO` backup protects it, and the adapter keeps WAL, one writer, a 5-second busy timeout, 30-day retention and 262144-byte truncation. |
 | Extension rewrite | TypeScript and Vue 3 sources under `extension/src` with Pinia and Naive UI; three Vite passes produce `extension/build/extension`; 21 unit, contract and component tests plus an isolated Playwright E2E suite cover the build. |
 | Version alignment | One 1.4.0 version across the cargo workspace, the extension package and the manifest before the release tag. |
-| Release | 1.4.0 binaries, changelog and bilingual release notes. QA acceptance is recorded in `tests/acceptance/v1.4.0.md`; CI run identifiers and published asset hashes remain pending; NFR-3 and the Firefox deviation remain open. |
+| Release | 1.4.0 binaries, changelog and bilingual release notes. QA acceptance is recorded in `tests/acceptance/v1.4.0.md`; final CI run 43690906863 and the published-asset hashes are recorded in the release notes; NFR-3 and the Firefox deviation remain open. |
 
-State: 1.4.0 is delivered. The workspace and extension are versioned 1.4.0, and [v1.4.0.md](../tests/acceptance/v1.4.0.md) records PASS for 199 workspace tests in 25 suites, 135 conformance checks and the extension gate. NFR-3 remains unpassed, no live 1.4.0 deployment is claimed, and CI identifiers and published-asset hashes remain pending. 1.5.0 is the next milestone.
+State: 1.4.0 is delivered. The workspace and extension are versioned 1.4.0, and [v1.4.0.md](../tests/acceptance/v1.4.0.md) records PASS for 199 workspace tests in 25 suites, 135 conformance checks and the extension gate. NFR-3 remains unpassed, no live 1.4.0 deployment is claimed, and final CI run 43690906863 and the published-asset hashes are recorded in the release notes. 1.5.0 is the next milestone.
 
 ## v1.5.0 next
 
