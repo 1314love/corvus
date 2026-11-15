@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：1.3.0 交付 M1 至 M4 的后端能力、采用 CDP 与扩展混合传输的 43 工具 MCP 面，并加入精简快照、批量调用、单根目录打包、Linux 安装包、Docker 与 Kubernetes 部署。读者：工程实现者。
+状态：1.3.0 是已发布版本，交付采用 CDP 与扩展混合传输的 43 工具 MCP 面，并加入精简快照、批量调用、单根目录打包、Linux 安装包、Docker 与 Kubernetes 部署。未提交的工作树新增 1.4.0 在研内容：domain、application、api 三个 crate 与 TypeScript/Vue 3 扩展重写；同一工作树已把守护进程接到新 crate，但改动尚未提交或发布。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
@@ -40,13 +40,18 @@
 | crate | 职责 |
 |---|---|
 | corvus-proto | 线格式：信封、命令、响应、错误分类、版本协商 |
+| corvus-domain | 1.4.0 重构的领域模型与端口；不含 I/O、传输与存储 |
+| corvus-application | 用例，以及 MCP 与 REST 两个面共用的 32 个浏览器侧工具规格 |
+| corvus-api | `/api/v1` REST 面，附 OpenAPI 描述、JWT 认证与 argon2 口令散列 |
 | corvus-mcp | MCP 服务端：工具注册表、JSON-RPC、stdio 与 streamable-http 传输 |
 | corvus-transport | WS 服务端、native-messaging 宿主、long-poll 兜底、浏览器注册表 |
-| corvus-runtime | 命令路由、按标签的通道、超时、幂等、取消 |
+| corvus-runtime | 1.3.0 已发布的命令路由；工作树已把它并入 corvus-application 与 corvusd |
 | corvus-record | 会话录制、SQLite schema、步骤存储、回放支撑 |
 | corvus-cdp | 浏览器级 CDP 客户端、端点校验、事件环、原始与高层 CDP 工具 |
 | corvusd | 守护进程二进制：装配、服务生命周期、配置 |
 | corvus | CLI：doctor、serve、attach、replay、bench、打印配置 |
+
+domain、application、api 三个 crate 属于 1.4.0 重构。工作树中 `corvusd` 与 `corvus-mcp` 已依赖它们，`corvusd` 挂载 `corvus_api::router`；已发布的 1.3.0 二进制仍是旧装配。
 
 关键依赖：tokio、axum、serde、serde_json、rusqlite（bundled）、tracing、tracing-subscriber、tracing-appender、thiserror、clap、uuid。
 
@@ -249,7 +254,7 @@ v1.3.0 保持混合传输并降低默认上下文开销。`page_snapshot` 在两
 
 ## 6. 扩展设计
 
-三个运行时上下文与两个小型界面：
+三个运行时上下文与两个小型界面，源码都在 `extension/src`：
 
 1. **Service Worker**：命令分发、tabs API、scripting、debugger 挂载/卸载、下载。
 2. **内容脚本**：DOM 快照、点击与输入合成、等待、变更观察。
@@ -334,7 +339,7 @@ v1.3.0 保持混合传输并降低默认上下文开销。`page_snapshot` 在两
 - cargo workspace，edition 2021，`Cargo.toml` 与 `rust-toolchain.toml` 固定 Rust 1.90 为 MSRV。
 - CI 矩阵：windows-latest、macos-latest、ubuntu-latest，各自运行 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace`。
 - 打包任务：`scripts/package-linux.sh` 构建 x86_64 tar.gz 并校验 systemd 单元；Docker 任务构建镜像、检查版本与 `/health`，并断言工具面为 43 个。
-- 扩展：手写 MV3，无打包器；manifest key 固定，保证扩展 id 跨机器稳定。
+- 扩展：TypeScript 与 Vue 3 源码位于 `extension/src`，由 Vite 打包（`pnpm build`）；manifest key 固定，保证扩展 id 跨机器稳定。
 - 发布：平台安装包附 `SHA256SUMS`；1.3.0 不提供 macOS 安装包。
 
 ## 12. 安全姿态
@@ -352,11 +357,15 @@ v1.3.0 保持混合传输并降低默认上下文开销。`page_snapshot` 在两
 ## 13. 仓库结构
 
     corvus/
-      crates/corvus-proto, corvus-mcp, corvus-transport, corvus-runtime,
-             corvus-record, corvus-cdp, corvusd, corvus
+      crates/corvus-domain, corvus-application, corvus-api, corvus-proto,
+             corvus-mcp, corvus-transport, corvus-record,
+             corvus-cdp, corvusd, corvus
       extension/
-        manifest.json, background.js, content.js, offscreen.html,
-        popup.html, popup.js, options.html, options.js, daemon_url.js
+        src/background, src/content, src/offscreen, src/shared,
+        src/ui/popup, src/ui/options
+        manifest.json, vite.background.config.ts, vite.content.config.ts,
+        vite.ui.config.ts, package.json
+      tests/archive/            已归档的旧手册与报告
       deploy/docker/, deploy/k8s/
       packaging/windows/, packaging/systemd/
       docs/

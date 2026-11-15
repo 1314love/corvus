@@ -18,6 +18,7 @@ commit. 每份文档在同一目录下维护英文与中文两版，同一提交
 | CDP guide / CDP 指南 | [07-cdp.md](07-cdp.md) | [07-cdp.zh.md](07-cdp.zh.md) | done |
 | Logging convention / 日志规范 | [08-logging.md](08-logging.md) | [08-logging.zh.md](08-logging.zh.md) | done |
 | Tool reference / 工具参考 | [09-tools.md](09-tools.md) | [09-tools.zh.md](09-tools.zh.md) | done |
+| Project state / 项目现状 | [10-project-state.md](10-project-state.md) | [10-project-state.zh.md](10-project-state.zh.md) | done |
 | Release notes 1.3.0 / 发布说明 1.3.0 | [release-notes/v1.3.0.md](release-notes/v1.3.0.md) | [release-notes/v1.3.0.zh.md](release-notes/v1.3.0.zh.md) | done |
 | Release notes 1.2.0 / 发布说明 1.2.0 | [release-notes/v1.2.0.md](release-notes/v1.2.0.md) | [release-notes/v1.2.0.zh.md](release-notes/v1.2.0.zh.md) | done |
 | Release notes 1.1.0 / 发布说明 1.1.0 | [release-notes/v1.1.0.md](release-notes/v1.1.0.md) | [release-notes/v1.1.0.zh.md](release-notes/v1.1.0.zh.md) | done |
@@ -27,10 +28,12 @@ commit. 每份文档在同一目录下维护英文与中文两版，同一提交
 
 Reading order: charter -> requirements -> architecture -> roadmap. 阅读顺序：立项书 → 需求规格 → 架构 → 路线图。
 
+Superseded playbooks and reports live in [../tests/archive/](../tests/archive/README.md); they are kept for traceability and are not reading material. 已被取代的手册与报告放在 [../tests/archive/](../tests/archive/README.md)，只作追溯，不属于阅读材料。
+
 ## 中文
 
 每份文档都有英文与中文两个版本，同一目录、同一提交。文件名规则：英文版 `<name>.md`，中文版 `<name>.zh.md`，
 两版首行互相链接。缺一版视为未完成：要么两版一起交，要么把缺口登记到本表状态列标 `pending`，并在下一个
-里程碑评审前补齐。当前全部文档均已成对。
+里程碑评审前补齐。本表文档均已按上述规则成对；`tests/archive/` 存放已被取代的材料，不代表现状。
 
 维护要求见 [LANGUAGE.md](LANGUAGE.md) 与 [../CONTRIBUTING.md](../CONTRIBUTING.md) 第 4 节。

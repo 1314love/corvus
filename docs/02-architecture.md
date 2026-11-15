@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-Status: 1.3.0 ships the M1-M4 backend surface, the 43-tool MCP surface with hybrid CDP and extension transport, compact snapshots and batched calls, plus single-root packaging, Linux packages, Docker and Kubernetes deployment. Audience: engineers.
+Status: 1.3.0 is the released surface: 43 MCP tools over hybrid CDP and extension transport, compact snapshots, batched calls, single-root packaging, Linux packages, Docker and Kubernetes deployment. The uncommitted working tree adds in-progress 1.4.0 work: the domain, application and api crates plus a TypeScript and Vue 3 extension rewrite; the same tree already wires the daemon to the new crates, but nothing is committed or released. Audience: engineers.
 
 ## 1. Constraints that shape the design
 
@@ -40,13 +40,18 @@ Processes: one corvusd per user session (a service on Windows and Linux; foregro
 | crate | role |
 |---|---|
 | corvus-proto | wire types: envelope, command, response, error taxonomy, versioning |
+| corvus-domain | domain model and ports for the 1.4.0 refactor; no I/O, no transport, no storage |
+| corvus-application | use cases plus the 32 browser-side tool specifications shared by the MCP and REST surfaces |
+| corvus-api | REST surface on `/api/v1` with an OpenAPI schema, JWT authentication and argon2 password hashing |
 | corvus-mcp | MCP server: tool registry, JSON-RPC, stdio + streamable-http transports |
 | corvus-transport | WS server, native-messaging host, long-poll fallback, browser registry |
-| corvus-runtime | command router, per-tab lanes, timeouts, idempotency, cancellation |
+| corvus-runtime | released 1.3.0 command router; the working tree folds it into corvus-application and corvusd |
 | corvus-record | session recorder, sqlite schema, step store, replay support |
 | corvus-cdp | browser-level CDP client, endpoint validation, event ring, raw and high-level CDP tools |
 | corvusd | daemon binary: wires everything, service lifecycle, config |
 | corvus | CLI: doctor, serve, attach, replay, bench, config print |
+
+The domain, application and api crates belong to the 1.4.0 refactor. In the working tree `corvusd` and `corvus-mcp` depend on them and `corvusd` mounts `corvus_api::router`; released 1.3.0 binaries still use the old wiring.
 
 Key crates: tokio, axum, serde, serde_json, rusqlite (bundled), tracing, tracing-subscriber, tracing-appender, thiserror, clap, uuid.
 
@@ -249,7 +254,7 @@ v1.3.0 keeps the hybrid transport and reduces default context cost. `page_snapsh
 
 ## 6. Extension design
 
-Three runtime contexts and two small UI surfaces:
+Three runtime contexts and two small UI surfaces, all built from `extension/src`:
 
 1. **service worker**: command dispatch, tabs API, scripting, debugger attach/detach, downloads.
 2. **content script**: DOM snapshot, click/type synthesis, waits, mutation observers.
@@ -334,7 +339,7 @@ Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capp
 - cargo workspace, edition 2021, Rust 1.90 as MSRV in `Cargo.toml` and `rust-toolchain.toml`.
 - CI matrix: windows-latest, macos-latest and ubuntu-latest; each runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
 - Packaging jobs: `scripts/package-linux.sh` builds the x86_64 tar.gz and verifies the systemd unit; a Docker job builds the image, checks the reported version and `/health`, and asserts the 43-tool list.
-- Extension: hand-written MV3, no bundler; manifest key pinned so the extension id is stable across machines.
+- Extension: TypeScript and Vue 3 sources under `extension/src`, bundled by Vite (`pnpm build`); manifest key pinned so the extension id is stable across machines.
 - Release: platform packages with `SHA256SUMS`; macOS has no packaged installer in 1.3.0.
 
 ## 12. Security posture
@@ -352,11 +357,15 @@ Non-goal: protecting the user from their own agent. That is out of scope by desi
 ## 13. Repository layout
 
     corvus/
-      crates/corvus-proto, corvus-mcp, corvus-transport, corvus-runtime,
-             corvus-record, corvus-cdp, corvusd, corvus
+      crates/corvus-domain, corvus-application, corvus-api, corvus-proto,
+             corvus-mcp, corvus-transport, corvus-record,
+             corvus-cdp, corvusd, corvus
       extension/
-        manifest.json, background.js, content.js, offscreen.html,
-        popup.html, popup.js, options.html, options.js, daemon_url.js
+        src/background, src/content, src/offscreen, src/shared,
+        src/ui/popup, src/ui/options
+        manifest.json, vite.background.config.ts, vite.content.config.ts,
+        vite.ui.config.ts, package.json
+      tests/archive/            superseded playbooks and reports
       deploy/docker/, deploy/k8s/
       packaging/windows/, packaging/systemd/
       docs/

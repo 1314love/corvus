@@ -55,6 +55,19 @@ v1.3.0 is a context-efficiency and parity slice. It adds `browser_batch`, taking
 
 The compact-versus-JSON benchmark records the candidate mean at 364.83 bytes / 91.21 tokens versus 2,077.33 bytes / 519.33 tokens for JSON, 82.44% smaller. The measured asset rows stay marked pending until CI publishes them.
 
+## v1.4.0 structural milestone (in progress)
+
+v1.4.0 splits the backend into hexagonal crates and rewrites the extension in TypeScript and Vue 3. It adds no MCP tools: the 43-tool surface remains as released in 1.3.0.
+
+| Item | Exit criterion |
+|---|---|
+| Domain, application and api crates | domain and application carry the model, use cases and the 32 browser-side tool specifications; api serves `/api/v1` with an OpenAPI schema, JWT authentication and argon2 password hashing. |
+| Extension rewrite | TypeScript and Vue 3 sources under `extension/src` with Vite, Vitest and Playwright; `pnpm build` produces the loadable bundle. |
+| Daemon wiring | `corvusd` depends on the new crates and serves the REST surface. Wired in the working tree: the dependency list covers domain, application and api, and `corvusd` mounts `corvus_api::router`; no released binary carries it. |
+| Version alignment | One version across the cargo workspace and the extension before the release tag. Today `Cargo.toml` reads 1.3.0 and the extension reads 1.4.0. |
+
+State: the crates, the daemon wiring and the extension rewrite exist in the working tree only. Released 1.3.0 binaries are unchanged, and the workspace version still reads 1.3.0, so 1.4.0 is unreleased work rather than a separate build.
+
 ## Suggested schedule (one main developer + AI pairing)
 
 | Week | Content |

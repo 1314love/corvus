@@ -52,7 +52,7 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 - **corvus** - the CLI: doctor, serve, config and version.
 - **extension** - MV3 with a read-only status popup and an optional options page for a custom `ws://` or `wss://` daemon URL and an optional loopback CDP endpoint. The popup shows connection, browser id, version and capabilities; the debugger channel is advertised up front and attached automatically when a command needs it, while the `cdp` capability appears only after endpoint detection succeeds.
 
-### Feature surface (target)
+### Feature surface
 
 - **Perception**: hybrid DOM + accessibility snapshot (compact text by default, JSON on request), screenshot (viewport / element / full page), text, HTML, console, network waterfall.
 - **Action**: navigate, click, type, press, hover, drag, select, scroll, upload, download, multi-tab concurrency.
@@ -65,6 +65,8 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 ### Status
 
 1.3.0 ships the full 43-tool surface over stdio and streamable HTTP. The original 32 tools keep their arguments and result shapes; 1.2.0 added ten CDP and helper tools and 1.3.0 adds `browser_batch`. `page_snapshot` defaults to compact text on both channels, with `format: "json"` for node objects, and a successful `tools/call` returns one compact JSON text block. Tool discovery has two levels: the brief default list is 20,452 bytes and full detail is 37,067 bytes, and `tool_help` returns one tool's full descriptor. The daemon is a hybrid transport: the extension remains the zero-setup default with 25 browser-facing tools, while a browser explicitly launched with remote debugging can be driven directly over browser-level CDP on loopback; forced CDP covers all 33 browser-facing tools, including `@c` references. The daemon records every call, per-tab lanes let independent tabs run concurrently, and any in-flight MCP request can be cancelled. Windows has a service installer; Linux x86_64 has a tarball with systemd; an amd64 Docker image and Kubernetes manifests are release-gate checks covered by CI. All backend files live under one root selected by `--home` or `CORVUS_HOME`: binaries, `data/corvus.db`, logs, config and the extension. The clean 72-hour NFR-3 soak was stopped at the client's request after about eight hours, so NFR-3 is not passed and 1.3.0 is not 72-hour soak certified. CDP endpoints are loopback-only and unauthenticated; the shipped container image has no browser and cannot reach host loopback. See [docs/09-tools.md](docs/09-tools.md), [docs/07-cdp.md](docs/07-cdp.md), [docs/03-roadmap.md](docs/03-roadmap.md), [docs/02-architecture.md](docs/02-architecture.md) and [docs/05-deployment.md](docs/05-deployment.md).
+
+The uncommitted working tree adds in-progress 1.4.0 work on both sides: hexagonal crates and a REST surface in Rust, and a TypeScript and Vue 3 extension rewrite. The same tree wires the daemon to the new crates and mounts the REST router, but nothing is committed or released: the workspace version is still 1.3.0 while the extension reports 1.4.0. See [docs/10-project-state.md](docs/10-project-state.md).
 
 Network capture is opt-in per tab and keeps a 2000-entry ring. Interception supports block, mock and continue rules. Downloads can be listed and awaited, and uploads set file inputs through CDP, including hidden ones.
 
@@ -106,6 +108,7 @@ NFR-6 deviation).
 - [Deployment](docs/05-deployment.md) - Windows service, Linux systemd, Docker and Kubernetes
 - [CDP guide](docs/07-cdp.md) - optional browser-level channel, tools and troubleshooting
 - [Tool reference](docs/09-tools.md) - all 43 tools, compact snapshot grammar and batching
+- [Project state](docs/10-project-state.md) - released surface, in-flight 1.4.0 work and document confidence
 - [Release notes 1.3.0](docs/release-notes/v1.3.0.md) - what ships, evidence and limitations
 - [Release notes 1.2.0](docs/release-notes/v1.2.0.md) - what ships, evidence and limitations
 - [Release notes 1.1.0](docs/release-notes/v1.1.0.md) - what ships, evidence and limitations
@@ -171,7 +174,7 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 - **corvus**：命令行。doctor、serve、config、version。
 - **扩展**：MV3，包含只读状态弹窗与可选设置页，后者用于保存自定义 `ws://` 或 `wss://` 守护进程地址及可选回环 CDP 端点。弹窗展示连接状态、浏览器 ID、版本与能力；debugger 通道始终声明，命令需要时自动挂载，`cdp` 能力只有端点探测成功后才出现。
 
-### 能力面（目标）
+### 能力面
 
 - **感知**：DOM + 可访问性混合快照（默认紧凑文本，可按需返回 JSON）、截图（视口 / 元素 / 整页）、文本、HTML、控制台、网络瀑布。
 - **动作**：导航、点击、输入、按键、悬停、拖拽、选择、滚动、上传、下载、多标签并发。
@@ -184,6 +187,8 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 ### 状态
 
 1.3.0 已交付完整的 43 工具面，覆盖 stdio 与 streamable HTTP。原有 32 个工具的参数与结果结构保持不变；1.2.0 新增十个 CDP 与辅助工具，1.3.0 新增 `browser_batch`。`page_snapshot` 在两个通道上都默认紧凑文本，`format: "json"` 返回节点对象；成功的 `tools/call` 只返回一个紧凑 JSON 文本块。工具发现分为简版默认列表与完整详情两级：简版为 20,452 字节，完整为 37,067 字节，`tool_help` 可返回单个工具的完整描述。守护进程采用混合传输：扩展仍是零配置默认路径，提供 25 个浏览器类工具；显式以远程调试启动的浏览器则可经回环浏览器级 CDP 直连驱动，强制 CDP 覆盖全部 33 个浏览器类工具，包括 `@c` 引用。守护进程记录每次调用，按标签通道让独立标签并行执行，任何进行中的 MCP 请求都可取消。Windows 提供服务安装器；Linux x86_64 提供带 systemd 的 tar 包；amd64 Docker 镜像与 Kubernetes 清单属于由 CI 覆盖的发布门禁检查。所有后端文件都位于 `--home` 或 `CORVUS_HOME` 指定的单一根目录下：二进制、`data/corvus.db`、日志、配置与扩展。干净的 72 小时 NFR-3 压测在客户要求下于约八小时后停止，因此 1.3.0 未通过 NFR-3，也不能宣称通过 72 小时压测。CDP 端点仅限回环且没有认证；发布容器镜像不含浏览器，也无法访问宿主机回环。见 [docs/09-tools.zh.md](docs/09-tools.zh.md)、[docs/07-cdp.zh.md](docs/07-cdp.zh.md)、[docs/03-roadmap.zh.md](docs/03-roadmap.zh.md)、[docs/02-architecture.zh.md](docs/02-architecture.zh.md) 与 [docs/05-deployment.zh.md](docs/05-deployment.zh.md)。
+
+未提交的工作树承载在研的 1.4.0：Rust 侧新增六边形 crate 与 REST 面，扩展侧重写为 TypeScript 与 Vue 3。同一工作树已把守护进程接到新 crate 并挂载 REST 路由，但改动尚未提交或发布：工作区版本仍为 1.3.0，扩展已标 1.4.0。见 [docs/10-project-state.zh.md](docs/10-project-state.zh.md)。
 
 网络捕获按标签显式开启，每个标签保留 2000 条环形缓冲。拦截支持 block、mock 与 continue 规则；下载可列出并等待完成，上传通过 CDP 设置文件 input，隐藏 input 也可用。
 
@@ -222,6 +227,7 @@ Docker 与 Kubernetes：amd64 镜像与清单见 [docs/05-deployment.zh.md](docs
 - [部署](docs/05-deployment.zh.md) —— Windows 服务、Linux systemd、Docker 与 Kubernetes
 - [CDP 指南](docs/07-cdp.zh.md) —— 可选浏览器级通道、工具与故障排查
 - [工具参考](docs/09-tools.zh.md) —— 全部 43 个工具、紧凑快照语法与批量调用
+- [项目现状](docs/10-project-state.zh.md) —— 已发布能力、在研 1.4.0 与文档置信度
 - [1.3.0 发布说明](docs/release-notes/v1.3.0.zh.md) —— 交付内容、证据与限制
 - [1.2.0 发布说明](docs/release-notes/v1.2.0.zh.md) —— 交付内容、证据与限制
 - [1.1.0 发布说明](docs/release-notes/v1.1.0.zh.md) —— 交付内容、证据与限制

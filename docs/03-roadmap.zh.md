@@ -55,6 +55,19 @@ v1.3.0 是上下文效率与对等性切片。它新增 `browser_batch`，MCP �
 
 紧凑与 JSON 的基准记录候选均值：364.83 字节 / 91.21 tokens，对比 JSON 的 2,077.33 字节 / 519.33 tokens，缩小 82.44%。实测资产行在 CI 发布前保持待定标记。
 
+## v1.4.0 结构里程碑（在研）
+
+v1.4.0 把后端拆成六边形 crate，并把扩展重写为 TypeScript 与 Vue 3。它不新增 MCP 工具，43 工具面保持 1.3.0 已发布状态。
+
+| 项目 | 退出标准 |
+|---|---|
+| domain、application、api 三个 crate | domain 与 application 承载模型、用例与 32 个浏览器侧工具规格；api 提供 `/api/v1`，附 OpenAPI 描述、JWT 认证与 argon2 口令散列。 |
+| 扩展重写 | `extension/src` 下的 TypeScript 与 Vue 3 源码，使用 Vite、Vitest 与 Playwright；`pnpm build` 产出可加载包。 |
+| 守护进程接入 | `corvusd` 依赖新 crate 并提供 REST 面。工作树已接通：依赖覆盖 domain、application、api，`corvusd` 挂载 `corvus_api::router`；尚无已发布二进制包含它。 |
+| 版本对齐 | 发布打标签前，cargo 工作区与扩展使用同一版本。当前 `Cargo.toml` 为 1.3.0，扩展为 1.4.0。 |
+
+现状：新 crate、守护进程接入与扩展重写只存在于工作树。已发布的 1.3.0 二进制没有变化，工作区版本仍为 1.3.0，因此 1.4.0 是未发布的在研工作，不是独立构建。
+
 ## 建议排期（以 1 名主力 + AI 结对估算）
 
 | 周 | 内容 |
