@@ -46,7 +46,7 @@ try {
 }
 if (manifest) {
   if (manifest.manifest_version !== 3) failures.push('manifest_version is not 3');
-  if (manifest.version !== '1.5.0') failures.push('manifest version is not 1.5.0');
+  if (manifest.version !== '1.6.0') failures.push('manifest version is not 1.6.0');
   if (!Array.isArray(manifest.permissions) || manifest.permissions.length !== 10)
     failures.push('permissions must contain exactly 10 entries');
   if (

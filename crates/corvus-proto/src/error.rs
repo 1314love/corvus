@@ -28,11 +28,13 @@ pub enum ErrorCode {
     Internal,
     /// The command was cancelled before the browser answered.
     Cancelled,
+    /// A guardrails policy denied the tool call or navigation.
+    PolicyDenied,
 }
 
 impl ErrorCode {
     /// Every code, in the order the documentation lists them.
-    pub const ALL: [ErrorCode; 10] = [
+    pub const ALL: [ErrorCode; 11] = [
         ErrorCode::BadArgs,
         ErrorCode::NotFound,
         ErrorCode::NotInteractable,
@@ -43,6 +45,7 @@ impl ErrorCode {
         ErrorCode::TransportDown,
         ErrorCode::Internal,
         ErrorCode::Cancelled,
+        ErrorCode::PolicyDenied,
     ];
 
     /// The wire spelling of this code.
@@ -58,6 +61,7 @@ impl ErrorCode {
             ErrorCode::TransportDown => "TRANSPORT_DOWN",
             ErrorCode::Internal => "INTERNAL",
             ErrorCode::Cancelled => "CANCELLED",
+            ErrorCode::PolicyDenied => "POLICY_DENIED",
         }
     }
 
@@ -65,7 +69,7 @@ impl ErrorCode {
     pub fn retryable(self) -> bool {
         match self {
             ErrorCode::BadArgs | ErrorCode::CapabilityUnavailable | ErrorCode::BrowserGone => false,
-            ErrorCode::Internal | ErrorCode::Cancelled => false,
+            ErrorCode::Internal | ErrorCode::Cancelled | ErrorCode::PolicyDenied => false,
             ErrorCode::NotFound
             | ErrorCode::NotInteractable
             | ErrorCode::Timeout

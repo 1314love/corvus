@@ -401,7 +401,7 @@ const SPECS: [Spec; 43] = [
     Spec {
         name: "browser_cookies",
         title: "Browser cookies",
-        description: "Return browser cookies, or the cookies visible to specific URLs. Sensitive values are returned as the browser exposes them.",
+        description: "Return browser cookies, or the cookies visible to specific URLs. Sensitive values are returned as the browser exposes them. When a guardrails policy enables secret redaction, each cookie value is replaced with [redacted] and marked redacted: true.",
         schema: browser_cookies_schema,
         read_only: true,
         destructive: false,
@@ -459,6 +459,21 @@ pub fn batch_tool_allowed(name: &str) -> bool {
 /// Names of every tool, in catalogue order.
 pub fn names() -> Vec<&'static str> {
     SPECS.iter().map(|spec| spec.name).collect()
+}
+
+/// Whether a tool is known and, when it is, whether its MCP annotation marks
+/// it as read-only. Guardrails use this catalogue as the single source of
+/// truth instead of maintaining a second tool list.
+pub fn is_read_only(name: &str) -> Option<bool> {
+    SPECS
+        .iter()
+        .find(|spec| spec.name == name)
+        .map(|spec| spec.read_only)
+}
+
+/// Whether the name belongs to a tool this server exposes.
+pub fn is_known_tool(name: &str) -> bool {
+    SPECS.iter().any(|spec| spec.name == name)
 }
 
 /// MCP tool definitions, ready to be embedded in a tools/list result.

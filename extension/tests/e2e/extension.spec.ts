@@ -84,7 +84,7 @@ test('built extension connects to an isolated daemon and renders popup/options',
     }
 
     const helloArgs = (hello.args || {}) as Record<string, unknown>;
-    expect(helloArgs.version).toBe('1.5.0');
+    expect(helloArgs.version).toBe('1.6.0');
     expect(Array.isArray(helloArgs.capabilities)).toBe(true);
 
     const popup = await context.newPage();

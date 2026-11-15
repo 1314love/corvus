@@ -1030,6 +1030,7 @@ mod tests {
         dialog_not_showing: bool,
         attach_not_found: bool,
         create_targets: bool,
+        eval_url: Option<String>,
         log: Option<Arc<Mutex<Vec<Value>>>>,
     }
 
@@ -1190,12 +1191,57 @@ mod tests {
                                 });
                                 let _ = sink.send(Message::Text(event.to_string().into())).await;
                             }
+                            if method == "Page.navigate" {
+                                let session = value
+                                    .get("sessionId")
+                                    .cloned()
+                                    .unwrap_or(Value::Null);
+                                let response = json!({
+                                    "id": id,
+                                    "sessionId": session,
+                                    "result": { "frameId": "MAIN", "sessionId": session }
+                                });
+                                if sink
+                                    .send(Message::Text(response.to_string().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                let event = json!({
+                                    "method": "Page.loadEventFired",
+                                    "sessionId": session,
+                                    "params": { "timestamp": 0.0 }
+                                });
+                                if sink
+                                    .send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                continue;
+                            }
                             let result = match method {
                                 "Browser.getVersion" => json!({
                                     "product": "MockChrome/1.0",
                                     "protocolVersion": "1.3",
                                 }),
                                 "Target.attachToTarget" => json!({ "sessionId": "SESSION-1" }),
+                                "Runtime.evaluate" => {
+                                    let expression = value
+                                        .pointer("/params/expression")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default();
+                                    let evaluated = match expression {
+                                        "document.readyState" => json!("complete"),
+                                        "location.href" => {
+                                            json!(options.eval_url.clone().unwrap_or_default())
+                                        }
+                                        _ => Value::Null,
+                                    };
+                                    json!({ "result": { "value": evaluated } })
+                                }
                                 _ => json!({
                                     "method": method,
                                     "params": value.get("params").cloned().unwrap_or(Value::Null),
@@ -1467,6 +1513,7 @@ mod tests {
     async fn tab_tools_keep_the_active_target_valid() {
         let (endpoint, _, _) = mock_cdp_with(MockOptions {
             create_targets: true,
+            eval_url: Some("https://two.test/".into()),
             ..MockOptions::default()
         })
         .await;
@@ -1484,6 +1531,7 @@ mod tests {
             .await
             .expect("tab_new");
         assert_eq!(created["tab_id"], "T2");
+        assert_eq!(created["url"], "https://two.test/");
         assert_eq!(client.default_target_id().as_deref(), Some("T2"));
 
         let switched = client

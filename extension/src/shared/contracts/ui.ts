@@ -23,12 +23,18 @@ export interface DebuggerChannelState {
   attached_tabs: string[];
 }
 
+export interface PolicyDeniedUiState {
+  code: 'POLICY_DENIED';
+  reason: string | null;
+}
+
 export interface UiState {
   status: string;
   connected: boolean;
   browserId: string | null;
   daemonVersion: string | null;
   lastError: string | null;
+  lastPolicyDenied?: PolicyDeniedUiState | null;
   wsUrl: string;
   cdpEndpoint: string;
   cdp: CdpUiState | null;

@@ -441,7 +441,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "corvus"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-api"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-application"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "async-trait",
  "corvus-domain",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-cdp"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "base64",
  "corvus-domain",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-domain"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "serde_json",
  "thiserror",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-mcp"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -542,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-proto"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-record"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "async-trait",
  "corvus-application",
@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-transport"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "corvusd"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -597,13 +597,16 @@ dependencies = [
  "corvus-record",
  "corvus-transport",
  "futures",
+ "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-tungstenite",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

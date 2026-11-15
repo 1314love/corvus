@@ -5,7 +5,7 @@ The shipped extension is built from TypeScript and Vue 3 sources. There is no
 remote code and no inline script. Content scripts stay framework-free, and
 `build/extension` is the directory to load or package.
 
-Status: this document describes the 1.5.0 release. The extension package, manifest and build check report 1.5.0, which is the current published release; 1.4.0 is previous. QA acceptance PASS is recorded in [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md), and the release is published as GitHub Release 445967405.
+Status: this document describes the 1.5.0 release. The extension package and manifest are versioned 1.6.0 for the current tree work, while 1.5.0 is the current published release; 1.4.0 is previous. QA acceptance PASS is recorded in [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md), and the release is published as GitHub Release 445967405. The v1.6.0 guardrails work passed formal QA on the working tree at HEAD `61ca85f`: 55 Vitest tests in ten files, a 14-file/490,393-byte build and Playwright 1/1. No v1.6.0 tag, CI run, published package or published asset exists; 1.5.0 remains the current published release.
 
 The visible surfaces are one read-only popup status card and a small options page.
 The popup shows the connection dot and state, browser id, extension version,
@@ -86,7 +86,8 @@ immediately without a reload, persist the explicit choice and update
 `document.documentElement.lang`. The MV3 manifest is localized through
 `default_locale: "en"` and `_locales/en` + `_locales/zh_CN`; `pnpm build` copies
 both catalogs into `build/extension` and the build check verifies their key
-parity and placeholders.
+parity and placeholders. A daemon `POLICY_DENIED` is shown as a localized
+message with a sanitized reason; the extension never displays the policy path.
 
 ### 本地化说明
 
@@ -97,7 +98,8 @@ parity and placeholders.
 显式选择写入 `corvus.locale`，同时更新 `document.documentElement.lang`。
 MV3 清单通过 `default_locale: "en"` 以及 `_locales/en`、`_locales/zh_CN`
 本地化；构建会把两个语言包复制到 `build/extension`，构建检查会校验键集合
-一致性和占位符。
+一致性和占位符。守护进程返回 `POLICY_DENIED` 时，界面显示本地化消息与脱敏
+原因，绝不显示策略路径。
 
 ## Message flow
 
@@ -788,6 +790,7 @@ registry to resolve browser_id for the other tools.
 | TIMEOUT                | The content script or the tab did not answer inside meta.timeout_ms plus 1.5 s, browser_wait reached its deadline, or download_wait reached its deadline (details.waited_ms, details.id?).                                                                                                                                                                                                 | yes                                                        |
 | NAVIGATION_LOST        | The page started navigating while a content-script command was running, so its document and refs are gone.                                                                                                                                                                                                                                                                                 | yes, after re-resolving on the new page                    |
 | CAPABILITY_UNAVAILABLE | The managed debugger could not attach (for example another debugger or DevTools is attached), the page is a restricted scheme, or the browser lacks a permission for this operation. details carries tab_id, cause and reason when known.                                                                                                                                                  | no, until the blocking condition is removed                |
+| POLICY_DENIED          | The daemon guardrails policy denied the tool call or navigation before dispatch. details.reason is sanitized before display and the policy path is never shown.                                                                                                                                                                                                                            | no                                                         |
 | BROWSER_GONE           | The tab or browser was closed during the command.                                                                                                                                                                                                                                                                                                                                          | no                                                         |
 | TRANSPORT_DOWN         | The daemon socket is not connected, or the requested browser_id is not this browser.                                                                                                                                                                                                                                                                                                       | yes, after the connection is re-established                |
 | CANCELLED              | The daemon sent a cancel event for this command id and the extension stopped the command. The daemon has already dropped it, so no retry is needed.                                                                                                                                                                                                                                        | no                                                         |

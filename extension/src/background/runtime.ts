@@ -15,7 +15,7 @@ import {
   resetCdpEndpoint,
   writeCdpEndpoint,
 } from '../shared/cdp-endpoint';
-import { ToolError, toToolErrorPayload as toErrorPayload } from '../shared/errors';
+import { ToolError, toToolErrorPayload as toErrorPayload, policyDeniedReasonFromDetails } from '../shared/errors';
 import type { CdpProbeResult, CdpSource } from '../shared/cdp-endpoint';
 import type { CdpUiState, UiState } from '../shared/contracts/ui';
 import type { WireCdpDescriptor } from '../shared/contracts/protocol';
@@ -135,6 +135,8 @@ interface RuntimeState {
   cdp: CdpProbeResult | null;
   cdpEndpoint: string;
   cdpDetectedAt: number | null;
+  lastPolicyDeniedReason: string | null;
+  lastPolicyDeniedAt: number | null;
 }
 
 const state: RuntimeState = {
@@ -149,6 +151,8 @@ const state: RuntimeState = {
   cdp: null,
   cdpEndpoint: CDP_ENDPOINT_HELPER.DEFAULT_CDP_ENDPOINT,
   cdpDetectedAt: null,
+  lastPolicyDeniedReason: null,
+  lastPolicyDeniedAt: null,
 };
 
 /** Opaque daemon responses and per-tab runtime records retained by the legacy runtime. */
@@ -439,6 +443,8 @@ function buildUiState() {
     browserId: state.browserId,
     daemonVersion: state.daemonVersion,
     lastError: state.lastError,
+    lastPolicyDenied:
+      state.lastPolicyDeniedAt === null ? null : { code: 'POLICY_DENIED', reason: state.lastPolicyDeniedReason },
     wsUrl: state.wsUrl || DAEMON_URL_HELPER.DEFAULT_DAEMON_URL,
     cdpEndpoint: state.cdpEndpoint,
     cdp: cdpUiState(),
@@ -612,6 +618,8 @@ function handleHelloAck(frame: any) {
   }
   state.daemonVersion = firstString(args.daemon_version, args.daemonVersion, args.version, frame.version) || null;
   state.limits = args.limits !== undefined ? args.limits : null;
+  state.lastPolicyDeniedReason = null;
+  state.lastPolicyDeniedAt = null;
   updateStatus('connected', null);
   void persistConnection();
   log('hello_ack: browser=' + (state.browserId || 'unassigned') + ' daemon=' + (state.daemonVersion || 'unknown'));
@@ -821,9 +829,16 @@ async function handleCommand(frame: any) {
       ),
       timeoutMs + COMMAND_TIMEOUT_PAD_MS,
     );
+    state.lastPolicyDeniedReason = null;
+    state.lastPolicyDeniedAt = null;
     response = buildResponse(frame, true, result, null);
   } catch (error) {
-    response = buildResponse(frame, false, null, toErrorPayload(error, traceId));
+    const payload = toErrorPayload(error, traceId);
+    if (payload.code === 'POLICY_DENIED') {
+      state.lastPolicyDeniedReason = policyDeniedReasonFromDetails(payload.details);
+      state.lastPolicyDeniedAt = Date.now();
+    }
+    response = buildResponse(frame, false, null, payload);
   } finally {
     if (commandId && commandControllers.get(commandId) === controller) {
       commandControllers.delete(commandId);

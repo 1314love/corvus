@@ -416,7 +416,10 @@ fn collect_entries(ax: &Value, dom: &Value, viewport: &Viewport) -> Vec<Entry> {
             };
             by_node_index.insert(index, bounds);
         }
-        let mut map: HashMap<i64, (String, Option<[f64; 4]>)> = HashMap::new();
+        let attributes = document
+            .pointer("/nodes/attributes")
+            .and_then(Value::as_array);
+        let mut map: HashMap<i64, (String, Option<[f64; 4]>, bool)> = HashMap::new();
         for (position, backend) in backend.iter().enumerate() {
             let Some(backend) = backend.as_i64() else {
                 continue;
@@ -429,7 +432,12 @@ fn collect_entries(ax: &Value, dom: &Value, viewport: &Viewport) -> Vec<Entry> {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             let bbox = by_node_index.get(&(position as i64)).copied();
-            map.insert(backend, (tag, bbox));
+            let password = attributes
+                .and_then(|values| values.get(position))
+                .is_some_and(|attributes| {
+                    is_password_node(Some(attributes), strings.map(Vec::as_slice))
+                });
+            map.insert(backend, (tag, bbox, password));
         }
         Some(map)
     });
@@ -479,7 +487,7 @@ fn walk<'a>(
     id: &'a str,
     depth: usize,
     by_id: &HashMap<&'a str, &'a Value>,
-    layout: &HashMap<i64, (String, Option<[f64; 4]>)>,
+    layout: &HashMap<i64, (String, Option<[f64; 4]>, bool)>,
     viewport: &Viewport,
     visited: &mut HashSet<&'a str>,
     entries: &mut Vec<Entry>,
@@ -502,7 +510,7 @@ fn walk<'a>(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let value = node
+    let mut value = node
         .pointer("/value/value")
         .and_then(Value::as_str)
         .map(str::to_string);
@@ -510,10 +518,13 @@ fn walk<'a>(
         .get("backendDOMNodeId")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let (tag, bounds) = layout
+    let (tag, bounds, password) = layout
         .get(&backend_id)
         .cloned()
-        .unwrap_or_else(|| (String::new(), None));
+        .unwrap_or_else(|| (String::new(), None, false));
+    if password {
+        value = Some("***".to_string());
+    }
     let bbox = bounds.map(|bounds| viewport.to_viewport(bounds));
     let states = read_states(node);
     let focusable = read_boolean_property(node, "focusable");
@@ -649,7 +660,7 @@ fn collect_frame_entries(
 fn layout_map(
     document: Option<&Value>,
     strings: Option<&[Value]>,
-) -> HashMap<i64, (String, Option<[f64; 4]>)> {
+) -> HashMap<i64, (String, Option<[f64; 4]>, bool)> {
     let Some(document) = document else {
         return HashMap::new();
     };
@@ -684,7 +695,10 @@ fn layout_map(
         };
         by_node_index.insert(index, bounds);
     }
-    let mut map: HashMap<i64, (String, Option<[f64; 4]>)> = HashMap::new();
+    let attributes = document
+        .pointer("/nodes/attributes")
+        .and_then(Value::as_array);
+    let mut map: HashMap<i64, (String, Option<[f64; 4]>, bool)> = HashMap::new();
     for (position, backend) in backend.iter().enumerate() {
         let Some(backend) = backend.as_i64() else {
             continue;
@@ -697,9 +711,35 @@ fn layout_map(
             .unwrap_or("")
             .to_ascii_lowercase();
         let bounds = by_node_index.get(&(position as i64)).copied();
-        map.insert(backend, (tag, bounds));
+        let password = attributes
+            .and_then(|values| values.get(position))
+            .is_some_and(|attributes| is_password_node(Some(attributes), strings));
+        map.insert(backend, (tag, bounds, password));
     }
     map
+}
+
+fn is_password_node(attributes: Option<&Value>, strings: Option<&[Value]>) -> bool {
+    let Some(pairs) = attributes.and_then(Value::as_array) else {
+        return false;
+    };
+    let mut pairs = pairs.iter();
+    while let (Some(name), Some(value)) = (pairs.next(), pairs.next()) {
+        let name = name
+            .as_u64()
+            .and_then(|index| strings.and_then(|strings| strings.get(index as usize)))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let value = value
+            .as_u64()
+            .and_then(|index| strings.and_then(|strings| strings.get(index as usize)))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if name.eq_ignore_ascii_case("type") && value.eq_ignore_ascii_case("password") {
+            return true;
+        }
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -707,7 +747,7 @@ fn walk_frame<'a>(
     id: &'a str,
     depth: usize,
     by_id: &HashMap<&'a str, &'a Value>,
-    layout: &HashMap<i64, (String, Option<[f64; 4]>)>,
+    layout: &HashMap<i64, (String, Option<[f64; 4]>, bool)>,
     frame: &str,
     origin: (f64, f64),
     scroll: (f64, f64),
@@ -732,7 +772,7 @@ fn walk_frame<'a>(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let value = node
+    let mut value = node
         .pointer("/value/value")
         .and_then(Value::as_str)
         .map(str::to_string);
@@ -740,10 +780,13 @@ fn walk_frame<'a>(
         .get("backendDOMNodeId")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let (tag, bounds) = layout
+    let (tag, bounds, password) = layout
         .get(&backend_id)
         .cloned()
-        .unwrap_or_else(|| (String::new(), None));
+        .unwrap_or_else(|| (String::new(), None, false));
+    if password {
+        value = Some("***".to_string());
+    }
     let bbox = bounds.map(|bounds| project_bounds(bounds, origin, scroll));
     let states = read_states(node);
     let focusable = read_boolean_property(node, "focusable");
@@ -1457,5 +1500,71 @@ mod tests {
         assert!(snapshot.truncated);
         assert!(snapshot.text.contains("@c13 button \"Go\""));
         assert!(!snapshot.text.contains("@c21"));
+    }
+
+    #[test]
+    fn password_inputs_always_mask_their_value() {
+        let ax = json!({
+            "nodes": [
+                {
+                    "nodeId": "1",
+                    "role": { "value": "RootWebArea" },
+                    "name": { "value": "" },
+                    "backendDOMNodeId": 1
+                },
+                {
+                    "nodeId": "2",
+                    "parentId": "1",
+                    "role": { "value": "textbox" },
+                    "name": { "value": "Password" },
+                    "value": { "value": "SecretValue123" },
+                    "backendDOMNodeId": 7
+                }
+            ]
+        });
+        let dom = json!({
+            "strings": ["HTML", "INPUT", "type", "password"],
+            "documents": [{
+                "nodes": {
+                    "backendNodeId": [1, 7],
+                    "nodeName": [0, 1],
+                    "attributes": [null, [2, 3]]
+                },
+                "layout": {
+                    "nodeIndex": [0, 1],
+                    "bounds": [[0.0, 0.0, 0.0, 0.0], [10.0, 10.0, 100.0, 20.0]]
+                }
+            }]
+        });
+        let compact = render(
+            &ax,
+            &dom,
+            &page(),
+            &Options {
+                include_bbox: true,
+                ..Options::default()
+            },
+        )
+        .expect("compact snapshot");
+        assert!(compact.text.contains("value=\"***\""), "{}", compact.text);
+        assert!(!compact.text.contains("SecretValue123"));
+
+        let json = render(
+            &ax,
+            &dom,
+            &page(),
+            &Options {
+                format: Format::Json,
+                ..Options::default()
+            },
+        )
+        .expect("json snapshot");
+        let field = json
+            .nodes
+            .iter()
+            .find(|node| node["ref"] == "@c7")
+            .and_then(|node| node.get("value"))
+            .and_then(Value::as_str);
+        assert_eq!(field, Some("***"));
     }
 }

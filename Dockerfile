@@ -18,7 +18,7 @@ COPY tests/conformance/schema-snapshot.v1.5.0.json /build/tests/conformance/sche
 RUN pnpm build
 
 FROM debian:bookworm-slim AS runtime
-ARG CORVUS_VERSION=1.5.0
+ARG CORVUS_VERSION=1.6.0
 LABEL org.opencontainers.image.title="Corvus" \
       org.opencontainers.image.description="Corvus browser hub daemon" \
       org.opencontainers.image.version="$CORVUS_VERSION"

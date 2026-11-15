@@ -3,6 +3,7 @@ import { computed, watchEffect } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { NAlert, NButton, NCard, NDescriptions, NDescriptionsItem, NSpace, NTag, NText } from 'naive-ui';
 import { DEFAULT_DAEMON_URL } from '../../shared/storage/daemon-url';
+import { localizedErrorText, policyDeniedText, type PolicyTranslate } from '../shared/policy-denied';
 import { useSessionViewModel } from '../shared/viewmodels/session';
 
 const { t } = useI18n({ useScope: 'global' });
@@ -19,6 +20,9 @@ const cdpLabel = computed(() => {
     : cdp.reason || String(t('common.unavailable'));
 });
 const versionLabel = computed(() => String(t('app.version', { version: state.value?.version || '' })));
+const translate = t as unknown as PolicyTranslate;
+const policyDeniedMessage = computed(() => policyDeniedText(state.value?.lastPolicyDenied, translate));
+const errorText = computed(() => localizedErrorText(error.value || state.value?.lastError, translate));
 const statusType = computed<'success' | 'warning' | 'default'>(() => {
   if (connected.value) return 'success';
   return status.value === 'connecting' ? 'warning' : 'default';
@@ -44,8 +48,12 @@ watchEffect(() => {
         <n-descriptions-item :label="t('common.cdp')">{{ cdpLabel }}</n-descriptions-item>
       </n-descriptions>
 
-      <n-alert v-if="error || state?.lastError" type="warning" :show-icon="false">
-        {{ error || state?.lastError }}
+      <n-alert v-if="policyDeniedMessage" type="error" :show-icon="false">
+        {{ policyDeniedMessage }}
+      </n-alert>
+
+      <n-alert v-if="errorText" type="warning" :show-icon="false">
+        {{ errorText }}
       </n-alert>
 
       <n-space justify="space-between">

@@ -1035,4 +1035,12 @@ else
   record SKIP "browser_navigate loaded=false is not an error" "no mock extension"
 fi
 
+# --- v1.6 guardrails: typed denial and REST retryable=false ---------------
+
+if OUT=$(CORVUSD_BIN="$DAEMON_BIN" CORVUS_CONFORMANCE_TMP="$TMP" node "$ROOT/tests/conformance/guardrails_check.mjs" 2>&1); then
+  record PASS "guardrails POLICY_DENIED typed retryable=false" "$OUT"
+else
+  record FAIL "guardrails POLICY_DENIED typed retryable=false" "$OUT"
+fi
+
 finish

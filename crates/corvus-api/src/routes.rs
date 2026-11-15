@@ -93,6 +93,7 @@ fn status_for(code: ErrorCode) -> StatusCode {
         ErrorCode::CapabilityUnavailable => StatusCode::NOT_IMPLEMENTED,
         ErrorCode::BrowserGone | ErrorCode::TransportDown => StatusCode::BAD_GATEWAY,
         ErrorCode::Internal | ErrorCode::Cancelled => StatusCode::INTERNAL_SERVER_ERROR,
+        ErrorCode::PolicyDenied => StatusCode::FORBIDDEN,
     }
 }
 

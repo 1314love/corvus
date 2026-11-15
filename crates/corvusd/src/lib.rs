@@ -4,6 +4,7 @@
 
 pub mod channel;
 pub mod doctor;
+pub mod guardrails;
 pub mod home;
 pub mod logging;
 pub mod logs;
@@ -37,6 +38,7 @@ use corvus_record::{
 };
 
 use crate::channel::{ChannelMode, ChannelState};
+use crate::guardrails::Guardrails;
 
 pub use corvus_application::RouterConfig;
 use corvus_transport::{Registry, WsServer};
@@ -129,6 +131,8 @@ pub struct DaemonConfig {
     pub allow_no_auth: bool,
     /// Optional local authentication.
     pub auth: AuthSettings,
+    /// Optional guardrails policy file.
+    pub guardrails: Option<PathBuf>,
 }
 
 impl Default for DaemonConfig {
@@ -145,6 +149,7 @@ impl Default for DaemonConfig {
             no_cdp: false,
             allow_no_auth: false,
             auth: AuthSettings::default(),
+            guardrails: None,
         }
     }
 }
@@ -159,11 +164,13 @@ pub struct RouterBackend {
     cdp: Arc<CdpClient>,
     channel: Arc<ChannelState>,
     sink: StepSink,
+    guardrails: Option<Arc<Guardrails>>,
 }
 
 impl RouterBackend {
     /// Build a backend around a router, the live browser registry and the
     /// recording store.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<Router>,
         registry: Arc<Registry>,
@@ -172,6 +179,7 @@ impl RouterBackend {
         cdp: Arc<CdpClient>,
         channel: Arc<ChannelState>,
         sink: StepSink,
+        guardrails: Option<Arc<Guardrails>>,
     ) -> Self {
         Self {
             router,
@@ -181,6 +189,7 @@ impl RouterBackend {
             cdp,
             channel,
             sink,
+            guardrails,
         }
     }
 }
@@ -194,6 +203,7 @@ impl ToolBackend for RouterBackend {
         let cdp = Arc::clone(&self.cdp);
         let channel = Arc::clone(&self.channel);
         let sink = self.sink.clone();
+        let guardrails = self.guardrails.clone();
         let started = Instant::now();
         Box::pin(async move {
             let ToolCall {
@@ -202,35 +212,58 @@ impl ToolBackend for RouterBackend {
                 session,
             } = call;
             let local = LOCAL_TOOLS.contains(&name.as_str());
-            let (result, recorded_here) = match name.as_str() {
-                "browser_list" => (Ok(browser_list(&registry, &channel)), true),
-                "browser_batch" => (
-                    run_batch(
-                        &cdp,
-                        &channel,
-                        &registry,
-                        &router,
-                        &arguments,
-                        session.as_ref(),
-                    )
-                    .await,
-                    true,
-                ),
-                "browser_channel" => (channel.tool(&arguments), true),
-                "tool_help" => (corvus_mcp::tools::help_document(&arguments), true),
-                "session_list" => (session_list(&store, &arguments), true),
-                "session_steps" => (session_steps(&store, &arguments), true),
-                "session_replay" => (
-                    replay_session(&router, &registry, &store, &arguments).await,
-                    true,
-                ),
-                "session_export" => (session_export(&store, &arguments), true),
-                "metrics" => (metrics_tool(&metrics, &registry, &store, &channel), true),
-                "logs_tail" => (logs::tail(&arguments), true),
-                _ => {
-                    dispatch_tool(&cdp, &channel, &router, &name, &arguments, session.as_ref())
-                        .await
-                }
+            let guard_error = match &guardrails {
+                Some(policy) => policy
+                    .check_tool(&name)
+                    .and_then(|()| policy.check_arguments(&name, &arguments))
+                    .err(),
+                None => None,
+            };
+            let denied = guard_error.is_some();
+            let (result, recorded_here) = match guard_error {
+                Some(error) => (Err(error), false),
+                None => match name.as_str() {
+                    "browser_list" => (Ok(browser_list(&registry, &channel)), true),
+                    "browser_batch" => (
+                        run_batch(
+                            &cdp,
+                            &channel,
+                            &registry,
+                            &router,
+                            &arguments,
+                            session.as_ref(),
+                            guardrails.as_deref(),
+                        )
+                        .await,
+                        true,
+                    ),
+                    "browser_channel" => (channel.tool(&arguments), true),
+                    "tool_help" => (corvus_mcp::tools::help_document(&arguments), true),
+                    "session_list" => (session_list(&store, &arguments), true),
+                    "session_steps" => (session_steps(&store, &arguments), true),
+                    "session_replay" => (
+                        replay_session(
+                            &router,
+                            &registry,
+                            &store,
+                            &arguments,
+                            guardrails.as_deref(),
+                        )
+                        .await,
+                        true,
+                    ),
+                    "session_export" => (session_export(&store, &arguments), true),
+                    "metrics" => (metrics_tool(&metrics, &registry, &store, &channel), true),
+                    "logs_tail" => (logs::tail(&arguments), true),
+                    _ => {
+                        dispatch_tool(&cdp, &channel, &router, &name, &arguments, session.as_ref())
+                            .await
+                    }
+                },
+            };
+            let result = match &guardrails {
+                Some(policy) => policy.apply_result(&name, result),
+                None => result,
             };
             if let Err(error) = &result {
                 tracing::warn!(
@@ -240,7 +273,7 @@ impl ToolBackend for RouterBackend {
                     "tool call failed"
                 );
             }
-            if local || recorded_here {
+            if local || recorded_here || denied {
                 record_backend_step(&sink, session.as_ref(), &name, &arguments, &result, started);
             }
             result
@@ -461,6 +494,7 @@ async fn run_batch(
     router: &Arc<Router>,
     arguments: &Value,
     session: Option<&SessionContext>,
+    guardrails: Option<&Guardrails>,
 ) -> Result<Value, ErrorBody> {
     let arguments = corvus_mcp::tools::validate("browser_batch", arguments)?;
     let steps = arguments
@@ -486,11 +520,29 @@ async fn run_batch(
             .to_string();
         let raw_args = step.get("args").cloned().unwrap_or_else(|| json!({}));
         let outcome = match corvus_mcp::tools::validate(&tool, &raw_args) {
-            Ok(_args) if tool == "browser_list" => Ok(browser_list(registry, channel)),
             Ok(args) => {
-                dispatch_tool(cdp, channel, router, &tool, &args, session)
-                    .await
-                    .0
+                let policy_error = guardrails.and_then(|policy| {
+                    policy
+                        .check_tool(&tool)
+                        .and_then(|()| policy.check_arguments(&tool, &args))
+                        .err()
+                });
+                match policy_error {
+                    Some(error) => Err(error),
+                    None => {
+                        let result = if tool == "browser_list" {
+                            Ok(browser_list(registry, channel))
+                        } else {
+                            dispatch_tool(cdp, channel, router, &tool, &args, session)
+                                .await
+                                .0
+                        };
+                        match guardrails {
+                            Some(policy) => policy.apply_result(&tool, result),
+                            None => result,
+                        }
+                    }
+                }
             }
             Err(error) => Err(error),
         };
@@ -924,6 +976,7 @@ async fn replay_session(
     registry: &Arc<Registry>,
     store: &Arc<Store>,
     arguments: &Value,
+    guardrails: Option<&Guardrails>,
 ) -> Result<Value, ErrorBody> {
     let session_id = arguments
         .get("session_id")
@@ -964,6 +1017,7 @@ async fn replay_session(
         .map_err(internal)?;
     let mut planned: Vec<(i64, String, Value)> = Vec::new();
     let mut skipped: Vec<Value> = Vec::new();
+    let mut policy_skipped = false;
     for row in rows.into_iter().filter(|row| row.seq <= to_seq) {
         if CONTROL_TOOLS.contains(&row.tool.as_str()) {
             skipped.push(json!({
@@ -989,17 +1043,42 @@ async fn replay_session(
             }));
             continue;
         };
+        if let Some(policy) = guardrails {
+            if let Err(error) = policy
+                .check_tool(&row.tool)
+                .and_then(|()| policy.check_arguments(&row.tool, &args))
+            {
+                skipped.push(json!({
+                    "seq": row.seq,
+                    "tool": row.tool,
+                    "reason": "policy_denied",
+                    "error": error,
+                }));
+                policy_skipped = true;
+                continue;
+            }
+        }
         planned.push((row.seq, row.tool, args));
-    }
-    if planned.is_empty() {
-        return Err(bad_args("the session has no replayable steps")
-            .with_details(json!({ "reason": "no_replayable_steps", "session_id": session_id })));
     }
     let total = planned.len() + skipped.len();
     let planned_document: Vec<Value> = planned
         .iter()
         .map(|(seq, tool, args)| json!({ "seq": seq, "tool": tool, "args": args }))
         .collect();
+    if planned.is_empty() {
+        if policy_skipped {
+            return Ok(json!({
+                "session_id": session_id,
+                "mode": mode,
+                "total": total,
+                "planned": [],
+                "executed": [],
+                "skipped": skipped,
+            }));
+        }
+        return Err(bad_args("the session has no replayable steps")
+            .with_details(json!({ "reason": "no_replayable_steps", "session_id": session_id })));
+    }
     if !live {
         return Ok(json!({
             "session_id": session_id,
@@ -1037,6 +1116,10 @@ async fn replay_session(
         }
         let started = Instant::now();
         let result = router.dispatch(request).await;
+        let result = match guardrails {
+            Some(policy) => policy.apply_result(tool, result),
+            None => result,
+        };
         let ok = result.is_ok();
         let error_code = result
             .as_ref()
@@ -1194,6 +1277,25 @@ impl Daemon {
                 "CORVUS_AUTH_SECRET must be at least 32 bytes",
             ));
         }
+        let guardrails = match config.guardrails.as_deref() {
+            Some(path) => Some(Arc::new(Guardrails::load(path).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+            })?)),
+            None => None,
+        };
+        match &guardrails {
+            Some(policy) => tracing::info!(
+                read_only = policy.read_only(),
+                allow_tools = policy.allow_count(),
+                deny_tools = policy.deny_count(),
+                allowed_hosts = policy.host_count(),
+                block_private_network = policy.blocks_private_network(),
+                redact_secrets = policy.redacts_secrets(),
+                content_boundary = policy.uses_content_boundary(),
+                "guardrails enabled"
+            ),
+            None => tracing::info!("guardrails disabled"),
+        }
         let metrics = Arc::new(Metrics::new());
         let (layout, db_path) = home::resolve_database(config.db_path.clone(), config.home.clone())
             .map_err(|error| std::io::Error::other(format!("corvus home: {error}")))?;
@@ -1242,6 +1344,7 @@ impl Daemon {
             Arc::clone(&cdp),
             Arc::clone(&channel),
             recorder.sink(),
+            guardrails.clone(),
         ));
         let http_addr_slot = Arc::new(std::sync::OnceLock::<SocketAddr>::new());
         let health_registry = Arc::clone(&registry);
@@ -1250,6 +1353,7 @@ impl Daemon {
         let health_channel = Arc::clone(&channel);
         let health_http_addr = Arc::clone(&http_addr_slot);
         let health_db_path = db_path.display().to_string();
+        let health_guardrails = guardrails.clone();
         let health: Arc<dyn Fn() -> Value + Send + Sync> = Arc::new(move || {
             let mut document = json!({
                 "status": "ok",
@@ -1260,6 +1364,10 @@ impl Daemon {
                 "tool_calls_total": health_metrics.calls(),
                 "tool_errors_total": health_metrics.errors(),
                 "channel": health_channel.status(),
+                "guardrails": match &health_guardrails {
+                    Some(policy) => policy.health(),
+                    None => Guardrails::health_disabled(),
+                },
             });
             if let Some(addr) = health_http_addr.get() {
                 document["http_addr"] = json!(addr.to_string());
@@ -1750,6 +1858,7 @@ mod channel_routing_tests {
                 "stop_on_error": false
             }),
             None,
+            None,
         )
         .await
         .map(|value| (value, true))
@@ -1780,6 +1889,7 @@ mod channel_routing_tests {
                 ]
             }),
             None,
+            None,
         )
         .await
         .expect("a failing first step is still an envelope");
@@ -1808,6 +1918,7 @@ mod channel_routing_tests {
             &registry,
             &router,
             &json!({ "steps": [{ "tool": "browser_batch", "args": { "steps": [] } }] }),
+            None,
             None,
         )
         .await
@@ -1936,6 +2047,7 @@ mod channel_routing_tests {
             &router,
             &json!({ "steps": [{ "tool": "page_snapshot", "args": { "max_nodes": 100 } }] }),
             Some(&session),
+            None,
         )
         .await
         .expect("baseline batch");
@@ -1951,6 +2063,7 @@ mod channel_routing_tests {
                 "diff": true,
             } }] }),
             Some(&session),
+            None,
         )
         .await
         .expect("diff batch");
@@ -1972,6 +2085,7 @@ mod channel_routing_tests {
             &router,
             &json!({ "steps": [{ "tool": "page_snapshot", "args": { "max_nodes": 100 } }] }),
             Some(&session),
+            None,
         )
         .await
         .expect("refresh batch");
@@ -1990,6 +2104,7 @@ mod channel_routing_tests {
                 "diff": true,
             } }] }),
             Some(&session),
+            None,
         )
         .await
         .expect("stable batch");
@@ -2274,5 +2389,243 @@ mod channel_routing_tests {
         let details = body.details.expect("details");
         assert_eq!(details["transport"], "cdp");
         assert_eq!(details["cdp_code"], "NOT_INTERACTABLE");
+    }
+
+    fn guardrails_policy(text: &str) -> Arc<Guardrails> {
+        Arc::new(Guardrails::from_json(text).expect("valid guardrails"))
+    }
+
+    fn recorded_step(session: &str, tool: &str, args: Value) -> StepRecord {
+        StepRecord {
+            session_id: session.to_string(),
+            ts: now_millis(),
+            tool: tool.to_string(),
+            args,
+            result: None,
+            error_code: None,
+            duration_ms: 1,
+            browser_id: None,
+            tab_id: None,
+            ok: true,
+        }
+    }
+
+    fn policy_backend(
+        policy: Arc<Guardrails>,
+        registry: &Arc<Registry>,
+        cdp: &Arc<CdpClient>,
+        channel: &Arc<ChannelState>,
+    ) -> (RouterBackend, Recorder) {
+        let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
+        let recorder = Recorder::start(Arc::clone(&store));
+        let router = Router::new(
+            Arc::clone(registry) as Arc<dyn BrowserRegistry>,
+            RouterConfig::default(),
+        );
+        let backend = RouterBackend::new(
+            router,
+            Arc::clone(registry),
+            store,
+            Arc::new(Metrics::new()),
+            Arc::clone(cdp),
+            Arc::clone(channel),
+            recorder.sink(),
+            Some(policy),
+        );
+        (backend, recorder)
+    }
+
+    #[tokio::test]
+    async fn guardrails_deny_tools_before_dispatch_and_before_batch_recursion() {
+        let registry = Arc::new(Registry::new());
+        let cdp = Arc::new(CdpClient::new());
+        let channel = Arc::new(ChannelState::new(
+            ChannelMode::Auto,
+            Arc::clone(&cdp),
+            Arc::clone(&registry),
+            true,
+        ));
+        let policy =
+            guardrails_policy(r#"{"version":1,"read_only":true,"deny_tools":["browser_list"]}"#);
+        let (backend, _recorder) = policy_backend(policy, &registry, &cdp, &channel);
+
+        let denied = backend
+            .call(ToolCall {
+                name: "browser_list".into(),
+                arguments: json!({}),
+                session: None,
+            })
+            .await
+            .expect_err("browser_list is denylisted");
+        assert_eq!(denied.code, ErrorCode::PolicyDenied);
+        assert_eq!(denied.details.as_ref().unwrap()["reason"], "deny_list");
+
+        let denied = backend
+            .call(ToolCall {
+                name: "browser_click".into(),
+                arguments: json!({ "target": "@c1" }),
+                session: None,
+            })
+            .await
+            .expect_err("read-only denies destructive tools");
+        assert_eq!(denied.code, ErrorCode::PolicyDenied);
+        assert_eq!(denied.details.as_ref().unwrap()["reason"], "read_only");
+
+        let denied = backend
+            .call(ToolCall {
+                name: "browser_batch".into(),
+                arguments: json!({ "steps": [] }),
+                session: None,
+            })
+            .await
+            .expect_err("read-only denies the batch tool itself");
+        assert_eq!(denied.code, ErrorCode::PolicyDenied);
+        assert_eq!(denied.details.as_ref().unwrap()["reason"], "read_only");
+    }
+
+    #[tokio::test]
+    async fn guardrails_deny_navigation_before_dispatch() {
+        let registry = Arc::new(Registry::new());
+        let cdp = Arc::new(CdpClient::new());
+        let channel = Arc::new(ChannelState::new(
+            ChannelMode::Auto,
+            Arc::clone(&cdp),
+            Arc::clone(&registry),
+            true,
+        ));
+        let policy = guardrails_policy(r#"{"version":1,"allowed_hosts":["example.com"]}"#);
+        let (backend, _recorder) = policy_backend(policy, &registry, &cdp, &channel);
+        let denied = backend
+            .call(ToolCall {
+                name: "browser_navigate".into(),
+                arguments: json!({ "url": "https://evil.test/" }),
+                session: None,
+            })
+            .await
+            .expect_err("host is not allowed");
+        assert_eq!(denied.code, ErrorCode::PolicyDenied);
+        assert_eq!(
+            denied.details.as_ref().unwrap()["reason"],
+            "host_not_allowed"
+        );
+        assert_eq!(
+            denied.details.as_ref().unwrap()["url"],
+            "https://evil.test/"
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_batch_applies_guardrails_to_every_step() {
+        let registry = Arc::new(Registry::new());
+        let cdp = Arc::new(CdpClient::new());
+        let channel = Arc::new(ChannelState::new(
+            ChannelMode::Auto,
+            Arc::clone(&cdp),
+            Arc::clone(&registry),
+            true,
+        ));
+        let router = Router::new(
+            registry.clone() as Arc<dyn BrowserRegistry>,
+            RouterConfig::default(),
+        );
+        let policy = guardrails_policy(r#"{"version":1,"deny_tools":["browser_navigate"]}"#);
+        let result = run_batch(
+            &cdp,
+            &channel,
+            &registry,
+            &router,
+            &json!({
+                "steps": [
+                    { "tool": "browser_list" },
+                    { "tool": "browser_navigate", "args": { "url": "https://example.test/" } },
+                    { "tool": "browser_list" }
+                ],
+                "stop_on_error": false
+            }),
+            None,
+            Some(&*policy),
+        )
+        .await
+        .expect("batch envelope");
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["count"], 3);
+        let results = result["results"].as_array().expect("step results");
+        assert_eq!(results[0]["ok"], true);
+        assert_eq!(results[1]["ok"], false);
+        assert_eq!(results[1]["error"]["code"], "POLICY_DENIED");
+        assert_eq!(results[1]["error"]["details"]["reason"], "deny_list");
+        assert_eq!(results[2]["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn session_replay_skips_policy_denied_steps_without_dispatching_them() {
+        let registry = Arc::new(Registry::new());
+        let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
+        store
+            .start_session("s-policy", "internal", Some("test"), None)
+            .expect("session");
+        for (tool, args) in [
+            ("browser_navigate", json!({ "url": "https://evil.test/" })),
+            (
+                "browser_navigate",
+                json!({ "url": "https://example.com/ok" }),
+            ),
+            ("browser_list", json!({})),
+        ] {
+            store
+                .record_step(recorded_step("s-policy", tool, args))
+                .expect("step");
+        }
+        let router = Router::new(
+            registry.clone() as Arc<dyn BrowserRegistry>,
+            RouterConfig::default(),
+        );
+        let policy = guardrails_policy(r#"{"version":1,"allowed_hosts":["example.com"]}"#);
+        let dry = replay_session(
+            &router,
+            &registry,
+            &store,
+            &json!({ "session_id": "s-policy" }),
+            Some(&*policy),
+        )
+        .await
+        .expect("dry-run replay");
+        assert_eq!(dry["mode"], "dry_run");
+        assert_eq!(dry["total"], 3);
+        assert_eq!(dry["planned"].as_array().unwrap().len(), 1);
+        assert_eq!(dry["executed"].as_array().unwrap().len(), 0);
+        assert_eq!(dry["skipped"][0]["seq"], 1);
+        assert_eq!(dry["skipped"][0]["tool"], "browser_navigate");
+        assert_eq!(dry["skipped"][0]["reason"], "policy_denied");
+        assert_eq!(dry["skipped"][0]["error"]["code"], "POLICY_DENIED");
+        assert_eq!(
+            dry["skipped"][0]["error"]["details"]["reason"],
+            "host_not_allowed"
+        );
+
+        store
+            .start_session("s-live", "internal", Some("test"), None)
+            .expect("session");
+        store
+            .record_step(recorded_step(
+                "s-live",
+                "browser_navigate",
+                json!({ "url": "https://evil.test/" }),
+            ))
+            .expect("step");
+        let live = replay_session(
+            &router,
+            &registry,
+            &store,
+            &json!({ "session_id": "s-live", "mode": "live" }),
+            Some(&*policy),
+        )
+        .await
+        .expect("all-denied live replay returns a report");
+        assert_eq!(live["mode"], "live");
+        assert_eq!(live["total"], 1);
+        assert_eq!(live["planned"].as_array().unwrap().len(), 0);
+        assert_eq!(live["executed"].as_array().unwrap().len(), 0);
+        assert_eq!(live["skipped"][0]["reason"], "policy_denied");
     }
 }

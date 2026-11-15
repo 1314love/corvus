@@ -51,6 +51,9 @@ enum Command {
         /// Disable CDP discovery and attachment
         #[arg(long)]
         no_cdp: bool,
+        /// Guardrails policy JSON file
+        #[arg(long, env = "CORVUS_GUARDRAILS")]
+        guardrails: Option<PathBuf>,
         /// Browser channel: auto, cdp or extension
         #[arg(long, env = "CORVUS_CHANNEL", default_value = "auto", value_parser = ["auto", "cdp", "extension"])]
         channel: String,
@@ -122,6 +125,7 @@ async fn main() -> Result<()> {
             home,
             cdp_endpoint,
             no_cdp,
+            guardrails,
             channel,
             log_file,
             no_log_file,
@@ -166,6 +170,7 @@ async fn main() -> Result<()> {
                 no_cdp,
                 allow_no_auth,
                 auth,
+                guardrails,
                 ..DaemonConfig::default()
             })
             .await?;

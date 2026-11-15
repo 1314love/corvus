@@ -45,9 +45,9 @@ Corvus 由一个本地守护进程、一个命令行和一个浏览器扩展组�
 Linux 发布包仅面向 x86_64。先解压到一个目录，再安装：
 
 ```bash
-mkdir -p corvus-1.4.0-linux-x86_64
-tar -xzf corvus-1.4.0-linux-x86_64.tar.gz -C corvus-1.4.0-linux-x86_64
-cd corvus-1.4.0-linux-x86_64
+mkdir -p corvus-1.5.0-linux-x86_64
+tar -xzf corvus-1.5.0-linux-x86_64.tar.gz -C corvus-1.5.0-linux-x86_64
+cd corvus-1.5.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -71,7 +71,7 @@ sudo CORVUS_HOME=/var/lib/corvus CORVUS_USER=corvus \
 
 ## 3. Linux 升级与卸载
 
-升级时解压新包并运行同一个安装器。它会停止服务、替换二进制与扩展、重写单元并重启；`data/corvus.db` 与 `logs/` 保留。数据库 schema 为版本 1，1.0.0 的数据库可原地打开；1.4.0 首次打开既有数据库时，会先用 `VACUUM INTO` 在旁边写一份备份，再应用 schema 基线，备份失败则中止启动。
+升级时解压新包并运行同一个安装器。它会停止服务、替换二进制与扩展、重写单元并重启；`data/corvus.db` 与 `logs/` 保留。数据库 schema 为版本 1，1.0.0 的数据库可原地打开；1.5.0 首次打开既有数据库时，会先用 `VACUUM INTO` 在旁边写一份备份，再应用 schema 基线，备份失败则中止启动。
 
 卸载默认保留数据与日志：
 
@@ -98,7 +98,7 @@ Windows 发布包是 ZIP，包含 `corvusd.exe`、`corvus.exe`、`nssm.exe`、�
 在仓库根目录构建镜像：
 
 ```bash
-docker build -t corvus:1.4.0 .
+docker build -t corvus:1.5.0 .
 ```
 
 镜像以 UID/GID 10001 运行 `corvusd serve --bind 0.0.0.0 --home /data`，运行数据存放在 `/data` 卷，暴露 7330（WebSocket）与 7331（MCP HTTP 与 REST）。未打包扩展位于 `/opt/corvus/extension`，不在 `/data`；请用 `docker cp` 复制出来，或在宿主机上使用发布 ZIP 中的扩展。
@@ -109,7 +109,7 @@ docker build -t corvus:1.4.0 .
 docker volume create corvus-data
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
-  -v corvus-data:/data corvus:1.4.0
+  -v corvus-data:/data corvus:1.5.0
 curl -fsS http://127.0.0.1:7331/health
 ```
 
@@ -127,7 +127,7 @@ chmod 600 corvus-auth.env
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
   --env-file corvus-auth.env \
-  -v corvus-data:/data corvus:1.4.0
+  -v corvus-data:/data corvus:1.5.0
 ```
 
 启用本地认证后，REST `/api/v1` 需要来自 `/api/v1/auth/login` 的 bearer 令牌；`/mcp`、WebSocket、`/health`、`/metrics`、`/api-docs/openapi.json` 与 `/docs` 仍无认证。已启用本地认证时，豁免标志不会削弱守护进程。覆盖镜像入口的部署必须自行传入 `--allow-no-auth` 或本地认证；仓库内的 Kubernetes Deployment 覆盖了 command 与 args 并传入了 `--allow-no-auth`，因此可以启动，但明确没有认证。这是不安全默认配置，不是开箱即用的安全部署；请使用可信认证代理。
@@ -146,8 +146,8 @@ docker compose down
 `deploy/k8s/` 中的清单创建 `corvus` 命名空间、1 GiB ReadWriteOnce PVC、一个守护进程副本、ClusterIP Service 与默认拒绝的 NetworkPolicy。部署使用只读根文件系统、无 capability、RuntimeDefault seccomp，并通过 init 容器把镜像内的扩展播种到卷。
 
 ```bash
-docker build -t corvus:1.4.0 .
-kind load docker-image corvus:1.4.0   # 或推送到你的镜像仓库
+docker build -t corvus:1.5.0 .
+kind load docker-image corvus:1.5.0   # 或推送到你的镜像仓库
 kubectl apply -k deploy/k8s
 kubectl -n corvus rollout status deployment/corvus
 kubectl -n corvus port-forward svc/corvus 7330:7330 7331:7331
@@ -167,13 +167,23 @@ MCP、扩展 WebSocket 与 CDP 都**没有认证**，其安全边界是操作系
 
 REST `/api/v1` 可选择启用本地认证。bearer 守卫只覆盖 `/api/v1`：在其中，`/api/v1/health`、`/api/v1/auth/login` 与 `/api/v1/auth/refresh` 豁免；`/mcp`、旧版 `/health` 与 `/metrics`、`/api-docs/openapi.json`、`/docs` 与 WebSocket 都在守卫之外。即使开启本地认证，它们也保持无认证。绑定非回环地址时，认证不是 `local` 且未显式传入 `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` 豁免时将拒绝启动；该守卫只保护启动阶段，并不保护 `/mcp`。因此启用 REST 认证不能让非回环守护进程对远程安全；必须使用对所有端口做认证的可信代理。
 
+### 守护策略
+
+v1.6.0 新增可选守护策略，在派发前限制工具与导航。用 `--guardrails <PATH>` 或 `CORVUS_GUARDRAILS=<PATH>` 启动守护进程；无法读取、超过大小限制或非法的策略会中止启动。策略文件是严格 JSON：
+
+```json
+{ "version": 1, "read_only": false, "allowed_hosts": ["example.com"], "block_private_network": true, "redact_secrets": true, "content_boundary": true }
+```
+
+`GET /health` 会报告守护策略摘要。该策略不是网络沙箱；见 [11-guardrails.zh.md](11-guardrails.zh.md)。
+
 ### 容器与 Kubernetes 中的 CDP
 
 CDP 仅限宿主机回环。守护进程只接受主机为 `127.0.0.1`、`localhost` 或 `[::1]` 的浏览器级端点；容器或 Pod 有自己的回环，默认无法访问宿主机上运行的浏览器。发布镜像不含浏览器，也不会主动连接 CDP。把浏览器作为 sidecar 运行不是开箱即用的受支持路径：它需要共享网络命名空间、匹配的浏览器家族与可写 profile，且不在本文测试范围内。在 Docker 或 Kubernetes 内请把通道保持为 `extension`（或以 `--no-cdp` 启动），通过扩展驱动浏览器。
 
 ## 8. 备份、恢复与保留期
 
-录制库是 SeaORM 之下、schema 版本 1 的 WAL 模式 SQLite，写入使用单连接。要获得一致副本，请停止守护进程或使用 SQLite 在线备份，然后复制 `data/corvus.db`（停止时连同 `-wal`/`-shm`）。1.4.0 首次在既有数据库上启动时，录制模块会先用 `VACUUM INTO` 写出 `data/corvus.db.backup-<millis>.db`，再应用基线迁移；无法写入备份则中止启动。日志不是恢复所需。
+录制库是 SeaORM 之下、schema 版本 1 的 WAL 模式 SQLite，写入使用单连接。要获得一致副本，请停止守护进程或使用 SQLite 在线备份，然后复制 `data/corvus.db`（停止时连同 `-wal`/`-shm`）。1.5.0 首次在既有数据库上启动时，录制模块会先用 `VACUUM INTO` 写出 `data/corvus.db.backup-<millis>.db`，再应用基线迁移；无法写入备份则中止启动。日志不是恢复所需。
 
 守护进程启动时把上一进程遗留的活动会话标记为 `abandoned`，并清理早于 30 天的会话。数据库包含工具参数与结果（包括页面文本），应视为敏感数据。Kubernetes 用户可对 PVC 做快照；Docker 用户可备份命名卷。
 

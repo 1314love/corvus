@@ -3,9 +3,10 @@ import { createPinia } from 'pinia';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import PopupApp from '../../src/ui/popup/App.vue';
 import { applyLocale, i18n } from '../../src/ui/shared/i18n';
-import { installFakeUiPort, sampleState } from '../helpers/ui-port';
+import { disconnectFakeUiPort, installFakeUiPort, sampleState } from '../helpers/ui-port';
 
 afterEach(() => {
+  disconnectFakeUiPort();
   applyLocale('en');
   vi.unstubAllGlobals();
 });
@@ -41,6 +42,40 @@ describe('popup component', () => {
     expect(text).toContain('设置');
     expect(text).not.toContain('Settings');
     expect(document.documentElement.lang).toBe('zh-CN');
+    wrapper.unmount();
+  });
+
+  it('localizes POLICY_DENIED in both locales without a reload', async () => {
+    installFakeUiPort(() => ({
+      ok: true,
+      state: sampleState({ lastPolicyDenied: { code: 'POLICY_DENIED', reason: 'deny_list' } }),
+    }));
+    applyLocale('en');
+    const wrapper = mount(PopupApp, { global: { plugins: [createPinia(), i18n] } });
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('Blocked by daemon policy: deny_list');
+    applyLocale('zh-CN');
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain('已被守护进程策略阻止：deny_list');
+    wrapper.unmount();
+  });
+
+  it('does not render an unsafe policy reason', async () => {
+    installFakeUiPort(() => ({
+      ok: true,
+      state: sampleState({ lastPolicyDenied: { code: 'POLICY_DENIED', reason: 'C:/secret/policy.json' } }),
+    }));
+    applyLocale('en');
+    const wrapper = mount(PopupApp, { global: { plugins: [createPinia(), i18n] } });
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    const text = wrapper.text();
+    expect(text).toContain('Blocked by daemon policy');
+    expect(text).not.toContain('secret');
+    expect(text).not.toContain('policy.json');
     wrapper.unmount();
   });
 });

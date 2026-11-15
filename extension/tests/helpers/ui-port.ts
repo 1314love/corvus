@@ -8,6 +8,7 @@ export function sampleState(overrides: Partial<UiState> = {}): UiState {
     browserId: 'chromium:test',
     daemonVersion: 'e2e-daemon',
     lastError: null,
+    lastPolicyDenied: null,
     wsUrl: 'ws://127.0.0.1:29330',
     cdpEndpoint: 'auto',
     cdp: {
@@ -23,7 +24,7 @@ export function sampleState(overrides: Partial<UiState> = {}): UiState {
       reason: null,
       detected_at: 1,
     },
-    version: '1.5.0',
+    version: '1.6.0',
     capabilities: ['dom', 'scripting', 'debugger', 'cdp'],
     debuggerChannel: { managed: true, attached_tabs: [] },
     ...overrides,
@@ -35,11 +36,24 @@ interface FakePortHarness {
   connect: ReturnType<typeof vi.fn>;
 }
 
+let activePortDisconnect: (() => void) | null = null;
+
+export function disconnectFakeUiPort(): void {
+  const disconnect = activePortDisconnect;
+  activePortDisconnect = null;
+  disconnect?.();
+}
+
 export function installFakeUiPort(
   handler?: (message: { id: string; type: string; payload: Record<string, unknown> }) => UiReply,
 ): FakePortHarness {
+  // The UI client is a module singleton. Disconnect the previous fake port so
+  // the next mount creates a fresh port bound to this test's handler.
+  activePortDisconnect?.();
+
   const messages: FakePortHarness['messages'] = [];
   const listeners: Array<(message: unknown) => void> = [];
+  const disconnectListeners: Array<() => void> = [];
 
   const port = {
     name: 'corvus.ui',
@@ -54,7 +68,9 @@ export function installFakeUiPort(
         for (const listener of listeners) listener({ id: message.id, ...reply });
       });
     },
-    disconnect(): void {},
+    disconnect(): void {
+      for (const listener of disconnectListeners.splice(0)) listener();
+    },
     onMessage: {
       addListener(listener: (message: unknown) => void): void {
         listeners.push(listener);
@@ -62,13 +78,16 @@ export function installFakeUiPort(
       removeListener(): void {},
     },
     onDisconnect: {
-      addListener(): void {},
+      addListener(listener: () => void): void {
+        disconnectListeners.push(listener);
+      },
       removeListener(): void {},
     },
   } as unknown as chrome.runtime.Port;
 
   const connect = vi.fn(() => port);
   vi.stubGlobal('chrome', { runtime: { connect, openOptionsPage: vi.fn(async () => undefined) } });
+  activePortDisconnect = () => port.disconnect();
   return { messages, connect };
 }
 

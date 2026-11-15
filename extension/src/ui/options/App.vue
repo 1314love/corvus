@@ -14,6 +14,7 @@ import {
   NText,
 } from 'naive-ui';
 import { changeLocale, type LocaleCode } from '../shared/i18n';
+import { localizedErrorText, policyDeniedText, type PolicyTranslate } from '../shared/policy-denied';
 import { useSessionViewModel } from '../shared/viewmodels/session';
 
 const { t, locale } = useI18n({ useScope: 'global' });
@@ -60,6 +61,9 @@ const sourceLabel = computed(() => {
   return translated === key ? source : translated;
 });
 const versionLabel = computed(() => String(t('app.version', { version: state.value?.version || '' })));
+const translate = t as unknown as PolicyTranslate;
+const policyDeniedMessage = computed(() => policyDeniedText(state.value?.lastPolicyDenied, translate));
+const errorText = computed(() => localizedErrorText(error.value, translate));
 
 async function selectLocale(next: LocaleCode): Promise<void> {
   await changeLocale(next);
@@ -78,7 +82,10 @@ watchEffect(() => {
       </template>
 
       <n-space vertical :size="16">
-        <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
+        <n-alert v-if="policyDeniedMessage" type="error" :show-icon="false">
+          {{ policyDeniedMessage }}
+        </n-alert>
+        <n-alert v-if="errorText" type="error" :show-icon="false">{{ errorText }}</n-alert>
         <n-alert v-if="notice" type="success" :show-icon="false">{{ t(notice) }}</n-alert>
 
         <section>

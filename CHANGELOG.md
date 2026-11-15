@@ -6,6 +6,22 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
+## 1.6.0 - Unreleased
+
+1.6.0 is in the tree with a formal QA acceptance PASS on the working tree at HEAD `61ca85f`: 237 workspace tests on 25 result lines, 137 conformance checks, 55 Vitest tests in ten files, a 14-file/490,393-byte extension build and Playwright 1/1. No tag, CI run, published package or GitHub release exists yet. It adds optional daemon guardrails but no MCP tool; the surface remains 43 tools in nine categories. Release evidence remains Pending.
+
+### Added
+
+- Optional guardrails policy in `crates/corvusd/src/guardrails.rs`: strict version 1 JSON with `read_only`, `allow_tools`, `deny_tools`, `allowed_hosts`, `block_private_network`, `redact_secrets` and `content_boundary`; an invalid policy aborts startup. It is selected by `--guardrails` or `CORVUS_GUARDRAILS` and summarized under `/health`.
+- `POLICY_DENIED` as the 11th error code (wire `POLICY_DENIED`, no retry, REST 403). Tool and URL checks run before dispatch; `browser_batch` checks every step and `session_replay` skips denied steps.
+- Cookie value redaction for `browser_cookies` and untrusted-content boundaries around `page_text`, `page_html` and compact `page_snapshot` text; password inputs remain masked as `***`.
+
+### Changed
+
+- The extension shows a localized `POLICY_DENIED` message with a sanitized reason and never exposes the policy path.
+- The 43-tool MCP catalogue, nine categories, compact envelope and `browser_batch` surface are unchanged.
+- Local Windows installer acceptance passed 84 checks and observations with 0 failures on the distinct local ZIP, 18,801,258 B, SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`; it is not the CI rebuild or a published artifact.
+
 ## 1.5.0 - 2026-11-15
 
 1.5.0 was released on 2026-11-15 and is the current release; 1.4.0 is the previous release. The MCP surface is unchanged at 43 tools in nine categories. QA acceptance and Windows installer acceptance passed on the frozen tree; main CI run 43702442120 passed all eight jobs and GitHub Release 445967405 published the Windows, Linux and combined checksum assets.
@@ -208,6 +224,22 @@ First public release.
 ---
 
 ## 中文
+
+## 1.6.0 - 未发布
+
+1.6.0 已进入工作树，并在 HEAD `61ca85f` 的工作树上取得正式 QA 验收 PASS：25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个文件/490,393 B 的扩展构建与 Playwright 1/1。尚无标签、CI 运行、已发布安装包或 GitHub 发布。它新增可选守护进程策略，但不新增 MCP 工具；工具面仍为九个类别中的 43 个工具。发布证据仍为 Pending。
+
+### 新增
+
+- `crates/corvusd/src/guardrails.rs` 中的可选守护策略：严格 version 1 JSON，支持 `read_only`、`allow_tools`、`deny_tools`、`allowed_hosts`、`block_private_network`、`redact_secrets` 与 `content_boundary`；非法策略中止启动。由 `--guardrails` 或 `CORVUS_GUARDRAILS` 选择，并在 `/health` 下汇总。
+- `POLICY_DENIED` 作为第 11 个错误码（线格式 `POLICY_DENIED`，不重试，REST 403）。工具与 URL 检查在派发前执行；`browser_batch` 逐步骤检查，`session_replay` 跳过被拒绝步骤。
+- `browser_cookies` 的 cookie 值脱敏，以及 `page_text`、`page_html` 与紧凑 `page_snapshot` 文本的不可信内容边界；密码输入仍掩码为 `***`。
+
+### 变更
+
+- 扩展显示本地化的 `POLICY_DENIED` 消息与脱敏原因，绝不暴露策略路径。
+- 43 工具 MCP 目录、九个类别、紧凑信封与 `browser_batch` 面保持不变。
+- 本地 Windows 安装包验收在独立的本地 ZIP 上通过：84 项检查与观察、0 失败；18,801,258 B，SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`；它不是 CI 重建产物或已发布产物。
 
 ## 1.5.0 - 2026-11-15
 

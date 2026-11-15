@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-Status: 1.5.0 is the current published release, published on 2026-11-15 from tag `v1.5.0`; 1.4.0 is the previous release. The 1.5.0 release keeps the ports-and-adapters backend and the unchanged 43-tool MCP surface, and adds snapshot perception v2, compact snapshot diffs and extension internationalization. QA PASS is recorded in [v1.5.0.md](../tests/acceptance/v1.5.0.md), main CI run 43702442120 passed and GitHub Release 445967405 published the assets. Audience: engineers.
+Status: 1.5.0 is the current published release, published on 2026-11-15 from tag `v1.5.0`; 1.4.0 is the previous release. The 1.5.0 release keeps the ports-and-adapters backend and the unchanged 43-tool MCP surface, and adds snapshot perception v2, compact snapshot diffs and extension internationalization. The v1.6.0 guardrails implementation is in the tree and passed formal QA on the working tree at HEAD `61ca85f`; its tag, CI, published package and release evidence is Pending. QA PASS for 1.5.0 is recorded in [v1.5.0.md](../tests/acceptance/v1.5.0.md), main CI run 43702442120 passed and GitHub Release 445967405 published the assets. Audience: engineers.
 
 ## 1. Constraints that shape the design
 
@@ -49,7 +49,7 @@ Processes: one corvusd per user session (a service on Windows and Linux; foregro
 | corvus-transport | WS server, native-messaging host, long-poll fallback, browser registry |
 | corvus-record | session recorder, SeaORM SQLite schema and migration, step store, replay support |
 | corvus-cdp | browser-level CDP client, endpoint validation, event ring, raw and high-level CDP tools |
-| corvusd | daemon binary: wires everything, service lifecycle, config |
+| corvusd | daemon binary: wires everything, service lifecycle, config, optional guardrails policy |
 | corvus | CLI: doctor, serve, attach, replay, bench, config print |
 
 The dependency rule points inward: `corvus-domain` has no I/O or adapter dependency, `corvus-application` depends on the domain and defines the ports, adapters implement those ports, and `corvusd` is the only composition root. `corvus-runtime` no longer exists; its routing responsibilities live in `corvus-application` and `corvusd`.
@@ -121,7 +121,7 @@ Common conventions:
 | `browser_navigate` | `url`; `tab_id?` | `navigated`, `loaded`, `url`, `previous`, `same_document`, `started_at` |
 | `page_snapshot` | `tab_id?`; `mode?` (`interactive` default or `full`); `max_nodes?` 40..3000 | `url`, `title`, `viewport`, `mode`, `node_cap`, `node_count`, `element_count`, `text_count`, `ref_count`, `truncated`, `nodes[]` |
 | `browser_click` | `target`; `tab_id?` | `clicked`, `ref`, `selector`, `tag`, `role`, `name`, `bbox`, `point`, `events[]`, `url` |
-| `browser_type` | `target`; `text`; `clear?` default true; `blur?` default false; `tab_id?` | `typed`, `ref`, `selector`, `tag`, `role`, `cleared`, `events[]`, `value_length`, `url`, `value` (passwords return `masked` instead) |
+| `browser_type` | `target`; `text`; `clear?` default true; `blur?` default false; `tab_id?` | `typed`, `ref`, `selector`, `tag`, `role`, `cleared`, `events[]`, `value_length`, `url`, `value` (extension only: truncated, or `masked: true` with no value for passwords; CDP omits `value` and `masked`) |
 | `page_text` | `tab_id?`; `max_chars?` 1..200000 default 100000 | `url`, `title`, `text`, `truncated` |
 | `page_html` | `tab_id?`; `target?` default whole document; `max_chars?` 1..500000 default 200000 | `url`, `html`, `truncated` |
 | `page_find` | `query`; `tab_id?`; `role?`; `limit?` 1..100 default 20; `regex?` default false | `url`, `count`, `matches[]` with `ref`, `tag`, `role`, `text` |
@@ -296,6 +296,10 @@ This section describes the released 1.5.0 surface. QA PASS was recorded on the f
 
 The 1.5.0 release is published: annotated tag `v1.5.0` object `a6ddc0f3e7b37f9cc29b0ff8c92eff839e05415f` targets `7d0e7c7`, and GitHub Release 445967405 carries the Windows, Linux and combined-checksum assets. See [v1.5.0.md](../tests/acceptance/v1.5.0.md) and the [release notes](release-notes/v1.5.0.md).
 
+### 5.10 Guardrails policy (v1.6.0)
+
+The v1.6.0 tree adds an opt-in daemon policy in `crates/corvusd/src/guardrails.rs`. A strict version 1 JSON document can force read-only mode, allow or deny tools, restrict `browser_navigate` and `tab_new` to allowed hosts and re-check `browser_navigate`, `tab_new` and `browser_history` result URLs, block literal private-network hosts, redact cookie values, and wrap `page_text`, `page_html` and compact `page_snapshot` text in untrusted-content markers. An invalid policy aborts startup. `RouterBackend::call` checks the policy before dispatch; `browser_batch` checks each step and `session_replay` skips denied steps. Denials use `POLICY_DENIED`, and REST returns 403. This is not a network sandbox: DNS is not resolved and an allowed page can still fetch other origins. Formal QA PASS is recorded at HEAD `61ca85f` in [v1.6.0.md](../tests/acceptance/v1.6.0.md): 237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files, 14 build files at 490,393 B and Playwright 1/1, with one Low `browser_type` channel finding and no High or Medium findings. See [11-guardrails.md](11-guardrails.md).
+
 ## 6. Extension design
 
 Three runtime contexts and two small UI surfaces, all built from `extension/src` by three Vite passes into `extension/build/extension`:
@@ -329,6 +333,7 @@ Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate r
 | TIMEOUT | deadline exceeded | yes |
 | NAVIGATION_LOST | page navigated mid-command | yes, re-resolve |
 | CAPABILITY_UNAVAILABLE | debugger attach refused by the browser, or the page cannot be scripted | no, until the page or permission changes |
+| POLICY_DENIED | the daemon guardrails policy denied the tool call or navigation | no |
 | BROWSER_GONE | tab/browser closed | no |
 | TRANSPORT_DOWN | extension disconnected | yes, after reconnect |
 | INTERNAL | bug; carries trace id | no |
@@ -390,13 +395,13 @@ Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capp
 - cargo workspace, edition 2021, Rust 1.90 as MSRV in `Cargo.toml` and `rust-toolchain.toml`.
 - CI matrix: windows-latest, macos-latest and ubuntu-latest; each runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
 - Packaging jobs: `scripts/package-linux.sh` builds the x86_64 tar.gz and verifies the systemd unit; a Docker job builds the image, checks the reported version and `/health`, and asserts the 43-tool list.
-- Extension: TypeScript and Vue 3 sources under `extension/src`, bundled by three Vite passes into `extension/build/extension` (`pnpm install && pnpm build`); Vitest covers 21 unit, contract and component tests, and Playwright runs an isolated end-to-end suite; manifest key pinned so the extension id is stable across machines.
+- Extension: TypeScript and Vue 3 sources under `extension/src`, bundled by three Vite passes into `extension/build/extension` (`pnpm install && pnpm build`); Vitest covers 41 unit, contract and component tests in eight files, and Playwright runs an isolated end-to-end suite; manifest key pinned so the extension id is stable across machines.
 - REST, OpenAPI and auth: router and auth tests run in the workspace suite; `/api-docs/openapi.json` and `/docs` are covered by the API tests.
-- Release: platform packages with `SHA256SUMS`; macOS has no packaged installer in 1.4.0.
+- Release: platform packages with `SHA256SUMS`; macOS has no packaged installer in 1.5.0.
 
 ## 12. Security posture
 
-Deliberate: no permission prompts, no allow-list and no per-action confirmation. The MCP server, the extension WebSocket and the CDP client have no authentication or pairing secret. The REST `/api/v1` surface adds an optional `local` auth mode with Argon2id passwords and HS256 JWTs. A non-loopback bind fails startup unless that mode is enabled or the operator explicitly opts out with `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH`, which logs a warning. The guard covers REST only, so `/mcp`, the extension WebSocket, `/health`, `/metrics`, `/api-docs/openapi.json` and `/docs` remain unauthenticated. REST auth therefore does not make a non-loopback MCP deployment safe; use a trusted authenticating proxy in front of any non-loopback listener. The trust boundary remains the OS user account: browser transports and the MCP HTTP server bind to loopback by default, and home-root file permissions protect the recording database. Any local process that can reach ports 7330 or 7331 can drive the connected browser, so never expose those ports beyond loopback. The optional CDP client has the same boundary: a browser-level debugging endpoint can read cookies, inject script and control every profile in that browser instance, it has no authentication, and the daemon accepts only loopback `ws://` or `wss://` endpoints. Never expose 9222, 9223 or 9333 either.
+Deliberate: no permission prompts, no allow-list and no per-action confirmation. The MCP server, the extension WebSocket and the CDP client have no authentication or pairing secret. The REST `/api/v1` surface adds an optional `local` auth mode with Argon2id passwords and HS256 JWTs. A non-loopback bind fails startup unless that mode is enabled or the operator explicitly opts out with `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH`, which logs a warning. The guard covers REST only, so `/mcp`, the extension WebSocket, `/health`, `/metrics`, `/api-docs/openapi.json` and `/docs` remain unauthenticated. REST auth therefore does not make a non-loopback MCP deployment safe; use a trusted authenticating proxy in front of any non-loopback listener. The trust boundary remains the OS user account: browser transports and the MCP HTTP server bind to loopback by default, and home-root file permissions protect the recording database. Any local process that can reach ports 7330 or 7331 can drive the connected browser, so never expose those ports beyond loopback. The optional CDP client has the same boundary: a browser-level debugging endpoint can read cookies, inject script and control every profile in that browser instance, it has no authentication, and the daemon accepts only loopback `ws://` or `wss://` endpoints. Never expose 9222, 9223 or 9333 either. The optional guardrails policy is defense in depth, not a network sandbox: it gates tools and navigation arguments but does not resolve DNS or prevent an allowed page from fetching other origins.
 
 Threats considered:
 

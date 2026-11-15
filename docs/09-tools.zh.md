@@ -2,9 +2,9 @@
 
 [English](09-tools.md) | [中文](09-tools.zh.md)
 
-状态：1.5.0 是当前已发布版本，于 2026-11-15 发布；1.4.0 为上一版本。读者：MCP 客户端作者、REST 客户端作者与工具使用者。
+状态：1.5.0 是当前已发布版本，于 2026-11-15 发布；1.4.0 为上一版本。v1.6.0 守护策略实现已进入工作树，并在 HEAD `61ca85f` 的工作树上通过正式 QA；其标签、CI、已发布安装包与发布证据均为 Pending。读者：MCP 客户端作者、REST 客户端作者与工具使用者。
 
-Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩展或回环 CDP 直连操作浏览器；10 个工具由守护进程应答。本文中的工具名、输入 schema 与结果形状均描述 1.5.0。MCP 面与 1.3.0 相同：1.4.0 与 1.5.0 均不新增工具。同一套 43 工具目录与执行器也通过 REST 面的 `/api/v1/tools` 与 `/api/v1/tools/call` 提供；第 1 节的信封仅适用于 MCP。
+Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩展或回环 CDP 直连操作浏览器；10 个工具由守护进程应答。本文中的工具名、输入 schema 与结果形状均描述 1.5.0。MCP 面与 1.3.0 相同：1.4.0、1.5.0 与 v1.6.0 工作树工作均不新增工具；可选守护策略见 [11-guardrails.zh.md](11-guardrails.zh.md)。同一套 43 工具目录与执行器也通过 REST 面的 `/api/v1/tools` 与 `/api/v1/tools/call` 提供；第 1 节的信封仅适用于 MCP。
 
 ## 1. MCP 结果信封
 
@@ -35,7 +35,7 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 | `detail` | `brief`、`full` | `brief` | `brief` 把每个长描述替换为一行摘要，删除 `title`，并移除输入 schema 中的每个属性描述。`full` 保留长描述、标题与 schema 描述。 |
 | `category` | 一个类别名 | 全部 | 只返回该类别。未知类别返回类型化 `BAD_ARGS`。 |
 
-默认简版返回全部 43 个工具，共 20,452 字节；`detail: "full"` 为 37,067 字节。简版低于 30,000 字节预算；完整结果需显式请求。
+默认简版返回全部 43 个工具，共 20,493 字节；`detail: "full"` 为 37,372 字节。简版低于 30,000 字节预算；完整结果需显式请求。
 
 `tool_help` 是单个工具的补充入口：
 
@@ -95,7 +95,7 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 | `net_log` | network | both | 读取已捕获的网络请求。 |
 | `net_clear` | network | both | 清空网络捕获条目。 |
 | `net_intercept` | network | both | 设置或清除请求拦截规则。 |
-| `browser_cookies` | network | cdp | 读取浏览器级或页面级 cookie。 |
+| `browser_cookies` | network | cdp | 读取浏览器级或页面级 cookie。守护策略 `redact_secrets` 会把每个顶层 cookie 的 `value` 替换为 `[redacted]`。 |
 | `upload_file` | files | both | 在文件输入上设置本地文件。 |
 | `download_list` | files | both | 列出近期下载。 |
 | `download_wait` | files | both | 等待下载完成。 |
@@ -148,6 +148,8 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 
 JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通道的 JSON 额外包含 `node_cap`、`element_count`、`text_count` 与 `ref_count`。CDP 的 JSON 节点包含 `kind`、`ref`、`tag`、`role`、`name`、`depth`、`states`、`attributes`，以及可选的 `value` 与 `bbox`；CDP JSON 结果不增加扩展专属计数。子 frame 内的 JSON 节点仅在 frame 路径非空时带 `frame`；顶层文档节点省略该字段。
 
+快照中的密码值始终渲染为 `***`。`browser_type` 因通道而异：扩展对密码字段返回 `masked: true`，其他输入返回截断的 `value`；CDP 不返回 `value`，也不返回 `masked`，因此不会返回输入值。启用守护进程 `content_boundary` 策略时，紧凑 `page_snapshot` 文本会用不可信内容标记包裹；JSON 节点不受影响。见 [11-guardrails.zh.md](11-guardrails.zh.md)。
+
 ### 紧凑行语法
 
 元素行为：
@@ -182,7 +184,7 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 
 - 扩展引用为 `@eN`，CDP 引用为 `@c<backendNodeId>`。一种通道的引用不能用于另一种通道。跨通道使用时返回类型化 `BAD_ARGS`，`details.hint` 会提示改用匹配的引用，或省略 `tab_id` 对活动标签操作。
 - 引用在产生它的页面快照仍有效时可用。导航或 DOM 变化后请重新快照，不要复用旧引用。
-- 扩展标签 id 是数字（例如 `7`）；CDP 目标 id 是 `cdp_targets` 返回的 32 位十六进制字符串。1.4.0 不在两个命名空间之间转换。任一通道都可省略 `tab_id` 使用活动标签页。
+- 扩展标签 id 是数字（例如 `7`）；CDP 目标 id 是 `cdp_targets` 返回的 32 位十六进制字符串。1.5.0 不在两个命名空间之间转换。任一通道都可省略 `tab_id` 使用活动标签页。
 - `format: "json"` 是需要节点对象的客户端的兼容路径。`include_bbox` 在两种通道上都影响紧凑行；扩展路径的 JSON 节点本身已包含 `bbox`，`include_bbox` 不改变 JSON。
 - `viewport_only` 只做节点包围盒与当前视口的相交判断，不会滚动页面。
 
@@ -247,7 +249,7 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 `browser_channel` 查看并切换当前模式：
 
 - `auto`（默认）优先使用已连接的 CDP 端点；只有 CDP 路由返回 `Unsupported` 时才回退到扩展。
-- `cdp` 要求 CDP，并且从不回退。1.4.0 在强制 CDP 下支持全部 33 个浏览器类工具，包括此前必须依赖扩展的八个工具。
+- `cdp` 要求 CDP，并且从不回退。1.5.0 在强制 CDP 下支持全部 33 个浏览器类工具，包括此前必须依赖扩展的八个工具。
 - `extension` 忽略 CDP。它支持原有 25 个浏览器类工具，对八个仅 CDP 工具返回类型化 `CAPABILITY_UNAVAILABLE`。
 
 十个守护进程本地工具在任何模式下都可用。`browser_channel` 只改变运行中的守护进程；下次启动仍使用 `--channel` 或 `CORVUS_CHANNEL`。
@@ -256,7 +258,7 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 |---|---:|---|
 | 两种通道 | 25 | page 7、input 7、tabs 4、network 4、files 3 |
 | 仅 CDP | 8 | `browser_dialog`、`browser_emulate`、`browser_cookies`、`browser_console`、`cdp_status`、`cdp_targets`、`cdp_send`、`cdp_events` |
-| 仅扩展 | 0 | 1.4.0 中没有 |
+| 仅扩展 | 0 | 1.5.0 中没有 |
 | 守护进程本地 | 10 | `browser_list`、`browser_channel`、`tool_help`、`browser_batch`、四个会话工具、`metrics`、`logs_tail` |
 
 扩展仍是零配置路径。强制 `cdp` 的进程无需扩展即可驱动所有浏览器类工具，但浏览器必须用远程调试与专用 profile 启动。端点设置、路由与安全见 [07-cdp.zh.md](07-cdp.zh.md)。
@@ -270,6 +272,7 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 | `BAD_ARGS` | 参数无效、未知工具或类别、跨通道引用、批次步骤不被允许。details 通常带 `hint` 或被拒绝字段。 | 否；修正请求。 |
 | `NOT_FOUND` | 目标、会话、标签页或对话框不存在。`browser_dialog` 在没有对话框时返回 `no dialog is showing`。 | 状态变化后。 |
 | `CAPABILITY_UNAVAILABLE` | 当前通道或浏览器无法提供该调用，例如强制 `extension` 下的仅 CDP 工具，或强制 `cdp` 但没有端点。 | 切换通道或重新连接。 |
+| `POLICY_DENIED` | 守护策略拒绝了工具调用或导航。详情携带 `reason`、工具或 URL，以及 `policy`。 | 否；修改请求或策略。 |
 | `BROWSER_GONE` | 调用挂起期间浏览器或其 CDP 连接消失。 | 重新列出标签页或目标后重试。 |
 | `TIMEOUT` | 有界等待或命令超过期限。 | 仅幂等操作可重试。 |
 
@@ -286,4 +289,4 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 
 token 数使用基准的 tokenizer 估算。1.5.0 QA 报告实测：43 个工具的默认简版 `tools/list` 为 20,493 B（数组 20,449 B），完整详情为 37,372 B（数组 37,328 B）；发布说明引用该报告。
 
-版本：1.5.0 是当前已发布版本，于 2026-11-15 发布；1.4.0 为上一版本。QA 验收 PASS 记录于 [v1.5.0.md](../tests/acceptance/v1.5.0.md)，发布为 GitHub 发布 445967405，主 CI 运行为 43702442120。工具目录与 schema 已对照工作树检查；MCP 目录与 1.3.0 相同，仍为 43 个工具、九个类别。
+版本：1.5.0 是当前已发布版本，于 2026-11-15 发布；1.4.0 为上一版本。QA 验收 PASS 记录于 [v1.5.0.md](../tests/acceptance/v1.5.0.md)，发布为 GitHub 发布 445967405，主 CI 运行为 43702442120。v1.6.0 守护策略工作已进入工作树，并在 HEAD `61ca85f` 的工作树上通过正式 QA（237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试与 Playwright 1/1）；其标签、CI、已发布安装包与发布证据均为 Pending。工具目录与 schema 已对照工作树检查；MCP 目录与 1.3.0 相同，仍为 43 个工具、九个类别。

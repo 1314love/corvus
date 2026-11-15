@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：1.5.0 是当前已发布版本，于 2026-11-15 由标签 `v1.5.0` 发布；1.4.0 为上一版本。1.5.0 发布延续端口与适配器后端与保持不变的 43 工具 MCP 面，并新增快照感知 v2、紧凑快照差异与扩展国际化。QA PASS 记录于 [v1.5.0.zh.md](../tests/acceptance/v1.5.0.zh.md)，主 CI 运行 43702442120 通过，GitHub 发布 445967405 发布了产物。读者：工程实现者。
+状态：1.5.0 是当前已发布版本，于 2026-11-15 由标签 `v1.5.0` 发布；1.4.0 为上一版本。1.5.0 发布延续端口与适配器后端与保持不变的 43 工具 MCP 面，并新增快照感知 v2、紧凑快照差异与扩展国际化。v1.6.0 守护策略实现已进入工作树，并在 HEAD `61ca85f` 的工作树上通过正式 QA；其标签、CI、已发布安装包与发布证据均为 Pending。1.5.0 的 QA PASS 记录于 [v1.5.0.zh.md](../tests/acceptance/v1.5.0.zh.md)，主 CI 运行 43702442120 通过，GitHub 发布 445967405 发布了产物。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
@@ -49,7 +49,7 @@
 | corvus-transport | WS 服务端、native-messaging 宿主、long-poll 兜底、浏览器注册表 |
 | corvus-record | 会话录制、SeaORM SQLite schema 与迁移、步骤存储、回放支撑 |
 | corvus-cdp | 浏览器级 CDP 客户端、端点校验、事件环、原始与高层 CDP 工具 |
-| corvusd | 守护进程二进制：装配、服务生命周期、配置 |
+| corvusd | 守护进程二进制：装配、服务生命周期、配置、可选守护策略 |
 | corvus | CLI：doctor、serve、attach、replay、bench、打印配置 |
 
 依赖规则指向内部：`corvus-domain` 不依赖 I/O 或适配器，`corvus-application` 依赖 domain 并定义端口，适配器实现这些端口，`corvusd` 是唯一的装配根。`corvus-runtime` 已不存在，其路由职责位于 `corvus-application` 与 `corvusd`。
@@ -121,7 +121,7 @@ M2 第一波冻结的工具面共 18 个。`browser_navigate`、`page_snapshot`�
 | `browser_navigate` | `url`；`tab_id?` | `navigated`、`loaded`、`url`、`previous`、`same_document`、`started_at` |
 | `page_snapshot` | `tab_id?`；`mode?`（`interactive` 默认或 `full`）；`max_nodes?` 40..3000 | `url`、`title`、`viewport`、`mode`、`node_cap`、`node_count`、`element_count`、`text_count`、`ref_count`、`truncated`、`nodes[]` |
 | `browser_click` | `target`；`tab_id?` | `clicked`、`ref`、`selector`、`tag`、`role`、`name`、`bbox`、`point`、`events[]`、`url` |
-| `browser_type` | `target`；`text`；`clear?` 默认 true；`blur?` 默认 false；`tab_id?` | `typed`、`ref`、`selector`、`tag`、`role`、`cleared`、`events[]`、`value_length`、`url`、`value`（密码字段改回 `masked`） |
+| `browser_type` | `target`；`text`；`clear?` 默认 true；`blur?` 默认 false；`tab_id?` | `typed`、`ref`、`selector`、`tag`、`role`、`cleared`、`events[]`、`value_length`、`url`、`value`（仅扩展：截断值，密码字段为 `masked: true` 且不返回值；CDP 不返回 `value` 与 `masked`） |
 | `page_text` | `tab_id?`；`max_chars?` 1..200000 默认 100000 | `url`、`title`、`text`、`truncated` |
 | `page_html` | `tab_id?`；`target?` 默认整个文档；`max_chars?` 1..500000 默认 200000 | `url`、`html`、`truncated` |
 | `page_find` | `query`；`tab_id?`；`role?`；`limit?` 1..100 默认 20；`regex?` 默认 false | `url`、`count`、`matches[]`，元素含 `ref`、`tag`、`role`、`text` |
@@ -296,6 +296,10 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 
 1.5.0 发布已发布：附注标签 `v1.5.0` 的标签对象 `a6ddc0f3e7b37f9cc29b0ff8c92eff839e05415f` 指向 `7d0e7c7`，GitHub 发布 445967405 附带 Windows、Linux 与合并校验和产物。见 [v1.5.0.zh.md](../tests/acceptance/v1.5.0.zh.md) 与[发布说明](release-notes/v1.5.0.zh.md)。
 
+### 5.10 守护策略（v1.6.0）
+
+v1.6.0 工作树在 `crates/corvusd/src/guardrails.rs` 新增可选守护策略。严格的 version 1 JSON 文档可以强制只读、允许或拒绝工具、把 `browser_navigate` 与 `tab_new` 限制到允许主机并复查 `browser_navigate`、`tab_new` 与 `browser_history` 的结果 URL、阻止字面私有网络主机、脱敏 cookie 值，并把 `page_text`、`page_html` 与紧凑 `page_snapshot` 文本包裹在不可信内容标记中。非法策略会中止启动。`RouterBackend::call` 在派发前检查策略；`browser_batch` 逐步骤检查，`session_replay` 跳过被拒绝步骤。拒绝使用 `POLICY_DENIED`，REST 返回 403。这不是网络沙箱：不解析 DNS，被允许的页面仍可请求其他源。正式 QA PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，基于 HEAD `61ca85f` 工作树：237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个构建文件（490,393 B）与 Playwright 1/1；一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium。见 [11-guardrails.zh.md](11-guardrails.zh.md)。
+
 ## 6. 扩展设计
 
 三个运行时上下文与两个小型界面，源码都在 `extension/src`，由三次 Vite 构建输出到 `extension/build/extension`：
@@ -329,6 +333,7 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 | TIMEOUT | 超过截止时间 | 是 |
 | NAVIGATION_LOST | 命令执行中页面发生导航 | 是，需重新定位 |
 | CAPABILITY_UNAVAILABLE | 浏览器拒绝 debugger 挂载，或页面不允许脚本注入 | 否，直到页面或权限变化 |
+| POLICY_DENIED | 守护策略拒绝了工具调用或导航 | 否 |
 | BROWSER_GONE | 标签或浏览器已关闭 | 否 |
 | TRANSPORT_DOWN | 扩展断连 | 是，重连后 |
 | INTERNAL | 缺陷；携带 trace id | 否 |
@@ -390,13 +395,13 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 - cargo workspace，edition 2021，`Cargo.toml` 与 `rust-toolchain.toml` 固定 Rust 1.90 为 MSRV。
 - CI 矩阵：windows-latest、macos-latest、ubuntu-latest，各自运行 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace`。
 - 打包任务：`scripts/package-linux.sh` 构建 x86_64 tar.gz 并校验 systemd 单元；Docker 任务构建镜像、检查版本与 `/health`，并断言工具面为 43 个。
-- 扩展：TypeScript 与 Vue 3 源码位于 `extension/src`，由三次 Vite 构建输出到 `extension/build/extension`（`pnpm install && pnpm build`）；Vitest 覆盖 21 个单元、契约与组件测试，Playwright 运行隔离端到端套件；manifest key 固定，保证扩展 id 跨机器稳定。
+- 扩展：TypeScript 与 Vue 3 源码位于 `extension/src`，由三次 Vite 构建输出到 `extension/build/extension`（`pnpm install && pnpm build`）；Vitest 在八个文件中覆盖 41 个单元、契约与组件测试，Playwright 运行隔离端到端套件；manifest key 固定，保证扩展 id 跨机器稳定。
 - REST、OpenAPI 与认证：路由器与认证测试纳入 workspace 测试；`/api-docs/openapi.json` 与 `/docs` 由 API 测试覆盖。
-- 发布：平台安装包附 `SHA256SUMS`；1.4.0 不提供 macOS 安装包。
+- 发布：平台安装包附 `SHA256SUMS`；1.5.0 不提供 macOS 安装包。
 
 ## 12. 安全姿态
 
-刻意为之：没有权限弹窗、没有白名单、没有逐动作确认。MCP 服务、扩展 WebSocket 与 CDP 客户端没有认证或配对密钥。REST `/api/v1` 面增加可选的 `local` 认证模式，使用 Argon2id 口令与 HS256 JWT。绑定非回环地址时必须启用该模式，否则启动失败，除非运维显式传入 `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` 豁免；豁免会记录警告。该守卫只覆盖 REST，`/mcp`、扩展 WebSocket、`/health`、`/metrics`、`/api-docs/openapi.json` 与 `/docs` 仍不需要认证。因此 REST 认证并不会让非回环 MCP 部署变安全；任何非回环监听都应置于可信认证代理之后。信任边界仍是操作系统用户账号：浏览器传输与 MCP HTTP 服务默认只监听回环地址，根目录文件权限保护录制库。任何能访问 7330 或 7331 端口的本机进程都能驱动已连接的浏览器，因此绝不要把这两个端口暴露到回环之外。可选 CDP 客户端具有同样的边界：浏览器级调试端点可以读取 cookie、注入脚本并控制该浏览器实例中的所有 profile，它没有认证，守护进程只接受回环 `ws://` 或 `wss://` 端点。也绝不要暴露 9222、9223 或 9333。
+刻意为之：没有权限弹窗、没有白名单、没有逐动作确认。MCP 服务、扩展 WebSocket 与 CDP 客户端没有认证或配对密钥。REST `/api/v1` 面增加可选的 `local` 认证模式，使用 Argon2id 口令与 HS256 JWT。绑定非回环地址时必须启用该模式，否则启动失败，除非运维显式传入 `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` 豁免；豁免会记录警告。该守卫只覆盖 REST，`/mcp`、扩展 WebSocket、`/health`、`/metrics`、`/api-docs/openapi.json` 与 `/docs` 仍不需要认证。因此 REST 认证并不会让非回环 MCP 部署变安全；任何非回环监听都应置于可信认证代理之后。信任边界仍是操作系统用户账号：浏览器传输与 MCP HTTP 服务默认只监听回环地址，根目录文件权限保护录制库。任何能访问 7330 或 7331 端口的本机进程都能驱动已连接的浏览器，因此绝不要把这两个端口暴露到回环之外。可选 CDP 客户端具有同样的边界：浏览器级调试端点可以读取 cookie、注入脚本并控制该浏览器实例中的所有 profile，它没有认证，守护进程只接受回环 `ws://` 或 `wss://` 端点。也绝不要暴露 9222、9223 或 9333。可选守护策略是纵深防御，不是网络沙箱：它限制工具与导航参数，但不解析 DNS，也不阻止被允许的页面请求其他源。
 
 已考虑的威胁：
 

@@ -91,6 +91,8 @@ const ERROR_CODES = [
   "BROWSER_GONE",
   "TRANSPORT_DOWN",
   "INTERNAL",
+  "CANCELLED",
+  "POLICY_DENIED",
 ];
 
 const [, , mode, file, ...rest] = process.argv;

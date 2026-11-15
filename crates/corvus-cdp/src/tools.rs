@@ -419,7 +419,7 @@ impl CdpClient {
         let response = self
             .send(
                 "Target.createTarget",
-                json!({ "url": url, "background": !active }),
+                json!({ "url": "about:blank", "background": !active }),
                 None,
                 None,
                 Some(15_000),
@@ -430,7 +430,7 @@ impl CdpClient {
             .and_then(Value::as_str)
             .ok_or_else(|| CdpError::Protocol("createTarget returned no targetId".into()))?
             .to_string();
-        self.remember_page_target(&target_id, &url);
+        self.remember_page_target(&target_id, "about:blank");
         if active {
             let _ = self
                 .send(
@@ -443,9 +443,35 @@ impl CdpClient {
                 .await;
             let _ = self.set_active_target(&target_id);
         }
+        // Navigate only after the new session is attached so the load event
+        // belongs to the final document. Reading the committed URL instead of
+        // echoing the requested one keeps the redirect policy gate honest.
+        let selector = json!({ "tab_id": target_id.as_str() });
+        let (session, _) = self.page(&selector, 30_000).await?;
+        if url != "about:blank" {
+            let since = self.events(None, Some(1), None, None, false).await.next_seq;
+            let response = self
+                .send(
+                    "Page.navigate",
+                    json!({ "url": url }),
+                    Some(&session),
+                    None,
+                    Some(30_000),
+                )
+                .await?;
+            if let Some(error) = response.get("errorText").and_then(Value::as_str) {
+                return Err(CdpError::Protocol(error.to_string()));
+            }
+            self.wait_for_load_event(&session, since, Duration::from_secs(30))
+                .await?;
+        }
+        let loaded_url = self
+            .wait_loaded_url(&session, &url, Duration::from_secs(5))
+            .await?;
+        self.remember_page_target(&target_id, &loaded_url);
         Ok(json!({
             "tab_id": target_id,
-            "url": url,
+            "url": loaded_url,
             "loaded": true,
             "previous_tab_id": previous,
         }))
@@ -2208,6 +2234,80 @@ impl CdpClient {
             .pointer("/result/value")
             .cloned()
             .unwrap_or(Value::Null))
+    }
+
+    async fn wait_for_load_event(
+        &self,
+        session: &str,
+        since: u64,
+        timeout: Duration,
+    ) -> Result<(), CdpError> {
+        let deadline = Instant::now() + timeout;
+        let mut cursor = since;
+        loop {
+            let batch = self
+                .events(
+                    Some(cursor),
+                    Some(100),
+                    Some("Page.loadEventFired"),
+                    Some(200),
+                    false,
+                )
+                .await;
+            cursor = batch.next_seq;
+            if batch
+                .events
+                .iter()
+                .any(|event| event.session_id.as_deref() == Some(session))
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(CdpError::Timeout(timeout.as_millis() as u64));
+            }
+        }
+    }
+
+    /// Wait for a document that has fully loaded and settled on its final URL.
+    ///
+    /// `Target.createTarget` can report the requested URL while the initial
+    /// about:blank document is still current and the navigation is in flight.
+    /// Redirects then replace the requested URL, so tab_new must wait for a
+    /// complete document whose URL is stable across two polls.
+    async fn wait_loaded_url(
+        &self,
+        session: &str,
+        requested: &str,
+        timeout: Duration,
+    ) -> Result<String, CdpError> {
+        let deadline = Instant::now() + timeout;
+        let mut stable: Option<String> = None;
+        loop {
+            let state = self
+                .eval_value(session, "document.readyState", false)
+                .await
+                .unwrap_or(Value::Null);
+            let current = self
+                .eval_value(session, "location.href", false)
+                .await
+                .unwrap_or(Value::Null);
+            let current = current.as_str().unwrap_or_default();
+            let finished = state.as_str() == Some("complete")
+                && !current.is_empty()
+                && (current != "about:blank" || requested == "about:blank");
+            if finished {
+                if stable.as_deref() == Some(current) {
+                    return Ok(current.to_string());
+                }
+                stable = Some(current.to_string());
+            } else {
+                stable = None;
+            }
+            if Instant::now() >= deadline {
+                return Err(CdpError::Timeout(timeout.as_millis() as u64));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     async fn wait_ready(&self, session: &str, timeout: Duration) -> Result<(), CdpError> {

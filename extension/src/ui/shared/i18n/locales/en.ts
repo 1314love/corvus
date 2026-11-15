@@ -84,6 +84,10 @@ const en: MessageCatalog = {
     cdpRefreshed: 'CDP detection refreshed.',
     reconnecting: 'Reconnecting...',
   },
+  errors: {
+    policyDenied: 'Blocked by daemon policy',
+    policyDeniedWithReason: 'Blocked by daemon policy: {reason}',
+  },
   validation: {
     daemon: 'Enter a valid daemon URL.',
     cdp: 'Enter auto or a loopback http:// URL.',

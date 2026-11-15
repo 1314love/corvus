@@ -20,7 +20,7 @@ declare global {
   if (window.__corvusContentLoaded === true) return;
   window.__corvusContentLoaded = true;
 
-  const CONTENT_VERSION = '1.5.0';
+  const CONTENT_VERSION = '1.6.0';
   const MAX_NODES_DEFAULT = 300;
   const MAX_NODES_LIMIT = 3000;
   const MIN_NODES_LIMIT = 40;

@@ -84,6 +84,10 @@ const zhCN: MessageCatalog = {
     cdpRefreshed: 'CDP 检测已刷新。',
     reconnecting: '正在重新连接...',
   },
+  errors: {
+    policyDenied: '已被守护进程策略阻止',
+    policyDeniedWithReason: '已被守护进程策略阻止：{reason}',
+  },
   validation: {
     daemon: '请输入有效的守护进程 URL。',
     cdp: '请输入 auto 或回环 http:// URL。',

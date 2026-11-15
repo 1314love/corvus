@@ -3,9 +3,10 @@ import { createPinia } from 'pinia';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import OptionsApp from '../../src/ui/options/App.vue';
 import { applyLocale, i18n, LOCALE_STORAGE_KEY } from '../../src/ui/shared/i18n';
-import { installFakeChromeStorage, installFakeUiPort, sampleState } from '../helpers/ui-port';
+import { disconnectFakeUiPort, installFakeChromeStorage, installFakeUiPort, sampleState } from '../helpers/ui-port';
 
 afterEach(() => {
+  disconnectFakeUiPort();
   applyLocale('en');
   vi.unstubAllGlobals();
 });
@@ -77,6 +78,21 @@ describe('options component', () => {
     expect(wrapper.text()).toContain('Daemon connection');
     expect(document.documentElement.lang).toBe('en');
     expect(storage.values[LOCALE_STORAGE_KEY]).toBe('en');
+    wrapper.unmount();
+  });
+
+  it('shows the localized policy denial from the Port projection', async () => {
+    installFakeUiPort(() => ({
+      ok: true,
+      state: sampleState({ lastPolicyDenied: { code: 'POLICY_DENIED', reason: 'allowlist' } }),
+    }));
+    installFakeChromeStorage();
+    applyLocale('zh-CN');
+    const wrapper = mount(OptionsApp, { global: { plugins: [createPinia(), i18n] } });
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('已被守护进程策略阻止：allowlist');
     wrapper.unmount();
   });
 });

@@ -147,8 +147,9 @@ fn every_error_code_round_trips() {
         assert_eq!(decoded, code);
         assert_eq!(ErrorCode::parse(code.as_str()), Some(code));
     }
-    assert_eq!(ErrorCode::ALL.len(), 10);
+    assert_eq!(ErrorCode::ALL.len(), 11);
     assert!(!ErrorCode::BadArgs.retryable());
+    assert!(!ErrorCode::PolicyDenied.retryable());
     assert!(ErrorCode::Timeout.retryable());
     assert!(ErrorCode::TransportDown.retryable());
     assert!(!ErrorCode::Cancelled.retryable());

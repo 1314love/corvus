@@ -49,6 +49,8 @@ describe('i18n catalogs', () => {
       'source.auto',
       'notice.daemonSaved',
       'notice.cdpSaved',
+      'errors.policyDenied',
+      'errors.policyDeniedWithReason',
       'validation.daemon',
       'validation.cdp',
     ];

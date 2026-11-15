@@ -30,6 +30,8 @@ const routes = new Map([
   ["/frames-cross.html", fixture("frames-cross.html")],
   ["/diff", fixture("diff-page.html")],
   ["/diff.html", fixture("diff-page.html")],
+  ["/guardrails", fixture("guardrails.html")],
+  ["/guardrails.html", fixture("guardrails.html")],
 ]);
 
 const cspPaths = new Set(["/m2-csp", "/m2-csp.html"]);
@@ -45,6 +47,15 @@ function sendJson(res, value) {
 
 const server = createServer(async (req, res) => {
   const path = new URL(req.url || "/", "http://" + host).pathname;
+
+  if (req.method === "GET" && path === "/redirect") {
+    res.writeHead(302, {
+      location: "http://localhost:" + port + "/guardrails.html",
+      "cache-control": "no-store",
+    });
+    res.end();
+    return;
+  }
 
   if (req.method === "GET" && path === "/api/json") {
     sendJson(res, { ok: true, source: "json", value: 7 });

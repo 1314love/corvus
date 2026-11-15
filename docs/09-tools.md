@@ -2,9 +2,9 @@
 
 [English](09-tools.md) | [中文](09-tools.zh.md)
 
-Status: 1.5.0 is the current published release, released on 2026-11-15; 1.4.0 is previous. Audience: MCP client authors, REST client authors and tool users.
+Status: 1.5.0 is the current published release, released on 2026-11-15; 1.4.0 is previous. The v1.6.0 guardrails implementation is in the tree and passed formal QA on the working tree at HEAD `61ca85f`; its tag, CI, published package and release evidence is Pending. Audience: MCP client authors, REST client authors and tool users.
 
-Corvus exposes 43 MCP tools in nine categories. Thirty-three tools operate on a browser through either the extension or a direct loopback CDP connection; ten tools are answered by the daemon. The tool names, input schemas and result shapes in this reference describe 1.5.0. The MCP surface is unchanged from 1.3.0: 1.4.0 added no tools and 1.5.0 adds none. The same 43-tool catalogue and executor are also available over the REST surface at `/api/v1/tools` and `/api/v1/tools/call`; the envelope in section 1 is MCP-specific.
+Corvus exposes 43 MCP tools in nine categories. Thirty-three tools operate on a browser through either the extension or a direct loopback CDP connection; ten tools are answered by the daemon. The tool names, input schemas and result shapes in this reference describe 1.5.0. The MCP surface is unchanged from 1.3.0: 1.4.0, 1.5.0 and the v1.6.0 tree work add none. The optional daemon guardrails policy is described in [11-guardrails.md](11-guardrails.md). The same 43-tool catalogue and executor are also available over the REST surface at `/api/v1/tools` and `/api/v1/tools/call`; the envelope in section 1 is MCP-specific.
 
 ## 1. MCP result envelope
 
@@ -35,7 +35,7 @@ This envelope applies to every tool, including `browser_batch`, `tool_help` and 
 | `detail` | `brief`, `full` | `brief` | `brief` replaces each long description with a one-line summary, removes `title`, and strips every property description from the input schema. `full` keeps the long description, title, and schema descriptions. |
 | `category` | one category name | all | Returns only that category. Unknown categories return typed `BAD_ARGS`. |
 
-The default brief result is 20,452 bytes for all 43 tools and is within the 30,000-byte brief budget; `detail: "full"` is 37,067 bytes, is opt-in and is larger.
+The default brief result is 20,493 bytes for all 43 tools and is within the 30,000-byte brief budget; `detail: "full"` is 37,372 bytes, is opt-in and is larger.
 
 `tool_help` is the per-tool escape hatch:
 
@@ -95,7 +95,7 @@ Channel values: `both` means the tool works over either browser channel; `cdp` m
 | `net_log` | network | both | Read captured network requests. |
 | `net_clear` | network | both | Clear captured network entries. |
 | `net_intercept` | network | both | Set or clear request interception rules. |
-| `browser_cookies` | network | cdp | Read browser or page cookies. |
+| `browser_cookies` | network | cdp | Read browser or page cookies. A guardrails `redact_secrets` policy replaces each top-level cookie `value` with `[redacted]`. |
 | `upload_file` | files | both | Set local files on a file input. |
 | `download_list` | files | both | List recent downloads. |
 | `download_wait` | files | both | Wait for a download to finish. |
@@ -148,6 +148,8 @@ When the page has child frames the compact result also carries `frames`: `{ "tot
 
 The JSON result has the same metadata but replaces `text` with `nodes`. On the extension channel, JSON includes `node_cap`, `element_count`, `text_count` and `ref_count`. On CDP, JSON nodes carry `kind`, `ref`, `tag`, `role`, `name`, `depth`, `states`, `attributes`, and optional `value` and `bbox`; the CDP JSON result does not add the extension-only counts. A JSON node inside a child frame carries `frame` only when the frame path is non-empty; top-document nodes omit the field.
 
+Snapshot password values always render as `***`. `browser_type` differs by channel: the extension returns `masked: true` for password fields and a truncated `value` otherwise, while CDP omits `value` and does not emit `masked`, so no typed value is returned. With a daemon `content_boundary` policy, compact `page_snapshot` text is wrapped in untrusted-content markers; JSON nodes are unchanged. See [11-guardrails.md](11-guardrails.md).
+
 ### Compact line grammar
 
 An element line is:
@@ -182,7 +184,7 @@ Text lines use `# "..."`, cap text at 240 characters and use the same escaping; 
 
 - Extension references are `@eN`; CDP references are `@c<backendNodeId>`. A reference from one channel is not valid on the other. Cross-channel use returns typed `BAD_ARGS` with a `details.hint` that says to use the matching reference or omit `tab_id` for the active tab.
 - References remain valid while the page snapshot that produced them is current. Re-snapshot after navigation or DOM changes instead of reusing old references.
-- Extension tab ids are numeric (for example `7`); CDP target ids are 32-hex strings from `cdp_targets`. 1.4.0 does not translate between the two namespaces. Omit `tab_id` to use the active tab in either channel.
+- Extension tab ids are numeric (for example `7`); CDP target ids are 32-hex strings from `cdp_targets`. 1.5.0 does not translate between the two namespaces. Omit `tab_id` to use the active tab in either channel.
 - `format: "json"` is the compatibility path for clients that need node objects. `include_bbox` adds boxes to compact lines on both channels; on the extension path JSON already includes `bbox` in its node objects and `include_bbox` does not change JSON.
 - `viewport_only` intersects the node box with the current viewport. It does not scroll the page.
 
@@ -247,7 +249,7 @@ Unknown names and unknown categories return typed `BAD_ARGS`. `tool_help` is dae
 `browser_channel` reports and changes the active mode:
 
 - `auto` (default) prefers a connected CDP endpoint; it falls back to the extension only when the CDP route reports `Unsupported`.
-- `cdp` requires CDP and never falls back. 1.4.0 supports all 33 browser-facing tools over forced CDP, including the eight tools that previously required the extension.
+- `cdp` requires CDP and never falls back. 1.5.0 supports all 33 browser-facing tools over forced CDP, including the eight tools that previously required the extension.
 - `extension` ignores CDP. It supports the original 25 browser-facing tools and rejects the eight CDP-only tools with typed `CAPABILITY_UNAVAILABLE`.
 
 The ten daemon-local tools work in every mode. `browser_channel` changes only the running daemon; the next start uses `--channel` or `CORVUS_CHANNEL`.
@@ -256,7 +258,7 @@ The ten daemon-local tools work in every mode. `browser_channel` changes only th
 |---|---:|---|
 | Both channels | 25 | page 7, input 7, tabs 4, network 4, files 3 |
 | CDP only | 8 | `browser_dialog`, `browser_emulate`, `browser_cookies`, `browser_console`, `cdp_status`, `cdp_targets`, `cdp_send`, `cdp_events` |
-| Extension only | 0 | None in 1.4.0 |
+| Extension only | 0 | None in 1.5.0 |
 | Daemon local | 10 | `browser_list`, `browser_channel`, `tool_help`, `browser_batch`, four session tools, `metrics`, `logs_tail` |
 
 The extension remains the zero-setup path. A forced `cdp` process can drive every browser-facing tool without an extension, but the browser must be launched with remote debugging and a dedicated profile. See [07-cdp.md](07-cdp.md) for endpoint setup, routing and security.
@@ -270,6 +272,7 @@ Every failure carries a typed code. The common ones for tool callers:
 | `BAD_ARGS` | Invalid argument, unknown tool/category, cross-channel reference, or a disallowed batch step. Details usually carry `hint` or the rejected field. | No; fix the request. |
 | `NOT_FOUND` | The requested target, session, tab or dialog does not exist. `browser_dialog` uses `no dialog is showing` when nothing is open. | After the state changes. |
 | `CAPABILITY_UNAVAILABLE` | The active channel or browser cannot serve this call, for example a CDP-only tool under forced `extension`, or forced `cdp` with no endpoint. | Change channel or reconnect. |
+| `POLICY_DENIED` | The daemon guardrails policy denied the tool call or navigation. Details carry `reason`, the tool or URL, and `policy`. | No; change the request or the policy. |
 | `BROWSER_GONE` | The browser or its CDP connection disappeared while a call was pending. | Re-list tabs or targets, then retry. |
 | `TIMEOUT` | A bounded wait or command exceeded its deadline. | Retry only when the operation is idempotent. |
 
@@ -286,4 +289,4 @@ The release-candidate benchmark measured compact output against the JSON compati
 
 Token counts use the benchmark's tokenizer estimate. The 1.5.0 QA report measures the default brief `tools/list` at 20,493 B (array 20,449 B) for 43 tools and full detail at 37,372 B (array 37,328 B); the release notes cite that report.
 
-Version: 1.5.0 is the current published release, released on 2026-11-15; 1.4.0 is previous. QA acceptance PASS is recorded in [v1.5.0.md](../tests/acceptance/v1.5.0.md), and the release is published as GitHub Release 445967405 with main CI run 43702442120. Tool catalogues and schemas were checked against the tree; the MCP catalogue is unchanged from 1.3.0 and still has 43 tools in nine categories.
+Version: 1.5.0 is the current published release, released on 2026-11-15; 1.4.0 is previous. QA acceptance PASS is recorded in [v1.5.0.md](../tests/acceptance/v1.5.0.md), and the release is published as GitHub Release 445967405 with main CI run 43702442120. The v1.6.0 guardrails work is in the tree and passed formal QA on the working tree at HEAD `61ca85f` (237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files and Playwright 1/1); its tag, CI, published package and release evidence is Pending. Tool catalogues and schemas were checked against the tree; the MCP catalogue is unchanged from 1.3.0 and still has 43 tools in nine categories.

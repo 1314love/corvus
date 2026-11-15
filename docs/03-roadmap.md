@@ -86,7 +86,21 @@ State: 1.4.0 is delivered and 1.5.0 was delivered on 2026-11-15. The 1.4.0 relea
 
 Measured for the release: 220 workspace tests passed on 25 result lines, 136 conformance checks passed, extension build 14 files, 41 Vitest tests in eight files and isolated Playwright 1/1; Windows installer acceptance passed 98 checks and observations with 0 failures on the distinct local ZIP (18,516,546 B, SHA-256 `2a36e28e42385d473edf058e8ed047a20ebf3cc4638f48fd3b469f80c29e5f5f`). The published assets are the CI rebuilds: Windows 18,534,237 B SHA-256 `e91e2ebce31d99d8753004849777e37277a93acd493cd320edfbda3987baabad`, Linux 19,849,047 B SHA-256 `c1a62be75c2895cd9eef27848b4a304551e2177bd66b9e1730d6150b9657c136`, combined `SHA256SUMS` 194 B SHA-256 `845aae4ee442020a34de4d90661c8cb2e6f83377f226d7a9e6263bdb354f9fbf`. QA and installer were measured on the frozen tree before the release commit. NFR-3 is still unpassed, no live 1.5.0 deployment is claimed, and no Docker registry publication or Kubernetes runtime test is claimed.
 
-**v1.6.0 next (not scoped).** No scope or date is set.
+## v1.6.0 delivered to the tree (QA PASS; unreleased)
+
+1.6.0 adds an opt-in daemon guardrails policy in `crates/corvusd/src/guardrails.rs`: read-only mode, tool allow and deny lists, host and private-network navigation gates, cookie redaction and untrusted-content boundaries. Enforcement runs before dispatch in `RouterBackend::call`, in every `browser_batch` step and in `session_replay`. Denials use `POLICY_DENIED` and REST returns 403. The 43-tool surface and nine categories are unchanged. A formal QA acceptance PASS was recorded on the working tree at HEAD `61ca85f`: 237 workspace tests on 25 result lines, 137 conformance checks, 55 Vitest tests in ten files and Playwright 1/1, with one Low `browser_type` channel finding and no High or Medium findings. No 1.6.0 tag, CI run, published package or GitHub release exists yet. The distinct local installer ZIP passed local acceptance with 84 checks and observations and 0 failures (18,801,258 B, SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`); it is not a published release artifact.
+
+| Item | Delivered to the tree | Evidence |
+|---|---|---|
+| Guardrails policy | Strict version 1 JSON, 65,536-byte limit, CLI `--guardrails` and `CORVUS_GUARDRAILS`; an invalid policy aborts startup. | `crates/corvusd/src/guardrails.rs` and its unit tests; QA PASS. |
+| Enforcement | Tool and URL checks before dispatch; guarded batch and replay; `POLICY_DENIED` as the 11th error code with REST 403. | `crates/corvusd/src/lib.rs`; 237 workspace tests, 0 failed. |
+| Redaction and boundaries | Cookie values redacted; compact snapshot, page text and HTML wrapped in untrusted-content markers; password inputs masked. | Code in `corvusd` and `corvus-cdp`; QA PASS with one Low `browser_type` finding. |
+| Extension UX | Localized `POLICY_DENIED` message with a sanitized reason. | Extension code and unit tests; 55 Vitest tests in ten files, 14 build files, Playwright 1/1. |
+| Surface and version | 43 MCP tools in nine categories; source metadata reports 1.6.0. | Catalogue unchanged; source metadata 1.6.0; release metadata Pending. |
+
+QA evidence: [v1.6.0.md](../tests/acceptance/v1.6.0.md) records PASS for 237 workspace tests on 25 result lines, 137 conformance checks, 55 Vitest tests in ten files, a 14-file/490,393-byte extension build and Playwright 1/1; the report records one Low `browser_type` channel finding and no High or Medium findings. Release evidence is Pending: no v1.6.0 tag, CI run, published package, published Windows or Linux artifact, combined checksums or GitHub release exists. The distinct local installer ZIP passed local acceptance with 84 checks and observations and 0 failures (18,801,258 B, SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`); it is not a published release artifact. NFR-3 remains unpassed and no live v1.6.0 deployment is claimed.
+
+**v1.7.0 next (not scoped).** No scope or date is set.
 
 ## Suggested schedule (one main developer + AI pairing)
 
