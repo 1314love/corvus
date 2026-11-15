@@ -1,0 +1,1288 @@
+[
+  {
+    "name": "browser_navigate",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab to navigate; the active tab when omitted.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Absolute URL to open.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "page_snapshot",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "max_nodes": {
+          "description": "Upper bound on the nodes returned; defaults to the daemon limit.",
+          "maximum": 3000,
+          "minimum": 40,
+          "type": "integer"
+        },
+        "mode": {
+          "default": "interactive",
+          "description": "interactive returns only actionable nodes, full the whole tree.",
+          "enum": [
+            "interactive",
+            "full"
+          ],
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab to capture; the active tab when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_click",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab that holds the element; the active tab when omitted.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Element reference from page_snapshot such as @e12, or a CSS selector.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_type",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "blur": {
+          "default": false,
+          "description": "Blur the element after typing so change handlers run.",
+          "type": "boolean"
+        },
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "clear": {
+          "default": true,
+          "description": "Replace the current value instead of appending to it.",
+          "type": "boolean"
+        },
+        "tab_id": {
+          "description": "Tab that holds the element; the active tab when omitted.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Element reference from page_snapshot such as @e7, or a CSS selector.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Text to enter into the element.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "text"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "page_text",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "max_chars": {
+          "default": 100000,
+          "description": "Upper bound on the characters returned.",
+          "maximum": 200000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tab_id": {
+          "description": "Tab to read; the active tab when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "page_html",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "max_chars": {
+          "default": 200000,
+          "description": "Upper bound on the characters returned.",
+          "maximum": 500000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tab_id": {
+          "description": "Tab to read; the active tab when omitted.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Element reference from page_snapshot such as @e12, or a CSS selector; the whole document when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "page_find",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Upper bound on the matches returned.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Text or pattern to find.",
+          "type": "string"
+        },
+        "regex": {
+          "default": false,
+          "description": "Treat query as a regular expression.",
+          "type": "boolean"
+        },
+        "role": {
+          "description": "Accessibility role to restrict matches, for example link or button.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab to search; the active tab when omitted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_hover",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab that holds the element; the active tab when omitted.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Element reference from page_snapshot such as @e12, or a CSS selector.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_press",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "keys": {
+          "description": "One key or a sequence of keys. Supported keys: Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, PageUp, PageDown, Home, End, single characters, and combinations with Control+, Shift+, Alt+ or Meta+.",
+          "oneOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ]
+        },
+        "tab_id": {
+          "description": "Tab that holds the page; the active tab when omitted.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Element to focus before pressing keys; the current focus when omitted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_scroll",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "direction": {
+          "description": "Direction to scroll.",
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ],
+          "type": "string"
+        },
+        "pages": {
+          "default": 1,
+          "description": "Number of viewport pages to scroll.",
+          "maximum": 50,
+          "minimum": 0,
+          "type": "number"
+        },
+        "tab_id": {
+          "description": "Tab that holds the page; the active tab when omitted.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Element to scroll; the page when omitted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "direction"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_select",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab that holds the element; the active tab when omitted.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Select element reference from page_snapshot such as @e12, or a CSS selector.",
+          "type": "string"
+        },
+        "values": {
+          "description": "Values to select. Multiple values require a select element that allows multiple selections.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "target",
+        "values"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_eval",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "expression": {
+          "description": "JavaScript expression to evaluate.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab that holds the page; the active tab when omitted.",
+          "type": "string"
+        },
+        "world": {
+          "default": "isolated",
+          "description": "main evaluates in the page world, isolated in the content-script world.",
+          "enum": [
+            "main",
+            "isolated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_wait",
+    "inputSchema": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "selector"
+          ]
+        },
+        {
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "required": [
+            "url_contains"
+          ]
+        }
+      ],
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "selector": {
+          "description": "CSS selector that must match an element.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab to watch; the active tab when omitted.",
+          "type": "string"
+        },
+        "text": {
+          "description": "Text that must appear in the page.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "default": 10000,
+          "description": "Maximum time to wait for the condition.",
+          "maximum": 120000,
+          "minimum": 100,
+          "type": "integer"
+        },
+        "url_contains": {
+          "description": "Text that the page url must contain.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_history",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "History action to perform.",
+          "enum": [
+            "back",
+            "forward",
+            "reload"
+          ],
+          "type": "string"
+        },
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab to act on; the active tab when omitted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "tab_list",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "tab_new",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": true,
+          "description": "Make the new tab active.",
+          "type": "boolean"
+        },
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Absolute URL to open in the new tab.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "tab_close",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab to close.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tab_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "tab_switch",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab to make active.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tab_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_list",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "net_capture",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "Start capture, stop capture, or report capture state.",
+          "enum": [
+            "start",
+            "stop",
+            "status"
+          ],
+          "type": "string"
+        },
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab to capture; the active tab when omitted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "net_log",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "include_headers": {
+          "default": false,
+          "description": "Include request and response headers in each entry.",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Upper bound on the entries returned after filtering.",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "method": {
+          "description": "Only return requests with this HTTP method.",
+          "type": "string"
+        },
+        "resource_type": {
+          "description": "Only return entries with this network resource type.",
+          "type": "string"
+        },
+        "since_seq": {
+          "default": 0,
+          "description": "Return entries with a sequence number greater than this value.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status_max": {
+          "description": "Only return responses with a status at or below this value.",
+          "maximum": 599,
+          "minimum": 100,
+          "type": "integer"
+        },
+        "status_min": {
+          "description": "Only return responses with a status at or above this value.",
+          "maximum": 599,
+          "minimum": 100,
+          "type": "integer"
+        },
+        "tab_id": {
+          "description": "Tab whose captured entries to read; every captured tab of the browser when omitted.",
+          "type": "string"
+        },
+        "url_contains": {
+          "description": "Only return entries whose url contains this text.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "net_clear",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "description": "Tab to clear; every captured tab of the browser when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "net_intercept",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "Replace the rule set or clear it.",
+          "enum": [
+            "set",
+            "clear"
+          ],
+          "type": "string"
+        },
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "rules": {
+          "description": "Rules to apply in order; the first matching rule wins. Required for action set.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "description": "What to do with a matching request.",
+                "enum": [
+                  "block",
+                  "mock",
+                  "continue"
+                ],
+                "type": "string"
+              },
+              "body_base64": {
+                "description": "Base64 response body for a mock rule, at most 1 MiB decoded.",
+                "type": "string"
+              },
+              "headers": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Response headers for a mock rule.",
+                "type": "object"
+              },
+              "id": {
+                "description": "Caller-chosen rule identifier, unique in the set.",
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "method": {
+                "description": "Only match this HTTP method.",
+                "type": "string"
+              },
+              "resource_type": {
+                "description": "Only match this network resource type.",
+                "type": "string"
+              },
+              "status": {
+                "default": 200,
+                "description": "Response status for a mock rule.",
+                "maximum": 599,
+                "minimum": 100,
+                "type": "integer"
+              },
+              "url_regex": {
+                "description": "JavaScript regular expression matched against the request url.",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "url_regex",
+              "action"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "type": "array"
+        },
+        "tab_id": {
+          "description": "Tab to scope the rules to; browser-wide rules when omitted.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "download_list",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Upper bound on the downloads returned.",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "download_wait",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Download to wait for; the most recent download started after the call when omitted.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "default": 30000,
+          "description": "Maximum time to wait for the download to settle.",
+          "maximum": 120000,
+          "minimum": 100,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "upload_file",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "files": {
+          "description": "Absolute local file paths to set on the input.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "type": "array"
+        },
+        "tab_id": {
+          "description": "Tab that holds the input; the active tab when omitted.",
+          "type": "string"
+        },
+        "target": {
+          "description": "File input reference from page_snapshot such as @e12, or a CSS selector.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "files"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_list",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Upper bound on the sessions returned, newest first.",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "since_ms": {
+          "description": "Only return sessions that started at or after this Unix time in milliseconds.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_steps",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "from_seq": {
+          "default": 0,
+          "description": "Return steps whose sequence number is at or above this value.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Upper bound on the steps returned.",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "session_id": {
+          "description": "Recorded session to read.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_replay",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "continue_on_error": {
+          "default": false,
+          "description": "Keep replaying after a failing step instead of stopping.",
+          "type": "boolean"
+        },
+        "from_seq": {
+          "description": "First recorded step to consider; the first step when omitted.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "default": "dry_run",
+          "description": "Plan only, or execute the replayable steps through the router.",
+          "enum": [
+            "dry_run",
+            "live"
+          ],
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Recorded session to replay.",
+          "type": "string"
+        },
+        "to_seq": {
+          "description": "Last recorded step to consider; the last step when omitted.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_export",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "format": {
+          "default": "jsonl",
+          "description": "Export encoding.",
+          "enum": [
+            "jsonl"
+          ],
+          "type": "string"
+        },
+        "session_id": {
+          "description": "Recorded session to export.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "metrics",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "logs_tail",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "level": {
+          "description": "Minimum level to include.",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "default": 200,
+          "description": "Maximum number of entries to return.",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "since_ms": {
+          "description": "Only return entries at or after this epoch millisecond.",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_status",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_targets",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_send",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "method": {
+          "description": "CDP method name, for example Browser.getVersion.",
+          "type": "string"
+        },
+        "params": {
+          "description": "Method parameters; defaults to an empty object.",
+          "type": "object"
+        },
+        "session_id": {
+          "description": "Flattened CDP session identifier.",
+          "type": "string"
+        },
+        "target_id": {
+          "description": "Target to attach before sending the method.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "default": 10000,
+          "maximum": 60000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "method"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "cdp_events",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "clear": {
+          "default": false,
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 100,
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "method": {
+          "description": "Only events with this CDP method name.",
+          "type": "string"
+        },
+        "since_seq": {
+          "default": 0,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wait_ms": {
+          "default": 0,
+          "maximum": 30000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_channel",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "default": "status",
+          "enum": [
+            "status",
+            "set"
+          ],
+          "type": "string"
+        },
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "channel": {
+          "enum": [
+            "auto",
+            "cdp",
+            "extension"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_console",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "limit": {
+          "default": 100,
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tab_id": {
+          "description": "Target tab; the active tab when omitted.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_cookies",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "tab_id": {
+          "type": "string"
+        },
+        "urls": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_dialog",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "accept": {
+          "default": true,
+          "type": "boolean"
+        },
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "prompt_text": {
+          "type": "string"
+        },
+        "tab_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser_emulate",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "device_scale_factor": {
+          "maximum": 10,
+          "minimum": 0.1,
+          "type": "number"
+        },
+        "download_throughput": {
+          "minimum": -1,
+          "type": "number"
+        },
+        "height": {
+          "maximum": 100000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "latency_ms": {
+          "maximum": 600000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mobile": {
+          "type": "boolean"
+        },
+        "offline": {
+          "type": "boolean"
+        },
+        "reset": {
+          "type": "boolean"
+        },
+        "tab_id": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "upload_throughput": {
+          "minimum": -1,
+          "type": "number"
+        },
+        "user_agent": {
+          "type": "string"
+        },
+        "width": {
+          "maximum": 100000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "tool_help",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_id": {
+          "description": "Browser to route the call to; the only connected browser when omitted.",
+          "type": "string"
+        },
+        "category": {
+          "description": "Category to list.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Tool to describe.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  }
+]

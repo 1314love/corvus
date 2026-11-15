@@ -13,7 +13,7 @@ Corvus 由一个本地守护进程（`corvusd`）、一个命令行客户端（`
 | Linux 安装包 | `/opt/corvus` | `install-linux.sh` 写入 `/etc/systemd/system/corvus.service` |
 | Linux 前台 | `$XDG_DATA_HOME/corvus` 或 `~/.local/share/corvus` | `corvusd serve` |
 | Docker / Kubernetes | `/data` | 容器入口或 Kubernetes 清单 |
-| macOS 源码运行 | `~/Library/Application Support/Corvus` | `corvusd serve`；1.1.0 不提供安装包 |
+| macOS 源码运行 | `~/Library/Application Support/Corvus` | `corvusd serve`；1.2.0 不提供安装包 |
 
 一个根目录容纳全部后端文件：
 
@@ -111,9 +111,9 @@ corvusd.exe serve --home "<HomeDir>" --ws-port <WsPort> --http-port <HttpPort>
 下载或复制 tar 包，解压到一个目录，然后校验并安装：
 
 ```bash
-mkdir -p corvus-1.1.0-linux-x86_64
-tar -xzf corvus-1.1.0-linux-x86_64.tar.gz -C corvus-1.1.0-linux-x86_64
-cd corvus-1.1.0-linux-x86_64
+mkdir -p corvus-1.2.0-linux-x86_64
+tar -xzf corvus-1.2.0-linux-x86_64.tar.gz -C corvus-1.2.0-linux-x86_64
+cd corvus-1.2.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -135,7 +135,26 @@ sudo CORVUS_HOME=/var/lib/corvus CORVUS_USER=corvus \
 
 扩展默认连接 `ws://127.0.0.1:7330`。使用其他守护进程或 `wss://` 隧道时，打开扩展设置页（或弹窗中的 Change 链接），填写完整 WebSocket URL 并保存。URL 保存在 `corvus.daemonUrl`；Reset 恢复默认值。扩展重新加载或升级后，请刷新已打开的标签页，让内容脚本重新连接。
 
-`wss://` 端点需要在 Corvus 之外终止 TLS，例如反向代理。守护进程本身没有认证，因此把 7330 或 7331 暴露到回环之外的隧道等同于暴露完整的浏览器控制能力。见 [05-deployment.zh.md](05-deployment.zh.md#7-端口、暴露面与无认证边界)。
+`wss://` 端点需要在 Corvus 之外终止 TLS，例如反向代理。守护进程本身没有认证，因此把 7330 或 7331 暴露到回环之外的隧道等同于暴露完整的浏览器控制能力。见 [05-deployment.zh.md](05-deployment.zh.md#7-端口暴露面与无认证边界)。
+
+### CDP 端点（可选）
+
+默认零配置路径只使用扩展。要增加浏览器级 CDP，请用远程调试端口与独立 profile 启动 Chromium 浏览器：
+
+```bash
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/corvus-cdp-profile
+curl -s http://127.0.0.1:9222/json/version
+```
+
+使用响应中的 `webSocketDebuggerUrl`，不要使用 HTTP 地址。然后可把扩展设置页的 CDP 端点设为 `auto`（探测 9222、9223 与 9333）或显式的 `http://127.0.0.1:9222`，也可用以下参数启动守护进程：
+
+```bash
+corvusd serve --home /opt/corvus --cdp-endpoint "ws://127.0.0.1:9222/devtools/browser/<id>"
+corvusd serve --home /opt/corvus --channel extension   # 忽略 CDP
+corvusd serve --home /opt/corvus --no-cdp              # 移除 CDP 路径
+```
+
+`--channel` 接受 `auto`、`cdp` 或 `extension`；`CORVUS_CHANNEL` 设置同一值。CDP 端点仅限回环且没有认证。绝不要把 9222、9223 或 9333 暴露到回环之外。完整指南见 [07-cdp.zh.md](07-cdp.zh.md)。
 
 ## 验证安装
 
@@ -157,7 +176,7 @@ curl -fsS http://127.0.0.1:7331/health
 curl -fsS http://127.0.0.1:7331/metrics
 ```
 
-`doctor` 会报告版本、WebSocket 与 MCP HTTP 端口是否可达、运行时长、工具调用计数、数据库路径、schema 版本、会话与步骤数量，以及每个已连接浏览器一行。`/health` 返回 `status: "ok"`、绑定地址与录制信息。守护进程可达但没有浏览器行，说明扩展尚未加载，或指向了另一个端口。
+`doctor` 会报告版本、WebSocket 与 MCP HTTP 端口是否可达、运行时长、工具调用计数、数据库路径、schema 版本、会话与步骤数量，以及每个已连接浏览器一行。`/health` 返回 `status: "ok"`、绑定地址与录制信息。守护进程可达但没有浏览器行，说明扩展尚未加载，或指向了另一个端口。预期使用 CDP 时，请通过 MCP 客户端不带参数调用 `browser_channel` 与 `cdp_status`；状态会列出当前通道、端点与浏览器，以及 `last_error` 或 `browser_mismatch`。
 
 ## 连接 MCP 客户端
 
@@ -262,7 +281,10 @@ journalctl -u corvus.service -n 100 --no-pager
 | Windows 脚本被执行策略拦截 | 错误文本会指出 ExecutionPolicy | 按上文使用 `-ExecutionPolicy Bypass` |
 | 提示 `missing ...corvusd.exe` | 发布包内容 | 先运行 `bash scripts/package.sh` |
 | 扩展重新加载后，`page_text` 或 `page_snapshot` 返回 TIMEOUT | `tab_list` 仍能列出标签页；扩展卡片为绿点 | 重新加载标签页或重新打开其 URL。标签页会继续运行旧内容脚本，而 `tab_list` 不需要内容脚本 |
+| `browser_channel` 显示 `cdp` 但未连接 | `cdp_status.connected` 与 `last_error` | 浏览器或端点已变化。用当前 `webSocketDebuggerUrl` 重启守护进程，或让扩展重新发现端点 |
+| CDP 端点被拒绝 | 端点 scheme、主机与路径 | 使用 `/json/version` 返回的回环 `ws://` 或 `wss://` 浏览器地址；HTTP 发现地址、局域网主机与路径都会被拒绝 |
+| 强制 `cdp` 下仅扩展工具失败 | `browser_channel` 模式 | 切换到 `auto` 或 `extension`；强制 CDP 从不回退 |
 
 ## 安全说明
 
-守护进程只绑定 `127.0.0.1`，没有认证层：任何能访问这些端口的本地进程都可以驱动已连接的浏览器。不要把 7330 或 7331 暴露到回环地址之外。Windows 安装脚本按 nssm 默认账户 LocalSystem 注册服务；安全策略要求专用身份时，请用 nssm 修改服务账户。根目录包含录制的命令、参数与结果，应把 `<root>/data/corvus.db` 与日志视为敏感数据，把机器交给他人前先删除。Linux 安装脚本创建专用 `corvus` 服务用户，并把 `data/`、`logs/`、`config/` 限制给该用户。
+守护进程只绑定 `127.0.0.1`，没有认证层：任何能访问这些端口的本地进程都可以驱动已连接的浏览器。不要把 7330 或 7331 暴露到回环地址之外。配置的 CDP 端点具有同样的信任模型，可读取 cookie、注入脚本并控制该浏览器实例中的所有 profile；9222、9223 与 9333 也必须留在回环。Windows 安装脚本按 nssm 默认账户 LocalSystem 注册服务；安全策略要求专用身份时，请用 nssm 修改服务账户。根目录包含录制的命令、参数与结果，应把 `<root>/data/corvus.db` 与日志视为敏感数据，把机器交给他人前先删除。Linux 安装脚本创建专用 `corvus` 服务用户，并把 `data/`、`logs/`、`config/` 限制给该用户。

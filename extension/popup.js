@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Read-only Corvus status card.
+ * @fileoverview Read-only Corvus status card.
  *
  * The service worker owns all state. This page only renders a snapshot: the
  * connection dot and state, the assigned browser id, the extension version, the

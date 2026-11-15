@@ -6,6 +6,41 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
+## 1.2.0 - 2026-11-15
+
+Hybrid transport release. The MCP surface grows from 32 to 42 tools. The original 32 keep their arguments and result shapes. A browser launched with remote debugging can now be driven over a loopback browser-level CDP connection, while the extension remains the zero-setup default.
+
+### Added
+
+- Direct browser-level CDP client in `corvus-cdp`: one long-lived WebSocket, flattened Target sessions, a 1000-event ring, reconnect with 250 ms to 10 s backoff, a 15 s heartbeat and a 10 s default / 60 s maximum command timeout.
+- Ten tools: `cdp_status`, `cdp_targets`, `cdp_send`, `cdp_events`, `browser_channel`, `browser_console`, `browser_cookies`, `browser_dialog`, `browser_emulate` and `tool_help`.
+- Channel selection at startup and at runtime: `auto` prefers CDP and falls back only when the route is Unsupported, `cdp` is strict with no fallback, and `extension` ignores CDP. Daemon flags `--cdp-endpoint`, `--no-cdp` and `--channel`; environment variables `CORVUS_CDP_ENDPOINT` and `CORVUS_CHANNEL`.
+- Extension CDP detection on loopback ports 9222, 9223 and 9333 with same-browser-family selection and storage under `corvus.cdpEndpoint`; the `cdp` capability is advertised only after detection succeeds.
+- Two-level tool categories in `tools/list` and a brief default / full detail switch; `tool_help` returns the full descriptor. The brief list is 29,971 bytes for 42 tools and the full list is 35,552 bytes.
+- Repository materials: `SECURITY.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `CITATION.cff`, three issue forms, a pull request template, `CODEOWNERS`, Dependabot configuration and release-note categories.
+- Documentation gates: every crate root enables `missing_docs`, extension scripts start with `@fileoverview`, and CI builds the docs with `RUSTDOCFLAGS=-D warnings`.
+
+### Changed
+
+- `tools/list` now returns 42 tools instead of 32; the original result shapes are unchanged.
+- The extension options page stores the daemon URL and the optional CDP endpoint; the popup shows both connection and CDP state.
+- Packaging, Docker and CI release-gate assertions expect version 1.2.0 and 42 tools.
+
+### Fixed
+
+- Stale release metadata no longer asserts the previous 1.1.0 / 32-tool surface in the Docker and CI gates.
+
+### Limitations
+
+- NFR-3 is not passed: the clean 72-hour soak was stopped at the client's request after about eight hours. 1.2.0 is not 72-hour soak certified.
+- Firefox remains unsupported (NFR-6 deviation unchanged). Supported browsers are Edge, Chrome and Brave (Chromium 120+).
+- CDP is loopback-only and unauthenticated; a browser-level endpoint can control every profile in that browser instance. Never expose 9222, 9223 or 9333.
+- The shipped Docker image and Kubernetes manifests contain no browser and cannot reach browser loopback on the host. The sidecar browser path is not supported out of the box; use the extension channel or `--no-cdp`.
+- Forced `cdp` has no automatic fallback; extension-only tools require the extension.
+- macOS has no packaged installer; Linux packaging is x86_64 only.
+- Extension tab ids and CDP target ids are separate namespaces; v1.2.0 returns typed `BAD_ARGS` hints and extension-only tools work without `tab_id`, with full bridging deferred to 1.3.
+- A configured extension CDP endpoint changed while the daemon is connected may need a daemon restart; auto-discovered endpoint changes are re-polled and reconnect automatically (reconnect verified).
+
 ## 1.1.0 - 2026-11-15
 
 Deployment release. The 32-tool MCP surface is unchanged. Every backend file now lives under one root, and a Linux package, an amd64 Docker image and Kubernetes manifests join the Windows installer.
@@ -85,6 +120,41 @@ First public release.
 ---
 
 ## 中文
+
+## 1.2.0 - 2026-11-15
+
+混合传输版本。MCP 工具面从 32 个增至 42 个，原有 32 个工具的参数与结果结构保持不变。以远程调试启动的浏览器可经回环浏览器级 CDP 直连驱动，扩展仍是零配置默认路径。
+
+### 新增
+
+- `corvus-cdp` 中的浏览器级 CDP 直连客户端：单条长连接 WebSocket、展平的 Target 会话、1000 条事件环、250 毫秒至 10 秒退避重连、15 秒心跳，以及默认 10 秒、最大 60 秒的命令超时。
+- 十个工具：`cdp_status`、`cdp_targets`、`cdp_send`、`cdp_events`、`browser_channel`、`browser_console`、`browser_cookies`、`browser_dialog`、`browser_emulate` 与 `tool_help`。
+- 启动时与运行时均可选通道：`auto` 优先 CDP，仅在路由为 Unsupported 时回退；`cdp` 严格直连、绝不回退；`extension` 忽略 CDP。守护进程参数 `--cdp-endpoint`、`--no-cdp`、`--channel`；环境变量 `CORVUS_CDP_ENDPOINT` 与 `CORVUS_CHANNEL`。
+- 扩展在回环端口 9222、9223、9333 上探测 CDP，并按同一浏览器家族选择端点，结果存于 `corvus.cdpEndpoint`；只有探测成功后才声明 `cdp` 能力。
+- `tools/list` 支持两级分类与默认简版 / 完整详情切换；`tool_help` 返回完整描述。简版列表为 42 个工具 29,971 字节，完整列表 35,552 字节。
+- 仓库材料：`SECURITY.md`、`SUPPORT.md`、`CODE_OF_CONDUCT.md`、`CITATION.cff`、三个 issue 表单、pull request 模板、`CODEOWNERS`、Dependabot 配置与发布说明分类。
+- 文档门禁：每个 crate 根启用 `missing_docs`，扩展脚本以 `@fileoverview` 起始，CI 以 `RUSTDOCFLAGS=-D warnings` 构建文档。
+
+### 变更
+
+- `tools/list` 现在返回 42 个工具而非 32 个；原有结果结构不变。
+- 扩展设置页保存守护进程地址与可选 CDP 端点；弹窗同时展示连接与 CDP 状态。
+- 打包、Docker 与 CI 发布门禁断言版本为 1.2.0、工具数为 42。
+
+### 修复
+
+- 发布元数据不再在 Docker 与 CI 门禁中断言旧的 1.1.0 / 32 工具面。
+
+### 限制
+
+- NFR-3 未通过：干净的 72 小时压测在客户要求下于约八小时后停止，1.2.0 不能宣称通过 72 小时压测。
+- Firefox 仍不支持（NFR-6 偏差不变）。支持浏览器为 Edge、Chrome 与 Brave（Chromium 120+）。
+- CDP 仅限回环且没有认证；浏览器级端点可控制该浏览器实例中的所有 profile。绝不要暴露 9222、9223 或 9333。
+- 发布 Docker 镜像与 Kubernetes 清单不含浏览器，也无法访问宿主机浏览器回环。sidecar 浏览器不是开箱即用路径；请使用扩展通道或 `--no-cdp`。
+- 强制 `cdp` 不会自动回退；仅扩展工具需要扩展。
+- macOS 没有打包安装器；Linux 打包仅支持 x86_64。
+- 扩展标签 id 与 CDP 目标 id 属于不同命名空间；v1.2.0 返回类型化 `BAD_ARGS` 提示，仅扩展工具可省略 `tab_id` 使用，完整桥接推迟到 1.3。
+- 守护进程已连接时修改显式配置的扩展 CDP 端点，可能需要重启守护进程才能生效；自动发现的端点变化会重新轮询并自动重连（重连已验证）。
 
 ## 1.1.0 - 2026-11-15
 

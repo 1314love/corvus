@@ -1,19 +1,13 @@
 'use strict';
 
 importScripts('daemon_url.js');
+importScripts('cdp_endpoint.js');
 
 /**
- * Corvus service worker.
+ * @fileoverview Corvus service worker.
  *
- * Responsibilities:
- *  - own the protocol envelope handling described in docs/02-architecture.md section 4;
- *  - create a hello envelope, store the browser id assigned by hello_ack;
- *  - dispatch command envelopes to the twenty-six M2/M2b tools and always answer them;
- *  - create and supervise the offscreen document that holds the WebSocket;
- *  - run a thirty second alarm watchdog that restarts a dead socket;
- *  - expose a read-only connection and capability view to the popup.
- *
- * Plain JavaScript, MV3, no build step, no dependencies.
+ * Owns the protocol envelope flow, the offscreen socket host and the watchdog,
+ * and answers every command exactly once. Plain JavaScript, MV3, no dependencies.
  */
 
 const PROTOCOL_VERSION = 1;
@@ -23,6 +17,7 @@ const MAX_TIMEOUT_MS = 125000;
 const COMMAND_TIMEOUT_PAD_MS = 1500;
 
 const DAEMON_URL_HELPER = self.CorvusDaemonUrl;
+const CDP_ENDPOINT_HELPER = self.CorvusCdpEndpoint;
 const OFFSCREEN_URL = 'offscreen.html';
 const OFFSCREEN_REASON = 'BLOBS';
 const ALARM_WATCHDOG = 'corvus.watchdog';
@@ -34,7 +29,7 @@ const CDP_IDLE_TIMEOUT_MS = 30000;
 const CDP_ATTACH_TIMEOUT_MS = 5000;
 const CDP_PROTOCOL_VERSION = '1.3';
 
-// M2b: network capture, interception, downloads and file uploads.
+// Network capture, interception, download and upload limits.
 const NET_CAPTURE_CAPACITY = 2000;
 const MAX_INTERCEPT_RULES = 50;
 const MAX_INTERCEPT_RULE_ID_LENGTH = 64;
@@ -48,6 +43,7 @@ const STORAGE = {
   profile: 'corvus.profile',
   browserId: 'corvus.browserId',
   daemonUrl: DAEMON_URL_HELPER.STORAGE_KEY,
+  cdpEndpoint: CDP_ENDPOINT_HELPER.STORAGE_KEY,
 };
 
 const RETRYABLE = {
@@ -71,8 +67,8 @@ const BASE_CAPABILITIES = ['dom', 'scripting', 'debugger'];
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
-// The frozen M2b tool names. No aliases: these twenty-five names are handled by
-// the extension. browser_list is answered by the daemon from its live registry.
+// Tool names handled by the extension. No aliases. browser_list is answered by
+// the daemon from its live registry.
 const TOOL_NAMES = [
   'browser_navigate',
   'page_snapshot',
@@ -110,6 +106,9 @@ const state = {
   lastError: null,
   connectedAt: null,
   profileToken: null,
+  cdp: null,
+  cdpEndpoint: CDP_ENDPOINT_HELPER.DEFAULT_CDP_ENDPOINT,
+  cdpDetectedAt: null,
 };
 
 const responseCache = new Map();
@@ -122,6 +121,7 @@ let browserInterceptRules = [];
 let networkSeq = 0;
 let bootPromise = null;
 let creationPromise = null;
+let cdpDetectionPromise = null;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -184,6 +184,8 @@ function normalizeStatus(value) {
 }
 
 function detectBrowserName() {
+  // Kept as-is so the hello browser identity is stable across releases. The
+  // CDP descriptor carries the separate browser_family field.
   const nav = self.navigator;
   const brands = nav && nav.userAgentData && Array.isArray(nav.userAgentData.brands) ? nav.userAgentData.brands : [];
   const names = brands.map((brand) => String(brand && brand.brand ? brand.brand : '').toLowerCase());
@@ -202,7 +204,108 @@ function detectBrowserName() {
 }
 
 function computeCapabilities() {
-  return BASE_CAPABILITIES.slice();
+  const capabilities = BASE_CAPABILITIES.slice();
+  if (state.cdp && state.cdp.available === true) capabilities.push('cdp');
+  return capabilities;
+}
+
+function cdpDescriptorForWire(result) {
+  const value = result && typeof result === 'object' ? result : {};
+  const available = value.available === true;
+  return {
+    available,
+    endpoint: typeof value.endpoint === 'string' && value.endpoint ? value.endpoint : null,
+    web_socket_debugger_url: typeof value.webSocketDebuggerUrl === 'string' && value.webSocketDebuggerUrl
+      ? value.webSocketDebuggerUrl
+      : null,
+    browser: typeof value.browser === 'string' && value.browser ? value.browser : null,
+    browser_family: typeof value.browserFamily === 'string' && value.browserFamily ? value.browserFamily : null,
+    protocol_version: typeof value.protocolVersion === 'string' && value.protocolVersion
+      ? value.protocolVersion
+      : null,
+    source: value.source === 'configured' ? 'configured' : 'auto',
+    reason: available
+      ? null
+      : (typeof value.reason === 'string' && value.reason ? value.reason : 'CDP endpoint unavailable'),
+  };
+}
+
+function cdpUiState() {
+  if (!state.cdp) return null;
+  const cdp = cdpDescriptorForWire(state.cdp);
+  return {
+    available: cdp.available,
+    endpoint: cdp.endpoint,
+    webSocketDebuggerUrl: cdp.web_socket_debugger_url,
+    browser: cdp.browser,
+    browserFamily: cdp.browser_family,
+    expectedBrowserFamily: typeof state.cdp.expectedBrowserFamily === 'string'
+      ? state.cdp.expectedBrowserFamily
+      : null,
+    familyMatch: state.cdp.familyMatch === true ? true : (state.cdp.familyMatch === false ? false : null),
+    protocolVersion: cdp.protocol_version,
+    source: cdp.source,
+    reason: cdp.reason,
+    detected_at: state.cdpDetectedAt || null,
+  };
+}
+
+function cdpFingerprint(result) {
+  const cdp = cdpDescriptorForWire(result);
+  return [
+    cdp.available ? '1' : '0',
+    cdp.endpoint || '',
+    cdp.web_socket_debugger_url || '',
+    cdp.browser || '',
+    cdp.browser_family || '',
+    cdp.protocol_version || '',
+    cdp.source,
+    cdp.reason || '',
+  ].join('|');
+}
+
+async function refreshCdpDetection(reason, force) {
+  if (cdpDetectionPromise) return cdpDetectionPromise;
+  if (!force && state.cdp) return state.cdp;
+
+  let source = state.cdpEndpoint === CDP_ENDPOINT_HELPER.DEFAULT_CDP_ENDPOINT ? 'auto' : 'configured';
+  cdpDetectionPromise = (async () => {
+    let result = null;
+    try {
+      const endpoint = await CDP_ENDPOINT_HELPER.readCdpEndpoint();
+      state.cdpEndpoint = endpoint;
+      source = endpoint === CDP_ENDPOINT_HELPER.DEFAULT_CDP_ENDPOINT ? 'auto' : 'configured';
+      result = await CDP_ENDPOINT_HELPER.probe(endpoint);
+    } catch (error) {
+      result = {
+        available: false,
+        endpoint: null,
+        webSocketDebuggerUrl: null,
+        browser: null,
+        protocolVersion: null,
+        source,
+        reason: 'CDP detection failed: ' + describeError(error),
+      };
+    }
+    state.cdp = result;
+    state.cdpDetectedAt = Date.now();
+    log(
+      'cdp detection',
+      reason || 'refresh',
+      result.available ? 'available' : 'unavailable',
+      result.endpoint || '',
+      result.reason || '',
+    );
+    return result;
+  })().finally(() => {
+    cdpDetectionPromise = null;
+  });
+  return cdpDetectionPromise;
+}
+
+async function ensureCdpDetection(force) {
+  if (!force && state.cdp && !cdpDetectionPromise) return state.cdp;
+  return refreshCdpDetection('ensure', force === true);
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +357,13 @@ function fromContentError(error) {
 // ---------------------------------------------------------------------------
 
 async function loadState() {
-  const stored = await chrome.storage.local.get([STORAGE.connection, STORAGE.browserId, STORAGE.profile, STORAGE.daemonUrl]);
+  const stored = await chrome.storage.local.get([
+    STORAGE.connection,
+    STORAGE.browserId,
+    STORAGE.profile,
+    STORAGE.daemonUrl,
+    STORAGE.cdpEndpoint,
+  ]);
 
   if (typeof stored[STORAGE.browserId] === 'string' && stored[STORAGE.browserId].trim()) {
     state.browserId = stored[STORAGE.browserId].trim();
@@ -278,7 +387,9 @@ async function loadState() {
 
   const daemonUrl = DAEMON_URL_HELPER.normalize(stored[STORAGE.daemonUrl]);
   state.wsUrl = daemonUrl || DAEMON_URL_HELPER.DEFAULT_DAEMON_URL;
-  log('state loaded', state.status, state.profileToken, state.wsUrl);
+  const cdpEndpoint = CDP_ENDPOINT_HELPER.normalize(stored[STORAGE.cdpEndpoint]);
+  state.cdpEndpoint = cdpEndpoint || CDP_ENDPOINT_HELPER.DEFAULT_CDP_ENDPOINT;
+  log('state loaded', state.status, state.profileToken, state.wsUrl, state.cdpEndpoint);
 }
 
 const stateReady = loadState().catch((error) => {
@@ -322,6 +433,8 @@ function buildUiState() {
     daemonVersion: state.daemonVersion,
     lastError: state.lastError,
     wsUrl: state.wsUrl || DAEMON_URL_HELPER.DEFAULT_DAEMON_URL,
+    cdpEndpoint: state.cdpEndpoint,
+    cdp: cdpUiState(),
     version: chrome.runtime.getManifest().version,
     capabilities: computeCapabilities(),
     debuggerChannel: {
@@ -397,6 +510,7 @@ async function sendToOffscreen(message) {
 
 async function buildHello() {
   await stateReady;
+  await ensureCdpDetection(false);
   const manifest = chrome.runtime.getManifest();
   const browserName = detectBrowserName();
   const profileToken = state.profileToken || 'default';
@@ -409,6 +523,7 @@ async function buildHello() {
       profile: profileToken,
       version: manifest.version,
       capabilities: computeCapabilities(),
+      cdp: cdpDescriptorForWire(state.cdp),
     },
   };
 }
@@ -425,8 +540,10 @@ function buildEvent(name, payload) {
 }
 
 async function sendCapabilitiesEvent(reason) {
+  await ensureCdpDetection(false);
   const event = buildEvent('capabilities_changed', {
     capabilities: computeCapabilities(),
+    cdp: cdpDescriptorForWire(state.cdp),
     reason: reason || 'local',
   });
   try {
@@ -901,7 +1018,7 @@ async function requestContentResult(tab, message) {
 }
 
 // ---------------------------------------------------------------------------
-// M2 helpers: tab ids, bounded arguments, tab-load watches
+// Helpers: tab ids, bounded arguments, tab-load watches
 // ---------------------------------------------------------------------------
 
 function sleep(ms) {
@@ -1514,7 +1631,7 @@ async function tabSwitchTool(args) {
 }
 
 // ---------------------------------------------------------------------------
-// M2b: browser routing, network capture, interception, downloads, uploads
+// Browser routing, network capture, interception, downloads and uploads
 // ---------------------------------------------------------------------------
 
 // Every tool accepts an optional browser_id. This extension owns exactly one
@@ -3076,6 +3193,14 @@ async function ensureWatchdog() {
 async function watchdogTick() {
   try {
     void sweepDebuggerSessions();
+    const previousCdp = cdpFingerprint(state.cdp);
+    void refreshCdpDetection('alarm', true).then((result) => {
+      if (cdpFingerprint(result) !== previousCdp) {
+        void sendCapabilitiesEvent('cdp_alarm');
+      }
+    }).catch((error) => {
+      log('cdp alarm detection failed', describeError(error));
+    });
     const exists = await ensureOffscreen();
     if (!exists) {
       updateStatus('disconnected', 'offscreen document unavailable');
@@ -3102,6 +3227,7 @@ async function watchdogTick() {
 async function doBoot(reason) {
   log('boot', reason || '');
   await stateReady;
+  await ensureCdpDetection(true);
   await ensureWatchdog();
 
   const exists = await ensureOffscreen();
@@ -3171,6 +3297,34 @@ async function handleUiMessage(message) {
     case 'corvus.get_state':
       await stateReady;
       state.wsUrl = await DAEMON_URL_HELPER.readDaemonUrl();
+      state.cdpEndpoint = await CDP_ENDPOINT_HELPER.readCdpEndpoint();
+      await ensureCdpDetection(false);
+      return { ok: true, state: buildUiState() };
+    case 'corvus.cdp_refresh':
+      await stateReady;
+      state.cdpEndpoint = await CDP_ENDPOINT_HELPER.readCdpEndpoint();
+      await ensureCdpDetection(true);
+      await sendCapabilitiesEvent('cdp_refresh');
+      return { ok: true, state: buildUiState() };
+    case 'corvus.cdp_save':
+      await stateReady;
+      try {
+        state.cdpEndpoint = await CDP_ENDPOINT_HELPER.writeCdpEndpoint(message.endpoint);
+      } catch (error) {
+        return { ok: false, error: describeError(error) };
+      }
+      await ensureCdpDetection(true);
+      await sendCapabilitiesEvent('cdp_save');
+      return { ok: true, state: buildUiState() };
+    case 'corvus.cdp_reset':
+      await stateReady;
+      try {
+        state.cdpEndpoint = await CDP_ENDPOINT_HELPER.resetCdpEndpoint();
+      } catch (error) {
+        return { ok: false, error: describeError(error) };
+      }
+      await ensureCdpDetection(true);
+      await sendCapabilitiesEvent('cdp_reset');
       return { ok: true, state: buildUiState() };
     case 'corvus.reconnect':
       await stateReady;

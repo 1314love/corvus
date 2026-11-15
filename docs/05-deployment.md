@@ -45,9 +45,9 @@ File logging is on by default under `logs/`. `--log-file <PATH>` overrides it, `
 The Linux release archive is built for x86_64 only. Extract it into a directory, then install:
 
 ```bash
-mkdir -p corvus-1.1.0-linux-x86_64
-tar -xzf corvus-1.1.0-linux-x86_64.tar.gz -C corvus-1.1.0-linux-x86_64
-cd corvus-1.1.0-linux-x86_64
+mkdir -p corvus-1.2.0-linux-x86_64
+tar -xzf corvus-1.2.0-linux-x86_64.tar.gz -C corvus-1.2.0-linux-x86_64
+cd corvus-1.2.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -98,7 +98,7 @@ The Windows bundle is a ZIP containing `corvusd.exe`, `corvus.exe`, `nssm.exe`, 
 Build the image from the repository root:
 
 ```bash
-docker build -t corvus:1.1.0 .
+docker build -t corvus:1.2.0 .
 ```
 
 The image runs `corvusd serve --bind 0.0.0.0 --home /data` as UID/GID 10001, stores runtime data under the `/data` volume, and exposes 7330 (WebSocket) and 7331 (MCP HTTP). The unpacked extension is carried at `/opt/corvus/extension`, not `/data`; copy it out with `docker cp` or load the extension from the release ZIP on the host. Publish only to host loopback:
@@ -107,7 +107,7 @@ The image runs `corvusd serve --bind 0.0.0.0 --home /data` as UID/GID 10001, sto
 docker volume create corvus-data
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
-  -v corvus-data:/data corvus:1.1.0
+  -v corvus-data:/data corvus:1.2.0
 curl -fsS http://127.0.0.1:7331/health
 ```
 
@@ -126,8 +126,8 @@ docker compose down
 The manifests in `deploy/k8s/` create a `corvus` namespace, a 1 GiB ReadWriteOnce PVC, one daemon replica, a ClusterIP Service, and a default-deny NetworkPolicy. The deployment runs with a read-only root filesystem, no capabilities, a RuntimeDefault seccomp profile and an init container that seeds the extension from the image into the volume.
 
 ```bash
-docker build -t corvus:1.1.0 .
-kind load docker-image corvus:1.1.0   # or push to your registry
+docker build -t corvus:1.2.0 .
+kind load docker-image corvus:1.2.0   # or push to your registry
 kubectl apply -k deploy/k8s
 kubectl -n corvus rollout status deployment/corvus
 kubectl -n corvus port-forward svc/corvus 7330:7330 7331:7331
@@ -144,6 +144,10 @@ The Service is ClusterIP on purpose. A browser extension cannot reach a ClusterI
 | 7331 | HTTP | MCP streamable HTTP at `/mcp`, `/health`, `/metrics` |
 
 Corvus has **no authentication**. The security boundary is the operating-system account plus loopback binding. Never expose 7330 or 7331 on a public interface, public LoadBalancer or public Ingress. If a remote browser must reach the daemon, put a trusted tunnel or an authenticating proxy in front of it and use a `wss://` URL in the extension options page; do not send the socket over an untrusted network. `/health`, `/metrics` and the MCP endpoint share the same trust boundary.
+
+### CDP in containers and Kubernetes
+
+CDP is host-loopback only. The daemon accepts a browser-level endpoint whose host is `127.0.0.1`, `localhost` or `[::1]`; a container or pod has its own loopback, so it cannot reach a browser running on the host by default. The shipped image contains no browser and opens no CDP client. Running a browser as a sidecar is not a supported out-of-box path: it needs a shared network namespace, a matching browser family and a writable profile, and it is outside the deployment tested here. Inside Docker or Kubernetes keep the channel at `extension` (or start with `--no-cdp`) and drive the browser through the extension.
 
 ## 8. Backup, restore and retention
 

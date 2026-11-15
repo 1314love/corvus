@@ -1,0 +1,16 @@
+# Review routing for Corvus.
+#
+# The review gate itself is described in docs/PROCESS.md: the Lead reviews every
+# change that lands on main, and nobody commits while a gate is open.
+#
+# Order matters - the last matching pattern wins.
+
+*                       @1314love
+
+/.github/               @1314love
+/crates/                @1314love
+/docs/                  @1314love
+/extension/             @1314love
+/packaging/             @1314love
+/scripts/               @1314love
+/tests/                 @1314love

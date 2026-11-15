@@ -21,6 +21,30 @@ struct Inner {
     errors_by_code: BTreeMap<String, u64>,
 }
 
+/// Channel and CDP state rendered as Prometheus gauges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelMetrics {
+    /// Active channel mode: auto, cdp or extension.
+    pub mode: String,
+    /// Whether a browser-level CDP connection is usable.
+    pub cdp_connected: bool,
+    /// Page targets known through CDP.
+    pub cdp_targets: u64,
+    /// Connected extension browsers.
+    pub extension_browsers: u64,
+}
+
+impl Default for ChannelMetrics {
+    fn default() -> Self {
+        Self {
+            mode: "unknown".to_string(),
+            cdp_connected: false,
+            cdp_targets: 0,
+            extension_browsers: 0,
+        }
+    }
+}
+
 /// Counters for every tool call served since the process started.
 #[derive(Debug)]
 pub struct Metrics {
@@ -134,6 +158,22 @@ impl Metrics {
         sessions_total: u64,
         steps_total: u64,
     ) -> String {
+        self.prometheus_with_channel(
+            browsers_connected,
+            sessions_total,
+            steps_total,
+            &ChannelMetrics::default(),
+        )
+    }
+
+    /// Render the counters and the channel gauges as a Prometheus text exposition.
+    pub fn prometheus_with_channel(
+        &self,
+        browsers_connected: u64,
+        sessions_total: u64,
+        steps_total: u64,
+        channel: &ChannelMetrics,
+    ) -> String {
         let snapshot = self.snapshot();
         let mut text = String::new();
         text.push_str("# HELP corvus_uptime_seconds Seconds since the daemon process started.\n");
@@ -175,6 +215,29 @@ impl Metrics {
         text.push_str("# HELP corvus_steps_total Recorded steps.\n");
         text.push_str("# TYPE corvus_steps_total gauge\n");
         text.push_str(&format!("corvus_steps_total {steps_total}\n"));
+        text.push_str("# HELP corvus_channel Active browser channel mode.\n");
+        text.push_str("# TYPE corvus_channel gauge\n");
+        text.push_str(&format!(
+            "corvus_channel{{mode=\"{}\"}} 1\n",
+            escape_label(&channel.mode)
+        ));
+        text.push_str(
+            "# HELP corvus_cdp_connected Whether a browser-level CDP connection is active.\n",
+        );
+        text.push_str("# TYPE corvus_cdp_connected gauge\n");
+        text.push_str(&format!(
+            "corvus_cdp_connected {}\n",
+            u8::from(channel.cdp_connected)
+        ));
+        text.push_str("# HELP corvus_cdp_targets Page targets known through CDP.\n");
+        text.push_str("# TYPE corvus_cdp_targets gauge\n");
+        text.push_str(&format!("corvus_cdp_targets {}\n", channel.cdp_targets));
+        text.push_str("# HELP corvus_extension_browsers Connected extension browsers.\n");
+        text.push_str("# TYPE corvus_extension_browsers gauge\n");
+        text.push_str(&format!(
+            "corvus_extension_browsers {}\n",
+            channel.extension_browsers
+        ));
         text
     }
 }
@@ -285,5 +348,26 @@ mod tests {
         assert!(text.contains("corvus_tool_errors_total{code=\"TIMEOUT\"} 1"));
         assert!(text.contains("corvus_sessions_total 3"));
         assert!(text.contains("corvus_steps_total 4"));
+        assert!(text.contains("corvus_channel{mode=\"unknown\"} 1"));
+        assert!(text.contains("corvus_cdp_connected 0"));
+        assert!(text.contains("corvus_cdp_targets 0"));
+        assert!(text.contains("corvus_extension_browsers 0"));
+    }
+
+    #[test]
+    fn prometheus_renders_channel_gauges() {
+        let metrics = Metrics::new();
+        let channel = ChannelMetrics {
+            mode: "auto".to_string(),
+            cdp_connected: true,
+            cdp_targets: 3,
+            extension_browsers: 1,
+        };
+        let text = metrics.prometheus_with_channel(1, 2, 5, &channel);
+        assert!(text.contains("corvus_channel{mode=\"auto\"} 1"));
+        assert!(text.contains("corvus_cdp_connected 1"));
+        assert!(text.contains("corvus_cdp_targets 3"));
+        assert!(text.contains("corvus_extension_browsers 1"));
+        assert!(text.contains("corvus_sessions_total 2"));
     }
 }

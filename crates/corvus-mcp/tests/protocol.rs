@@ -72,7 +72,39 @@ async fn initialize_reports_identity_and_capabilities() {
         .get("capabilities")
         .and_then(|caps| caps.get("tools"))
         .is_some());
-    assert!(result.get("instructions").and_then(Value::as_str).is_some());
+    let instructions = result
+        .get("instructions")
+        .and_then(Value::as_str)
+        .expect("instructions");
+    assert!(instructions.contains("CDP"));
+    assert!(instructions.contains("browser_channel"));
+    assert!(instructions.contains("page_snapshot"));
+}
+
+#[test]
+fn metrics_text_exposes_the_channel_gauges() {
+    let server = McpServer::new(Arc::new(FakeBackend {
+        result: Ok(json!({})),
+    }))
+    .with_health(Arc::new(|| {
+        json!({
+            "browsers": [{ "browser_id": "b-1" }],
+            "recording": { "sessions": 2, "steps": 5 },
+            "channel": {
+                "channel": "auto",
+                "cdp": { "connected": true, "targets": 3 },
+                "extension": { "connected": true, "browsers": ["b-1"] }
+            }
+        })
+    }));
+    let text = server.metrics_text();
+    assert!(text.contains("corvus_channel{mode=\"auto\"} 1"));
+    assert!(text.contains("corvus_cdp_connected 1"));
+    assert!(text.contains("corvus_cdp_targets 3"));
+    assert!(text.contains("corvus_extension_browsers 1"));
+    assert!(text.contains("corvus_browsers_connected 1"));
+    assert!(text.contains("corvus_sessions_total 2"));
+    assert!(text.contains("corvus_steps_total 5"));
 }
 
 #[tokio::test]
@@ -93,7 +125,7 @@ async fn initialize_echoes_an_older_supported_revision() {
 }
 
 #[tokio::test]
-async fn tools_list_exposes_thirty_fully_annotated_tools() {
+async fn tools_list_exposes_every_fully_annotated_tool() {
     let server = server(Ok(json!({})));
     let answer = call(
         &server,
@@ -105,7 +137,7 @@ async fn tools_list_exposes_thirty_fully_annotated_tools() {
         .and_then(|result| result.get("tools"))
         .and_then(Value::as_array)
         .expect("tools array");
-    assert_eq!(tools.len(), 32);
+    assert_eq!(tools.len(), 42);
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
@@ -144,7 +176,17 @@ async fn tools_list_exposes_thirty_fully_annotated_tools() {
             "session_replay",
             "session_export",
             "metrics",
-            "logs_tail"
+            "logs_tail",
+            "cdp_status",
+            "cdp_targets",
+            "cdp_send",
+            "cdp_events",
+            "browser_channel",
+            "browser_console",
+            "browser_cookies",
+            "browser_dialog",
+            "browser_emulate",
+            "tool_help"
         ]
     );
     for tool in tools {

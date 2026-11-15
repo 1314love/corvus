@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/corvus-cdp",
   "crates/corvus-proto",
   "crates/corvus-transport",
   "crates/corvus-runtime",
@@ -11,13 +12,14 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/1314love/corvus"
 rust-version = "1.90"
 
 [workspace.dependencies]
+corvus-cdp = { path = "crates/corvus-cdp" }
 corvus-proto = { path = "crates/corvus-proto" }
 corvus-transport = { path = "crates/corvus-transport" }
 corvus-runtime = { path = "crates/corvus-runtime" }
@@ -32,7 +34,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 axum = { version = "0.8", features = ["ws"] }
 futures = "0.3"
 tokio-tungstenite = "0.29"

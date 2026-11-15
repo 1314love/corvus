@@ -6,9 +6,9 @@ package, no build step, no remote code and no inline script.
 
 The visible surfaces are one read-only popup status card and a small options page.
 The popup shows the connection dot and state, browser id, extension version,
-capabilities, the configured daemon URL and a Change link to the options page.
-The options page edits the daemon URL and can reset it to the default. Everything
-else runs without a page.
+capabilities, the configured daemon URL and CDP state, and a Change link to the
+options page. The options page edits the daemon URL and the optional CDP endpoint
+and can reset either to the default. Everything else runs without a page.
 
 ## Files
 
@@ -17,10 +17,11 @@ else runs without a page.
 | manifest.json | MV3 manifest: permissions, content script, service worker, popup and options page. |
 | background.js | Service worker: protocol envelopes, command routing, tab resolution, content-script injection, network capture, downloads, uploads, the managed debugger channel and the watchdog alarm. |
 | daemon_url.js | Shared daemon URL validation and chrome.storage.local helpers; loaded by the worker, offscreen document, popup and options page. |
+| cdp_endpoint.js | CDP endpoint detection: read-only loopback probe of ports 9222, 9223 and 9333, endpoint validation and browser-family matching. |
 | offscreen.html / offscreen.js | Offscreen document: owns the only WebSocket to the configured daemon URL, reconnects with backoff, relays frames to the service worker. |
 | content.js | Content script: page-scoped tools inside the page (snapshot, text, HTML, find, click, type, hover, press, scroll, select, wait probes, upload target resolution). |
 | popup.html / popup.js | Read-only status card: connection dot and state, browser id, version, capabilities, configured daemon URL and a Change link. |
-| options.html / options.js | Daemon URL settings: connection status, editable URL, Save, Reset to default and inline validation. |
+| options.html / options.js | Daemon URL and CDP endpoint settings: connection and detection status, editable fields, Save, Reset to default and inline validation. |
 | README.md | This document. |
 
 ## Message flow
@@ -112,6 +113,19 @@ the offscreen document, the popup and the options page.
   another host, expose it through a trusted tunnel and use a wss:// URL; do not
   expose the plain ws:// socket to an untrusted network.
 
+## CDP endpoint
+
+The options page also stores an optional CDP discovery endpoint under
+corvus.cdpEndpoint. The default auto probes loopback ports 9222, 9223 and 9333
+with a read-only GET /json/version and selects an endpoint whose browser family
+matches this browser. Set an explicit http://127.0.0.1:<port> only; credentials,
+paths, query strings and non-loopback hosts are rejected. The daemon revalidates
+the descriptor; an auto mismatch is rejected, and a configured mismatch is shown
+as browser_mismatch. Detection reads only discovery metadata; the debugger still
+attaches lazily. The cdp capability is advertised only while detection has a
+usable endpoint. The endpoint has the same trust boundary as the debugger
+channel: no authentication, loopback only, never expose 9222, 9223 or 9333.
+
 ## Envelope
 
 All frames use protocol version 1 and the envelope fields from the architecture
@@ -169,32 +183,36 @@ Hello and hello_ack:
 ~~~json
 { "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello",
   "browser": "edge:7f3a91c0d2b4e6f8",
-  "args": { "profile": "7f3a91c0d2b4e6f8", "version": "1.1.0",
-            "capabilities": ["dom", "scripting", "debugger"] } }
+  "args": { "profile": "7f3a91c0d2b4e6f8", "version": "1.2.0",
+            "capabilities": ["dom", "scripting", "debugger", "cdp"],
+            "cdpEndpoint": "auto" } }
 ~~~
 
 ~~~json
 { "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello_ack",
   "browser": "edge:default",
-  "args": { "daemon": "corvus", "version": "1.1.0", "protocol": 1,
-            "capabilities": ["dom", "scripting", "debugger"],
+  "args": { "daemon": "corvus", "version": "1.2.0", "protocol": 1,
+            "capabilities": ["dom", "scripting", "debugger", "cdp"],
             "limits": { "max_timeout_ms": 125000, "default_timeout_ms": 60000,
                         "max_inflight": 64, "max_snapshot_nodes": 20000 } } }
 ~~~
 
-The advertised capabilities are always dom, scripting and debugger. The debugger
+The advertised capabilities start with dom, scripting and debugger. The debugger
 name is part of the hello even before any session exists; the channel itself is
 attached lazily by the first CDP-backed command and detached after thirty seconds
-of inactivity, when its tab closes and on every reconnect. The browser token is
-browser name plus a random profile token persisted in chrome.storage.local.
-Extension APIs cannot read the real profile name.
+of inactivity, when its tab closes and on every reconnect. cdp is added only when
+endpoint detection succeeded; a failed or mismatched probe leaves it out. The
+browser token is browser name plus a random profile token persisted in
+chrome.storage.local. Extension APIs cannot read the real profile name.
 
 ## Tool contract
 
-There are twenty-six tool names in the M2 surface. Twenty-five are handled by
-this extension; browser_list is answered by the daemon transport registry and
-never reaches the extension. The service worker rejects any other name with
-BAD_ARGS.
+There are forty-two MCP tool names in the current surface. This extension handles
+the twenty-five original browser-facing names: seventeen are shared with CDP and
+eight are extension-only. The eight CDP-only names and the nine daemon-local
+names (browser_list, browser_channel, tool_help, session_list, session_steps,
+session_replay, session_export, metrics and logs_tail) never reach the extension.
+The service worker rejects any other name with BAD_ARGS.
 
 Common rules:
 
@@ -674,3 +692,6 @@ sends command envelopes through the daemon's MCP surface. A minimal check:
 - The extension has no automated browser end-to-end test in this repository.
   Verification is the static syntax and protocol checks plus a live daemon probe
   against an unpacked load.
+- CDP detection is a read-only discovery probe; it never attaches the debugger by
+  itself. A configured browser-level endpoint can see every profile in that
+  browser instance, so keep 9222, 9223 and 9333 on loopback.

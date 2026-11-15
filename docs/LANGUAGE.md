@@ -37,3 +37,29 @@ merged, but the index must show it as `pending`, and the gap must be closed befo
   consistently: *tool* 工具, *snapshot* 快照, *session* 会话, *step* 步骤, *site card* 站点卡片,
   *connection* 连接, *channel* 通道, *approval* 审批.
 - 修改内容的 PR 必须同时改两个版本，否则需说明另一版为何不受影响；术语按上表统一。
+
+## 5. Writing rules / 写作规则
+
+Applies to documents, comments, commit messages and release notes. 适用于文档、注释、提交信息与发布说明。
+
+- No chain of thought. State the decision, the result and the evidence; never the deliberation behind them.
+  不写思考过程：只写结论、结果与证据。
+- One idea per sentence. Delete a sentence whose content the table above already states.
+  一句一个意思；表格已说明的内容不再复述。
+- Cut lead-ins and filler: "This section covers", "Note that", "simply", "basically",
+  "值得注意的是", "需要说明的是", "事实上". 删掉开场白与填充词。
+- Fewer stop words: "the daemon that the user runs" becomes "the user's daemon"; drop generic articles and
+  connectives. 少用虚词：可省的冠词与连接词省掉。
+- Comments explain a non-obvious mechanism or constraint. Never restate the identifier, never narrate the
+  edit. 注释只解释不直观的机制或约束，不复述标识符，不叙述编辑过程。
+- Code: `//!` for the module, `///` for the item, `//` for implementation notes. Public items carry docs and
+  every crate root enables `missing_docs`. 代码：模块用 `//!`，条目用 `///`，实现说明用 `//`；公共条目
+  不缺文档，每个 crate 根启用 `missing_docs`。
+- A plain JavaScript file starts with `@fileoverview` and at most three lines of purpose.
+  JS 文件头以 `@fileoverview` 起始，用途不超过三行。
+- No milestone or sprint codes in comments (`M2b`, `v1.2:`); state the behavior and its limits.
+  注释不写里程碑编号（`M2b`、`v1.2:`），直接写行为与边界。
+- Doc blocks: summary line, blank `///`, then detail; keep `# Panics` where a public function can panic.
+  文档块：摘要行、空 `///`、再写细节；可能 panic 的公共函数保留 `# Panics`。
+- No em dashes for rhetorical pause; use a colon or a full stop. 不用破折号做语气停顿，改用冒号或句号。
+- Commit messages: change only, no reasoning, no conversation. 提交信息只写变更，不写推理与对话。

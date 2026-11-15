@@ -11,6 +11,7 @@
 | M2 Full surface | Fill the capability matrix | 60+ tools, multi-browser, tab concurrency, request interception, upload/download | the 10 acceptance tasks in the requirements spec pass |
 | M3 Observability | Make everything reviewable | recording, trace, replay, site memory, Prometheus | any historical session replays step by step |
 | M4 Ecosystem | Make it adoptable | installers, client config generators, docs site, examples, release pipeline | a stranger completes the quick start in 5 minutes |
+| M6 Hybrid CDP | Attach directly when a browser exposes a loopback CDP endpoint | CDP client, extension detection, channel routing, ten CDP-backed tools | 42 tools, auto/cdp/extension switchable, no regression to the original 32 |
 
 ## v1.1.0 deployment milestone
 
@@ -23,6 +24,20 @@ v1.1.0 is a deployment slice of M4. The 32-tool surface is unchanged.
 | Linux | The x86_64 tarball carries `install-linux.sh`, a systemd unit, upgrade/uninstall scripts and `SHA256SUMS`. |
 | Containers | The amd64 Docker image and Kubernetes manifests mount one `/data` root; CI builds and validates them. |
 | Release | 1.1.0 binaries, changelog and bilingual release notes. NFR-3 stays pending until the 72h soak report is attached; Firefox remains unsupported. |
+
+## v1.2.0 hybrid transport milestone
+
+v1.2.0 is a tool-surface and transport slice. It adds ten CDP-backed tools, taking the MCP surface from 32 to 42 without changing the original result shapes.
+
+| Item | Exit criterion |
+|---|---|
+| Detection | The extension probes loopback 9222, 9223 and 9333, rejects family mismatches, and advertises the cdp capability only with a valid descriptor. |
+| Direct client | The daemon holds one browser-level WebSocket, uses Target sessions, keeps a 1000-event ring, reconnects with 250 ms to 10 s backoff and heartbeats every 15 s. |
+| Channels | auto, cdp and extension are selectable at startup and at runtime; auto falls back only on Unsupported, cdp never falls back, extension ignores CDP. |
+| Tool surface | 42 tools in total; brief tools/list is 29,971 bytes and full detail is 35,552 bytes; the original 32 keep their arguments and results. |
+| Release | 1.2.0 binaries, changelog and bilingual release notes. CI and QA evidence is attached only when the runs exist; NFR-3 remains pending and Firefox remains unsupported. |
+
+Implementation and CI checks for this milestone run before the release tag. The 72-hour soak is still not passed, and the Firefox NFR-6 deviation is unchanged.
 
 ## Suggested schedule (one main developer + AI pairing)
 

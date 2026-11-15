@@ -26,10 +26,15 @@ const LEVELS: [&str; 4] = ["debug", "info", "warn", "error"];
 /// One captured tracing event.
 #[derive(Debug, Clone)]
 pub struct LogEntry {
+    /// Event time in milliseconds since the Unix epoch.
     pub ts: i64,
+    /// Severity name: debug, info, warn or error.
     pub level: String,
+    /// Module that emitted the event.
     pub target: String,
+    /// Rendered message text.
     pub message: String,
+    /// Structured fields attached to the event, capped at [`MAX_FIELDS`].
     pub fields: Map<String, Value>,
 }
 

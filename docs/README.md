@@ -15,6 +15,8 @@ commit. 每份文档在同一目录下维护英文与中文两版，同一提交
 | Install / 安装 | [04-install.md](04-install.md) | [04-install.zh.md](04-install.zh.md) | done |
 | Deployment / 部署 | [05-deployment.md](05-deployment.md) | [05-deployment.zh.md](05-deployment.zh.md) | done |
 | Firefox assessment / Firefox 可行性评估 | [06-firefox-assessment.md](06-firefox-assessment.md) | [06-firefox-assessment.zh.md](06-firefox-assessment.zh.md) | done |
+| CDP guide / CDP 指南 | [07-cdp.md](07-cdp.md) | [07-cdp.zh.md](07-cdp.zh.md) | done |
+| Release notes 1.2.0 / 发布说明 1.2.0 | [release-notes/v1.2.0.md](release-notes/v1.2.0.md) | [release-notes/v1.2.0.zh.md](release-notes/v1.2.0.zh.md) | done |
 | Release notes 1.1.0 / 发布说明 1.1.0 | [release-notes/v1.1.0.md](release-notes/v1.1.0.md) | [release-notes/v1.1.0.zh.md](release-notes/v1.1.0.zh.md) | done |
 | Release notes 1.0.0 / 发布说明 1.0.0 | [release-notes/v1.0.0.md](release-notes/v1.0.0.md) | [release-notes/v1.0.0.zh.md](release-notes/v1.0.0.zh.md) | done |
 | Release notes 0.1.0 / 发布说明 0.1.0 | [release-notes/v0.1.0.md](release-notes/v0.1.0.md) | [release-notes/v0.1.0.zh.md](release-notes/v0.1.0.zh.md) | done |

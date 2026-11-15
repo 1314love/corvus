@@ -1,0 +1,15 @@
+# Normalise text to LF everywhere; the tree is already LF, so no content changes.
+* text=auto eol=lf
+
+# Binary assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gif binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.db binary
+*.exe binary
+*.dll binary

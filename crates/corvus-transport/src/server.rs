@@ -282,6 +282,22 @@ async fn handle_connection(
     }
 }
 
+/// Browser family from an envelope browser identity such as "chrome:abc123".
+///
+/// The profile token after the colon is opaque and must never be compared as
+/// a browser family. Identities without a usable prefix carry no claim.
+fn browser_family_from_identity(identity: &str) -> Option<String> {
+    let (family, _) = identity.split_once(':')?;
+    let family = family.trim();
+    if family.is_empty()
+        || family.eq_ignore_ascii_case("unknown")
+        || family.eq_ignore_ascii_case("none")
+    {
+        return None;
+    }
+    Some(family.to_string())
+}
+
 fn complete_handshake(
     envelope: &Envelope,
     remote: SocketAddr,
@@ -307,13 +323,29 @@ fn complete_handshake(
             "hello without a profile name",
         ));
     }
-    let capabilities = hello.negotiated();
+    let extension_family = hello
+        .browser_family
+        .clone()
+        .or_else(|| browser_family_from_identity(&browser));
+    let mut capabilities = hello.negotiated();
+    if hello
+        .cdp
+        .as_ref()
+        .is_some_and(|descriptor| descriptor.available)
+        && !capabilities
+            .iter()
+            .any(|name| name == corvus_proto::capability::CDP)
+    {
+        capabilities.push(corvus_proto::capability::CDP.to_string());
+    }
     let connection = ids::connection_id();
     let info = BrowserInfo {
         id: browser.clone(),
         profile: hello.profile.clone(),
+        browser_family: extension_family,
         version: hello.version.clone(),
         extension: hello.extension.clone(),
+        cdp: hello.cdp.clone(),
         capabilities: capabilities.clone(),
         connected_at_ms: now_millis(),
         remote: remote.to_string(),
@@ -324,6 +356,7 @@ fn complete_handshake(
         version = %hello.version,
         offered = ?hello.capabilities,
         negotiated = ?capabilities,
+        cdp = hello.cdp.as_ref().is_some_and(|descriptor| descriptor.available),
         remote = %remote,
         "browser connected"
     );

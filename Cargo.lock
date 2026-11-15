@@ -225,7 +225,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "corvus"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -238,8 +238,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "corvus-cdp"
+version = "1.2.0"
+dependencies = [
+ "base64",
+ "corvus-proto",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "corvus-mcp"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -256,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-proto"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -264,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-record"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -275,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-runtime"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "corvus-proto",
  "corvus-record",
@@ -288,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "corvus-transport"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -304,10 +319,11 @@ dependencies = [
 
 [[package]]
 name = "corvusd"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "corvus-cdp",
  "corvus-mcp",
  "corvus-proto",
  "corvus-record",

@@ -1,0 +1,12 @@
+# Issue chooser configuration. https://docs.github.com/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability / 安全漏洞
+    url: https://github.com/1314love/corvus/security/advisories/new
+    about: Report privately. Do not open a public issue. / 请私密报告，不要开公开 issue。
+  - name: Support and commercial licensing / 支持与商业授权
+    url: https://github.com/1314love/corvus/blob/main/SUPPORT.md
+    about: Where to look first, what is supported, and how to request a commercial license. / 先看哪里、支持范围与商业授权方式。
+  - name: Documentation index / 文档索引
+    url: https://github.com/1314love/corvus/blob/main/docs/README.md
+    about: Every document in English and Chinese, with its status. / 全部文档的中英两版与状态。

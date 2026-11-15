@@ -16,7 +16,7 @@ struct Spec {
     open_world: bool,
 }
 
-const SPECS: [Spec; 32] = [
+const SPECS: [Spec; 42] = [
     Spec {
         name: "browser_navigate",
         title: "Navigate",
@@ -337,6 +337,106 @@ const SPECS: [Spec; 32] = [
         idempotent: true,
         open_world: false,
     },
+    Spec {
+        name: "cdp_status",
+        title: "CDP status",
+        description: "Report the Chrome DevTools Protocol connection, the extension descriptor that advertised it, target and event-ring counts, and the CDP-capable tools.",
+        schema: cdp_status_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "cdp_targets",
+        title: "CDP targets",
+        description: "List the browser targets known through Target.setDiscoverTargets, including page or worker type, URL, title and whether a flattened session is attached.",
+        schema: cdp_targets_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "cdp_send",
+        title: "Send CDP command",
+        description: "Send one Chrome DevTools Protocol command through the browser-level connection and return its raw result. Use target_id or session_id to address a page; the timeout is bounded.",
+        schema: cdp_send_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "cdp_events",
+        title: "Read CDP events",
+        description: "Read the bounded CDP event ring in sequence order, optionally filtered by method, waiting up to wait_ms for new events. clear removes the returned entries.",
+        schema: cdp_events_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_channel",
+        title: "Browser channel",
+        description: "Inspect or switch how browser tools are carried: auto prefers CDP when connected and falls back to the extension, cdp never falls back, and extension ignores CDP.",
+        schema: browser_channel_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "browser_console",
+        title: "Browser console",
+        description: "Return recent console and uncaught-exception entries captured from the tab through Runtime.enable.",
+        schema: browser_console_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_cookies",
+        title: "Browser cookies",
+        description: "Return browser cookies, or the cookies visible to specific URLs. Sensitive values are returned as the browser exposes them.",
+        schema: browser_cookies_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_dialog",
+        title: "Handle dialog",
+        description: "Accept or dismiss the JavaScript dialog currently blocking a tab, optionally supplying prompt text.",
+        schema: browser_dialog_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_emulate",
+        title: "Emulate device",
+        description: "Apply device metrics, network conditions, a user agent override or a timezone to a tab, or reset every override this tool applies.",
+        schema: browser_emulate_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "tool_help",
+        title: "Tool help",
+        description: "Return the tool catalogue index, one category with its tools, or the full description, schema and annotations of one tool.",
+        schema: tool_help_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
 ];
 
 /// Names of every tool, in catalogue order.
@@ -346,15 +446,111 @@ pub fn names() -> Vec<&'static str> {
 
 /// MCP tool definitions, ready to be embedded in a tools/list result.
 pub fn definitions() -> Vec<Value> {
+    definitions_for(None, "full")
+}
+
+/// Category name for a tool.
+pub fn category(name: &str) -> &'static str {
+    match name {
+        "browser_navigate" | "page_snapshot" | "page_text" | "page_html" | "page_find"
+        | "browser_wait" | "browser_history" | "browser_dialog" | "browser_emulate" => "page",
+        "browser_click" | "browser_type" | "browser_hover" | "browser_press" | "browser_scroll"
+        | "browser_select" | "browser_eval" => "input",
+        "tab_list" | "tab_new" | "tab_close" | "tab_switch" => "tabs",
+        "net_capture" | "net_log" | "net_clear" | "net_intercept" | "browser_cookies" => "network",
+        "upload_file" | "download_list" | "download_wait" => "files",
+        "cdp_status" | "cdp_targets" | "cdp_send" | "cdp_events" | "browser_channel" => "cdp",
+        "session_list" | "session_steps" | "session_replay" | "session_export" => "sessions",
+        "browser_list" | "metrics" | "logs_tail" | "browser_console" => "diagnostics",
+        "tool_help" => "help",
+        _ => "diagnostics",
+    }
+}
+
+/// One-line summary used by the brief tool list.
+pub fn summary(name: &str) -> &'static str {
+    match name {
+        "browser_navigate" => "Open a URL in a tab and wait for the document.",
+        "page_snapshot" => "Compact page tree with clickable element references.",
+        "browser_click" => "Click an element reference.",
+        "browser_type" => "Focus an element and replace its text.",
+        "page_text" => "Visible page text, capped by max_chars.",
+        "page_html" => "Document or element HTML, capped by max_chars.",
+        "page_find" => "Find page text and return element references.",
+        "browser_hover" => "Move the pointer over an element.",
+        "browser_press" => "Send one key or a key sequence.",
+        "browser_scroll" => "Scroll the page or an element.",
+        "browser_select" => "Choose values in a select element.",
+        "browser_eval" => "Evaluate JavaScript in the page.",
+        "browser_wait" => "Wait for a selector, text or URL condition.",
+        "browser_history" => "Go back, go forward or reload.",
+        "tab_list" => "List open tabs.",
+        "tab_new" => "Open a new tab.",
+        "tab_close" => "Close a tab.",
+        "tab_switch" => "Make a tab active.",
+        "browser_list" => "List connected browsers and channel state.",
+        "net_capture" => "Start, stop or inspect network capture.",
+        "net_log" => "Read captured network requests.",
+        "net_clear" => "Clear captured network entries.",
+        "net_intercept" => "Set or clear request interception rules.",
+        "download_list" => "List recent downloads.",
+        "download_wait" => "Wait for a download to finish.",
+        "upload_file" => "Set local files on a file input.",
+        "session_list" => "List recorded MCP sessions.",
+        "session_steps" => "Read the steps of one session.",
+        "session_replay" => "Plan or replay a recorded session.",
+        "session_export" => "Export a session as JSON Lines.",
+        "metrics" => "Uptime, tool counters, sessions and recording state.",
+        "logs_tail" => "Read the in-process daemon log buffer.",
+        "cdp_status" => "CDP connection, descriptor and ring counts.",
+        "cdp_targets" => "List CDP targets.",
+        "cdp_send" => "Send a raw CDP command.",
+        "cdp_events" => "Read the bounded CDP event ring.",
+        "browser_channel" => "Inspect or switch the browser channel.",
+        "browser_console" => "Recent console and exception entries.",
+        "browser_cookies" => "Browser cookies.",
+        "browser_dialog" => "Accept or dismiss a JavaScript dialog.",
+        "browser_emulate" => "Apply or reset device and network emulation.",
+        "tool_help" => "Catalogue index, category or full tool help.",
+        _ => "Corvus tool.",
+    }
+}
+
+/// Every category in stable order.
+pub fn categories() -> Vec<&'static str> {
+    vec![
+        "page",
+        "input",
+        "tabs",
+        "network",
+        "files",
+        "cdp",
+        "sessions",
+        "diagnostics",
+        "help",
+    ]
+}
+
+/// Tool definitions filtered by category and detail level.
+///
+/// brief (the default) replaces the long description with a one-line summary;
+/// full keeps the documented description.
+pub fn definitions_for(category_filter: Option<&str>, detail: &str) -> Vec<Value> {
     SPECS
         .iter()
+        .filter(|spec| category_filter.is_none_or(|wanted| category(spec.name) == wanted))
         .map(|spec| {
             let mut schema = (spec.schema)();
             add_browser_id(&mut schema);
-            json!({
+            let description = if detail == "full" {
+                spec.description
+            } else {
+                summary(spec.name)
+            };
+            let mut definition = json!({
                 "name": spec.name,
                 "title": spec.title,
-                "description": spec.description,
+                "description": description,
                 "inputSchema": schema,
                 "annotations": {
                     "readOnlyHint": spec.read_only,
@@ -362,9 +558,109 @@ pub fn definitions() -> Vec<Value> {
                     "idempotentHint": spec.idempotent,
                     "openWorldHint": spec.open_world,
                 },
-            })
+                "_meta": { "corvus.category": category(spec.name) },
+            });
+            if detail != "full" {
+                if let Some(object) = definition.as_object_mut() {
+                    object.remove("title");
+                }
+            }
+            definition
         })
         .collect()
+}
+
+/// Validate a tools/list params object and return its definitions.
+pub fn list(params: &Value) -> Result<Vec<Value>, ErrorBody> {
+    let category_filter = params.get("category").and_then(Value::as_str);
+    if let Some(category) = category_filter {
+        if !categories().contains(&category) {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                format!("unknown category {category}"),
+            ));
+        }
+    }
+    let detail = match params.get("detail").and_then(Value::as_str) {
+        None => "brief",
+        Some("brief") | Some("full") => params.get("detail").and_then(Value::as_str).unwrap(),
+        Some(other) => {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                format!("tools/list detail must be brief or full, got {other}"),
+            ))
+        }
+    };
+    Ok(definitions_for(category_filter, detail))
+}
+
+/// Handle the tool_help tool.
+pub fn help_document(arguments: &Value) -> Result<Value, ErrorBody> {
+    let name = arguments.get("name").and_then(Value::as_str);
+    let category_filter = arguments.get("category").and_then(Value::as_str);
+    if name.is_some() && category_filter.is_some() {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            "tool_help accepts name or category, not both",
+        ));
+    }
+    if let Some(name) = name {
+        let spec = SPECS
+            .iter()
+            .find(|spec| spec.name == name)
+            .ok_or_else(|| ErrorBody::new(ErrorCode::BadArgs, format!("unknown tool {name}")))?;
+        let mut schema = (spec.schema)();
+        add_browser_id(&mut schema);
+        return Ok(json!({
+            "name": spec.name,
+            "title": spec.title,
+            "category": category(spec.name),
+            "summary": summary(spec.name),
+            "description": spec.description,
+            "inputSchema": schema,
+            "annotations": {
+                "readOnlyHint": spec.read_only,
+                "destructiveHint": spec.destructive,
+                "idempotentHint": spec.idempotent,
+                "openWorldHint": spec.open_world,
+            },
+        }));
+    }
+    if let Some(category) = category_filter {
+        if !categories().contains(&category) {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                format!("unknown category {category}"),
+            ));
+        }
+        let tools: Vec<Value> = SPECS
+            .iter()
+            .filter(|spec| self::category(spec.name) == category)
+            .map(|spec| {
+                json!({
+                    "name": spec.name,
+                    "title": spec.title,
+                    "summary": summary(spec.name),
+                })
+            })
+            .collect();
+        return Ok(json!({ "category": category, "count": tools.len(), "tools": tools }));
+    }
+    let index: Vec<Value> = categories()
+        .into_iter()
+        .map(|category| {
+            let tools: Vec<&str> = SPECS
+                .iter()
+                .filter(|spec| self::category(spec.name) == category)
+                .map(|spec| spec.name)
+                .collect();
+            json!({ "category": category, "count": tools.len(), "tools": tools })
+        })
+        .collect();
+    Ok(json!({
+        "categories": index,
+        "usage": "Pass name for full help or category to list one group. tools/list accepts detail brief or full.",
+    }))
 }
 
 /// Add the optional routing field every tool accepts.
@@ -1151,6 +1447,120 @@ fn logs_tail_schema() -> Value {
     })
 }
 
+fn cdp_status_schema() -> Value {
+    json!({ "type": "object", "properties": {}, "additionalProperties": false })
+}
+
+fn cdp_targets_schema() -> Value {
+    json!({ "type": "object", "properties": {}, "additionalProperties": false })
+}
+
+fn cdp_send_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "method": { "type": "string", "description": "CDP method name, for example Browser.getVersion." },
+            "params": { "type": "object", "description": "Method parameters; defaults to an empty object." },
+            "session_id": { "type": "string", "description": "Flattened CDP session identifier." },
+            "target_id": { "type": "string", "description": "Target to attach before sending the method." },
+            "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000, "default": 10000 },
+        },
+        "required": ["method"],
+        "additionalProperties": false,
+    })
+}
+
+fn cdp_events_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "since_seq": { "type": "integer", "minimum": 0, "default": 0 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+            "method": { "type": "string", "description": "Only events with this CDP method name." },
+            "wait_ms": { "type": "integer", "minimum": 0, "maximum": 30000, "default": 0 },
+            "clear": { "type": "boolean", "default": false },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn browser_channel_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": { "type": "string", "enum": ["status", "set"], "default": "status" },
+            "channel": { "type": "string", "enum": ["auto", "cdp", "extension"] },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn browser_console_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string", "description": "Target tab; the active tab when omitted." },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn browser_cookies_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "urls": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn browser_dialog_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "accept": { "type": "boolean", "default": true },
+            "prompt_text": { "type": "string" },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn browser_emulate_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "reset": { "type": "boolean" },
+            "width": { "type": "integer", "minimum": 1, "maximum": 100000 },
+            "height": { "type": "integer", "minimum": 1, "maximum": 100000 },
+            "device_scale_factor": { "type": "number", "minimum": 0.1, "maximum": 10 },
+            "mobile": { "type": "boolean" },
+            "offline": { "type": "boolean" },
+            "latency_ms": { "type": "integer", "minimum": 0, "maximum": 600000 },
+            "download_throughput": { "type": "number", "minimum": -1 },
+            "upload_throughput": { "type": "number", "minimum": -1 },
+            "user_agent": { "type": "string" },
+            "timezone": { "type": "string" },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn tool_help_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string", "description": "Tool to describe." },
+            "category": { "type": "string", "description": "Category to list." },
+        },
+        "additionalProperties": false,
+    })
+}
+
 /// Check a tool call against the catalogue and normalise its arguments.
 ///
 /// Everything this function rejects is a caller mistake, so the returned error
@@ -1406,6 +1816,114 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
                 }
             }
             fill_default(&mut object, "limit", json!(200));
+        }
+        "cdp_status" | "cdp_targets" => {}
+        "cdp_send" => {
+            required_string(&object, "method", name)?;
+            match object.get("params") {
+                None | Some(Value::Null) => {
+                    object.insert("params".to_string(), json!({}));
+                }
+                Some(Value::Object(_)) => {}
+                Some(_) => {
+                    return Err(ErrorBody::new(
+                        ErrorCode::BadArgs,
+                        "cdp_send params must be an object",
+                    ))
+                }
+            }
+            optional_string(&object, "session_id", name)?;
+            optional_string(&object, "target_id", name)?;
+            optional_integer_range(&object, "timeout_ms", 1, 60_000, name)?;
+            fill_default(&mut object, "timeout_ms", json!(10_000));
+        }
+        "cdp_events" => {
+            optional_integer_range(&object, "since_seq", 0, u64::MAX, name)?;
+            optional_integer_range(&object, "limit", 1, 500, name)?;
+            optional_integer_range(&object, "wait_ms", 0, 30_000, name)?;
+            optional_string(&object, "method", name)?;
+            optional_bool(&object, "clear", name)?;
+            fill_default(&mut object, "since_seq", json!(0));
+            fill_default(&mut object, "limit", json!(100));
+            fill_default(&mut object, "wait_ms", json!(0));
+            fill_default(&mut object, "clear", json!(false));
+        }
+        "browser_channel" => {
+            optional_choice(&object, "action", &["status", "set"], name)?;
+            optional_choice(&object, "channel", &["auto", "cdp", "extension"], name)?;
+            fill_default(&mut object, "action", json!("status"));
+            if object.get("action").and_then(Value::as_str) == Some("set")
+                && object.get("channel").and_then(Value::as_str).is_none()
+            {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "browser_channel set requires a channel argument",
+                ));
+            }
+        }
+        "browser_console" => {
+            optional_string(&object, "tab_id", name)?;
+            optional_integer_range(&object, "limit", 1, 500, name)?;
+            fill_default(&mut object, "limit", json!(100));
+        }
+        "browser_cookies" => {
+            optional_string(&object, "tab_id", name)?;
+            if let Some(urls) = object.get("urls") {
+                match urls.as_array() {
+                    Some(values)
+                        if values.len() <= 20
+                            && values.iter().all(|value| {
+                                value.as_str().is_some_and(|text| text.len() <= 2048)
+                            }) =>
+                    {
+                        if values.is_empty() {
+                            object.remove("urls");
+                        }
+                    }
+                    _ => {
+                        return Err(ErrorBody::new(
+                            ErrorCode::BadArgs,
+                            "browser_cookies urls must be an array of at most 20 strings",
+                        ))
+                    }
+                }
+            }
+        }
+        "browser_dialog" => {
+            optional_string(&object, "tab_id", name)?;
+            optional_bool(&object, "accept", name)?;
+            optional_string(&object, "prompt_text", name)?;
+            fill_default(&mut object, "accept", json!(true));
+        }
+        "browser_emulate" => {
+            optional_string(&object, "tab_id", name)?;
+            optional_bool(&object, "reset", name)?;
+            optional_bool(&object, "mobile", name)?;
+            optional_bool(&object, "offline", name)?;
+            optional_integer_range(&object, "width", 1, 100_000, name)?;
+            optional_integer_range(&object, "height", 1, 100_000, name)?;
+            if object.contains_key("width") != object.contains_key("height") {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "browser_emulate width and height must be supplied together",
+                ));
+            }
+            optional_number_range(&object, "device_scale_factor", 0.1, 10.0, name)?;
+            optional_integer_range(&object, "latency_ms", 0, 600_000, name)?;
+            optional_number_range(&object, "download_throughput", -1.0, 1.0e12, name)?;
+            optional_number_range(&object, "upload_throughput", -1.0, 1.0e12, name)?;
+            optional_string(&object, "user_agent", name)?;
+            optional_string(&object, "timezone", name)?;
+        }
+        "tool_help" => {
+            optional_string(&object, "name", name)?;
+            optional_string(&object, "category", name)?;
+            if object.get("name").is_some() && object.get("category").is_some() {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "tool_help accepts name or category, not both",
+                ));
+            }
         }
         other => {
             return Err(
@@ -1722,9 +2240,104 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_definition_declares_a_category_and_summary() {
+        let definitions = definitions_for(None, "brief");
+        assert_eq!(definitions.len(), 42);
+        let categories = categories();
+        for definition in &definitions {
+            let name = definition
+                .get("name")
+                .and_then(Value::as_str)
+                .expect("name");
+            let meta = definition.get("_meta").expect("_meta");
+            let declared = meta
+                .get("corvus.category")
+                .and_then(Value::as_str)
+                .expect("category");
+            assert_eq!(declared, category(name));
+            assert!(
+                categories.contains(&declared),
+                "{name} has unknown category"
+            );
+            let description = definition
+                .get("description")
+                .and_then(Value::as_str)
+                .expect("description");
+            assert_eq!(description, summary(name));
+            assert!(!description.is_empty());
+        }
+    }
+
+    #[test]
+    fn brief_catalogue_fits_the_token_budget() {
+        let brief = serde_json::to_string(&definitions_for(None, "brief")).expect("serialize");
+        assert!(
+            brief.len() <= 30_000,
+            "brief catalogue is {} bytes",
+            brief.len()
+        );
+        let full = serde_json::to_string(&definitions_for(None, "full")).expect("serialize");
+        println!(
+            "brief={} full={} tools={}",
+            brief.len(),
+            full.len(),
+            definitions_for(None, "brief").len()
+        );
+    }
+
+    #[test]
+    fn tool_help_returns_an_index_a_category_and_one_tool() {
+        let index = help_document(&json!({})).expect("index");
+        let groups = index
+            .get("categories")
+            .and_then(Value::as_array)
+            .expect("categories");
+        assert_eq!(groups.len(), categories().len());
+        let network = help_document(&json!({ "category": "network" })).expect("category");
+        assert_eq!(
+            network.get("count").and_then(Value::as_u64),
+            Some(5),
+            "network category"
+        );
+        let one = help_document(&json!({ "name": "cdp_send" })).expect("tool");
+        assert_eq!(one.get("category").and_then(Value::as_str), Some("cdp"));
+        assert!(one.get("description").and_then(Value::as_str).is_some());
+        assert!(help_document(&json!({ "category": "nope" })).is_err());
+        assert!(help_document(&json!({ "name": "nope" })).is_err());
+        assert!(help_document(&json!({ "name": "cdp_send", "category": "cdp" })).is_err());
+    }
+
+    #[test]
+    fn new_tool_arguments_are_validated() {
+        assert!(validate("cdp_send", &json!({})).is_err());
+        assert!(validate("cdp_send", &json!({ "method": "Browser.getVersion" })).is_ok());
+        assert!(validate("browser_channel", &json!({ "action": "set" })).is_err());
+        assert!(validate(
+            "browser_channel",
+            &json!({ "action": "set", "channel": "cdp" })
+        )
+        .is_ok());
+        assert!(validate("browser_emulate", &json!({ "width": 800 })).is_err());
+        assert!(validate("browser_emulate", &json!({ "width": 800, "height": 600 })).is_ok());
+        let events = validate("cdp_events", &json!({})).expect("defaults");
+        assert_eq!(events.get("limit").and_then(Value::as_u64), Some(100));
+        assert_eq!(events.get("wait_ms").and_then(Value::as_u64), Some(0));
+        assert!(validate(
+            "tool_help",
+            &json!({ "name": "metrics", "category": "help" })
+        )
+        .is_err());
+        assert!(validate(
+            "browser_cookies",
+            &json!({ "urls": ["https://example.test/"] })
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn definitions_carry_names_schemas_and_annotations() {
         let definitions = definitions();
-        assert_eq!(definitions.len(), 32);
+        assert_eq!(definitions.len(), 42);
         for definition in &definitions {
             assert!(definition.get("name").and_then(Value::as_str).is_some());
             let schema = definition.get("inputSchema").expect("schema");
@@ -1777,6 +2390,16 @@ mod tests {
                 "session_export",
                 "metrics",
                 "logs_tail",
+                "cdp_status",
+                "cdp_targets",
+                "cdp_send",
+                "cdp_events",
+                "browser_channel",
+                "browser_console",
+                "browser_cookies",
+                "browser_dialog",
+                "browser_emulate",
+                "tool_help",
             ]
         );
     }

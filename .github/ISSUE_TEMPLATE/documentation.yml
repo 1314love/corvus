@@ -1,0 +1,52 @@
+name: Documentation issue / 文档问题
+description: A document is wrong, incomplete, or missing one of its two editions. / 文档有错、缺失，或缺少其中一个语言版本。
+title: "[docs]: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **English** - Every document is maintained in English and Chinese and updated in the same commit. A missing counterpart is recorded in the status table of the documentation index.
+
+        **中文** - 每份文档都有英文与中文两版，并在同一提交里同步更新；缺一版会登记到文档索引的状态表里。
+  - type: input
+    id: location
+    attributes:
+      label: File or section / 文件或章节
+      description: The path and the heading, for example docs/07-cdp.md, section "Troubleshooting". / 路径与标题，例如 docs/07-cdp.md 的「故障排查」一节。
+      placeholder: "docs/07-cdp.md, Troubleshooting"
+    validations:
+      required: true
+  - type: dropdown
+    id: edition
+    attributes:
+      label: Affected edition / 受影响的版本
+      options:
+        - English (name.md) / 英文版（name.md）
+        - Chinese (name.zh.md) / 中文版（name.zh.md）
+        - both, same problem / 两版同样的问题
+        - the Chinese edition is missing / 缺少中文版
+        - the English edition is missing / 缺少英文版
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong / 问题是什么
+      description: Quote the sentence, name the command that fails, or point at the missing section. / 引用原句、指出失败的命令，或说明缺少的章节。
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested correction / 建议修改
+      description: Optional. A corrected sentence or the section outline you expect. / 可选。改正后的句子，或你期望的章节结构。
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file / 提交前确认
+      options:
+        - label: I checked the status table in docs/README.md; this is not already tracked as pending. / 我已看过 docs/README.md 的状态表，该缺口未被登记为 pending。
+          required: true
+        - label: I checked the same content in the other edition. / 我已核对另一语言版本中的相同内容。
+          required: true

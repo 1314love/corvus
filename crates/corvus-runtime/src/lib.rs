@@ -1,4 +1,5 @@
 //! Command routing between the daemon and connected browsers.
+#![warn(missing_docs)]
 //!
 //! The router owns everything that must be true exactly once per command:
 //! identifier assignment, per browser serialization, the deadline, the

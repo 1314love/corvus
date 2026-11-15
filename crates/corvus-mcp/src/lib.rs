@@ -1,4 +1,5 @@
 //! Model Context Protocol server for Corvus.
+#![warn(missing_docs)]
 //!
 //! The server is transport agnostic: [protocol::McpServer] turns JSON-RPC
 //! messages into answers, and both transports in this crate (stdio and
@@ -15,6 +16,6 @@ pub mod tools;
 
 pub use backend::{BackendFuture, ToolBackend, ToolCall};
 pub use http::McpHttpServer;
-pub use metrics::{CallGuard, Metrics};
+pub use metrics::{CallGuard, ChannelMetrics, Metrics};
 pub use protocol::{McpServer, PROTOCOL_VERSION, SUPPORTED_VERSIONS};
 pub use stdio::serve_stdio;

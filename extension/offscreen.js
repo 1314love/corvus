@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Corvus offscreen document.
+ * @fileoverview Corvus offscreen document.
  *
  * An MV3 service worker cannot hold a WebSocket reliably (it is suspended after
  * roughly thirty seconds of inactivity), so this document owns the single socket

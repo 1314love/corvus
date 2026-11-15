@@ -14,9 +14,11 @@ pub mod capability {
     pub const NETWORK: &str = "network";
     /// Downloads can be awaited.
     pub const DOWNLOADS: &str = "downloads";
+    /// A Chrome DevTools Protocol endpoint is available for this browser.
+    pub const CDP: &str = "cdp";
 
     /// Every capability this daemon version understands.
-    pub const SUPPORTED: [&str; 5] = [DOM, SCRIPTING, DEBUGGER, NETWORK, DOWNLOADS];
+    pub const SUPPORTED: [&str; 6] = [DOM, SCRIPTING, DEBUGGER, NETWORK, DOWNLOADS, CDP];
 
     /// Keep only the capabilities this daemon understands, in daemon order.
     pub fn negotiate(offered: &[String]) -> Vec<String> {
@@ -41,6 +43,45 @@ pub struct Hello {
     /// Optional extension build label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extension: Option<String>,
+    /// Browser family reported by the extension, for example "chrome".
+    ///
+    /// Older extensions omit it; the daemon then derives it from the
+    /// envelope browser identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_family: Option<String>,
+    /// Optional Chrome DevTools Protocol descriptor discovered by the
+    /// extension. Older extensions omit it and keep working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdp: Option<CdpDescriptor>,
+}
+
+/// Where the browser exposes a Chrome DevTools Protocol endpoint.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdpDescriptor {
+    /// Whether a CDP endpoint is available for this browser.
+    #[serde(default)]
+    pub available: bool,
+    /// HTTP endpoint used for discovery, for example http://127.0.0.1:9222.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Browser-level WebSocket debugger URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_socket_debugger_url: Option<String>,
+    /// Browser name reported by the endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
+    /// Protocol version reported by the endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    /// How the endpoint was discovered, for example "extension".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Why the endpoint is unavailable or disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Browser family the extension belongs to, for example "edge".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_family: Option<String>,
 }
 
 impl Hello {
@@ -51,6 +92,8 @@ impl Hello {
             version: version.into(),
             capabilities: Vec::new(),
             extension: None,
+            browser_family: None,
+            cdp: None,
         }
     }
 

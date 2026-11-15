@@ -39,11 +39,17 @@ pub struct BrowserInfo {
     pub id: String,
     /// Profile the extension reported.
     pub profile: String,
+    /// Browser family the extension belongs to, when it reports one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_family: Option<String>,
     /// Extension version.
     pub version: String,
     /// Optional extension build label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extension: Option<String>,
+    /// Optional Chrome DevTools Protocol endpoint reported by the extension.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cdp: Option<corvus_proto::CdpDescriptor>,
     /// Capabilities kept after negotiation.
     pub capabilities: Vec<String>,
     /// When the connection was accepted, in milliseconds since the epoch.
@@ -220,8 +226,10 @@ mod tests {
         let info = BrowserInfo {
             id: browser.to_string(),
             profile: "default".to_string(),
+            browser_family: None,
             version: "0.1.0".to_string(),
             extension: None,
+            cdp: None,
             capabilities: vec!["dom".to_string()],
             connected_at_ms: now_millis(),
             remote: "127.0.0.1:1234".to_string(),

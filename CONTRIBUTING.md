@@ -44,7 +44,7 @@ accepted under the same license.
 ### 4. Documentation is bilingual
 
 - Every document ships in English (`name.md`) and Chinese (`name.zh.md`) in the same commit; see
-  [docs/LANGUAGE.md](docs/LANGUAGE.md).
+  [docs/LANGUAGE.md](docs/LANGUAGE.md). Section 5 fixes the writing rules: no reasoning traces, no filler.
 - A document without its counterpart is not done: either deliver both, or add the gap to the index in
   [docs/README.md](docs/README.md) as `pending`.
 - Write in the product's own voice: describe what Corvus is and does, never compare it to another product.
@@ -106,7 +106,7 @@ Corvus 以公开源码、允许非商业使用的方式开放（见 `LICENSE`）
 ### 4. 文档双语
 
 - 每份文档必须在同一提交里同时提供英文版（`name.md`）与中文版（`name.zh.md`），规则见
-  [docs/LANGUAGE.md](docs/LANGUAGE.md)。
+  [docs/LANGUAGE.md](docs/LANGUAGE.md)。第 5 节规定写作规则：不写推理过程，不写填充词。
 - 缺一版视为未完成：要么两版一起交，要么把缺口登记到 [docs/README.md](docs/README.md) 的状态表里标 `pending`。
 - 文档以产品自身口吻书写：描述 Corvus 是什么、怎么做，不与他人产品做对照。
 - 每份文档开头说明读者与目的；术语与协议字段以 `docs/02-architecture.md` 为准。

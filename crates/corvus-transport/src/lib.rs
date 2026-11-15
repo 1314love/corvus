@@ -1,4 +1,5 @@
 //! WebSocket transport for the browser extension, plus the registry of
+#![warn(missing_docs)]
 //! connected browsers.
 //!
 //! The transport owns exactly two responsibilities: it terminates the

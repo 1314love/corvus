@@ -1,0 +1,133 @@
+name: Bug report / 缺陷报告
+description: A Corvus behaviour does not match the documentation or the result you expected. / Corvus 的行为与文档或预期结果不一致。
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **English** - A report without a version, a channel and reproduction steps cannot be triaged. Security issues must not be filed here: follow [SECURITY.md](https://github.com/1314love/corvus/blob/main/SECURITY.md).
+
+        **中文** - 缺少版本、通道与复现步骤的报告无法分诊。安全问题不要在这里提交，请按 [SECURITY.md](https://github.com/1314love/corvus/blob/main/SECURITY.md) 处理。
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file / 提交前确认
+      options:
+        - label: I searched the existing issues for the same symptom. / 我已搜索过相同现象的已有 issue。
+          required: true
+        - label: The extension and the daemon come from the same build. / 扩展与守护进程来自同一次构建。
+          required: true
+        - label: This is not a security report. / 这不是安全报告。
+          required: true
+  - type: dropdown
+    id: version
+    attributes:
+      label: Corvus version / Corvus 版本
+      description: The output of `corvusd --version`. / `corvusd --version` 的输出。
+      options:
+        - 1.2.x
+        - 1.1.x
+        - 1.0.x
+        - 0.1.x
+        - built from source / 源码构建
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Channel / 通道
+      description: Which browser channel was active when the problem appeared? / 出问题时实际使用的是哪条通道？
+      options:
+        - extension (default) / 扩展（默认）
+        - cdp / CDP 直连
+        - auto / 自动
+        - not sure / 不确定
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: MCP transport / MCP 传输
+      options:
+        - stdio
+        - streamable-http
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system / 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux x86_64 (tarball) / Linux x86_64（tar 包）
+        - Linux (source build) / Linux（源码构建）
+        - macOS (source build) / macOS（源码构建）
+        - Docker
+        - Kubernetes
+        - other / 其他
+    validations:
+      required: true
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser / 浏览器
+      options:
+        - Edge
+        - Chrome
+        - Brave
+        - Chrome for Testing
+        - other / 其他
+    validations:
+      required: true
+  - type: input
+    id: browser-version
+    attributes:
+      label: Browser version / 浏览器版本
+      description: From the browser's About page, or the version the extension popup shows. / 浏览器关于页或扩展弹窗显示的版本。
+      placeholder: "157.0.8103.78"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: Numbered steps, starting from a fresh daemon start. / 从守护进程刚启动开始，逐步编号。
+      placeholder: |
+        1. corvusd serve --transport http
+        2. Call browser_open with url ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour / 期望行为
+      description: What the documentation says should happen. Link the section when you can. / 文档说明应该发生什么；能链接到章节就附上。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour / 实际行为
+      description: What happened instead, including the error code or JSON-RPC error number. / 实际发生了什么，包括错误码或 JSON-RPC 错误号。
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output / doctor 输出
+      description: The output of `corvusd doctor` (or `corvus doctor`). Remove tokens, cookies and page content first. / `corvusd doctor`（或 `corvus doctor`）的输出。请先去掉令牌、Cookie 与页面原文。
+      render: shell
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, MCP traffic or session export / 日志、MCP 流量或会话导出
+      description: The `logs_tail` output, the request and response, or a JSONL export from `session_export`. Redact secrets. / `logs_tail` 输出、请求与响应，或 `session_export` 的 JSONL。请脱敏。
+      render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else / 其他补充
+      description: Recent changes, whether it started after an upgrade, and how often it reproduces. / 最近的改动、是否升级后出现、复现频率。

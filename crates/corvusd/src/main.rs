@@ -45,6 +45,15 @@ enum Command {
         /// Disable the log file and keep logging on stderr
         #[arg(long, conflicts_with = "log_file")]
         no_log_file: bool,
+        /// Chrome DevTools Protocol endpoint; discovered from the extension when omitted
+        #[arg(long, env = "CORVUS_CDP_ENDPOINT")]
+        cdp_endpoint: Option<String>,
+        /// Disable CDP discovery and attachment
+        #[arg(long)]
+        no_cdp: bool,
+        /// Browser channel: auto, cdp or extension
+        #[arg(long, env = "CORVUS_CHANNEL", default_value = "auto", value_parser = ["auto", "cdp", "extension"])]
+        channel: String,
         /// Also serve MCP over standard input and output
         #[arg(long)]
         stdio: bool,
@@ -66,6 +75,15 @@ enum Command {
         /// Corvus home directory
         #[arg(long)]
         home: Option<PathBuf>,
+        /// Chrome DevTools Protocol endpoint; discovered from the extension when omitted
+        #[arg(long, env = "CORVUS_CDP_ENDPOINT")]
+        cdp_endpoint: Option<String>,
+        /// Disable CDP discovery and attachment
+        #[arg(long)]
+        no_cdp: bool,
+        /// Browser channel: auto, cdp or extension
+        #[arg(long, env = "CORVUS_CHANNEL", default_value = "auto", value_parser = ["auto", "cdp", "extension"])]
+        channel: String,
     },
 }
 
@@ -79,10 +97,15 @@ async fn main() -> Result<()> {
             http_port,
             db,
             home,
+            cdp_endpoint,
+            no_cdp,
+            channel,
             log_file,
             no_log_file,
             stdio,
         } => {
+            let channel = corvusd::channel::ChannelMode::parse(&channel)
+                .ok_or_else(|| anyhow::anyhow!("unknown channel {channel}"))?;
             let layout = HomeLayout::resolve(home.clone())?;
             let log_target = if no_log_file {
                 None
@@ -96,6 +119,9 @@ async fn main() -> Result<()> {
                 http_port,
                 db_path: db,
                 home,
+                channel,
+                cdp_endpoint,
+                no_cdp,
                 ..DaemonConfig::default()
             })
             .await?;
@@ -125,6 +151,9 @@ async fn main() -> Result<()> {
             http_port,
             db,
             home,
+            cdp_endpoint: _,
+            no_cdp: _,
+            channel: _,
         } => {
             let report =
                 corvusd::doctor::inspect_with_home(bind, ws_port, http_port, db, home).await;

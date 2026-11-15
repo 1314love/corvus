@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Shared daemon WebSocket URL helper.
+ * @fileoverview Shared daemon WebSocket URL helper.
  *
  * Used by the service worker (via importScripts), the offscreen document, the
  * popup and the options page. Plain JavaScript, no build step.

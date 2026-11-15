@@ -13,7 +13,7 @@ Corvus is one local daemon (`corvusd`), one CLI (`corvus`) and one browser exten
 | Linux package | `/opt/corvus` | `install-linux.sh` writes `/etc/systemd/system/corvus.service` |
 | Linux foreground | `$XDG_DATA_HOME/corvus` or `~/.local/share/corvus` | `corvusd serve` |
 | Docker / Kubernetes | `/data` | container entrypoint or Kubernetes manifest |
-| macOS from source | `~/Library/Application Support/Corvus` | `corvusd serve`; no packaged installer in 1.1.0 |
+| macOS from source | `~/Library/Application Support/Corvus` | `corvusd serve`; no packaged installer in 1.2.0 |
 
 One root contains every backend file:
 
@@ -111,9 +111,9 @@ The extension has no pairing step. Its optional options page sets the daemon Web
 Download or copy the tarball, extract it into a directory, then verify and install:
 
 ```bash
-mkdir -p corvus-1.1.0-linux-x86_64
-tar -xzf corvus-1.1.0-linux-x86_64.tar.gz -C corvus-1.1.0-linux-x86_64
-cd corvus-1.1.0-linux-x86_64
+mkdir -p corvus-1.2.0-linux-x86_64
+tar -xzf corvus-1.2.0-linux-x86_64.tar.gz -C corvus-1.2.0-linux-x86_64
+cd corvus-1.2.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -137,6 +137,25 @@ The extension connects to `ws://127.0.0.1:7330` by default. To use another daemo
 
 A `wss://` endpoint must terminate TLS outside Corvus, for example at a reverse proxy. The daemon itself has no authentication, so a tunnel that exposes port 7330 or 7331 beyond loopback exposes full browser control. See [05-deployment.md](05-deployment.md#7-ports-exposure-and-the-no-authentication-boundary).
 
+### CDP endpoint (optional)
+
+The default zero-setup path uses the extension only. To add browser-level CDP, start a Chromium browser with remote debugging on a loopback port and a dedicated profile:
+
+```bash
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/corvus-cdp-profile
+curl -s http://127.0.0.1:9222/json/version
+```
+
+Use the `webSocketDebuggerUrl` from that response, not the HTTP URL. Then either set the extension options page CDP endpoint to `auto` (it probes 9222, 9223 and 9333) or an explicit `http://127.0.0.1:9222`, or start the daemon with:
+
+```bash
+corvusd serve --home /opt/corvus --cdp-endpoint "ws://127.0.0.1:9222/devtools/browser/<id>"
+corvusd serve --home /opt/corvus --channel extension   # ignore CDP
+corvusd serve --home /opt/corvus --no-cdp              # remove the CDP path
+```
+
+`--channel` accepts `auto`, `cdp` or `extension`; `CORVUS_CHANNEL` sets the same value. The CDP endpoint is loopback-only and has no authentication. Never expose 9222, 9223 or 9333 beyond loopback. See [07-cdp.md](07-cdp.md) for the full guide.
+
 ## Verify the install
 
 On Windows:
@@ -157,7 +176,7 @@ curl -fsS http://127.0.0.1:7331/health
 curl -fsS http://127.0.0.1:7331/metrics
 ```
 
-`doctor` reports the version, whether the WebSocket and MCP HTTP ports are reachable, uptime, tool-call counters, the database path, schema version, session and step counts, and one line per connected browser. `/health` returns `status: "ok"`, the bound addresses and the recording block. A reachable daemon with no browser lines means the extension is not loaded yet or points at another port.
+`doctor` reports the version, whether the WebSocket and MCP HTTP ports are reachable, uptime, tool-call counters, the database path, schema version, session and step counts, and one line per connected browser. `/health` returns `status: "ok"`, the bound addresses and the recording block. A reachable daemon with no browser lines means the extension is not loaded yet or points at another port. When CDP is expected, call `browser_channel` with no arguments and `cdp_status` through your MCP client; the status lists the active channel, endpoint and browser, and any `last_error` or `browser_mismatch`.
 
 ## Connect an MCP client
 
@@ -262,7 +281,10 @@ journalctl -u corvus.service -n 100 --no-pager
 | Script is blocked by policy on Windows | error text names ExecutionPolicy | Use `-ExecutionPolicy Bypass` as shown above |
 | `missing ...corvusd.exe` | package contents | Run `bash scripts/package.sh` first |
 | `page_text` or `page_snapshot` returns TIMEOUT after the extension was reloaded | `tab_list` still lists the tab; extension card is green | Reload the tab or open its URL again. Tabs keep the previous content script until reloaded; `tab_list` does not need one |
+| `browser_channel` reports `cdp` but disconnected | `cdp_status.connected` and `last_error` | The browser or endpoint changed. Restart the daemon with the current `webSocketDebuggerUrl`, or let the extension rediscover it |
+| CDP endpoint rejected | endpoint scheme, host and path | Use the loopback `ws://` or `wss://` browser URL from `/json/version`; HTTP discovery URLs, LAN hosts and paths are rejected |
+| Extension-only tool fails under forced `cdp` | `browser_channel` mode | Switch to `auto` or `extension`; forced CDP never falls back |
 
 ## Security notes
 
-The daemon binds to `127.0.0.1` only and has no authentication layer: any local process that can reach the ports can drive the connected browser. Do not expose ports 7330 or 7331 beyond loopback. The Windows installer registers the service with the nssm default account, LocalSystem; change the service account with nssm when policy requires a dedicated identity. The root contains recorded commands, arguments and results, so treat `<root>/data/corvus.db` and the logs as sensitive data and remove them before handing the machine to someone else. The Linux installer creates a dedicated `corvus` service user and restricts `data/`, `logs/` and `config/` to it.
+The daemon binds to `127.0.0.1` only and has no authentication layer: any local process that can reach the ports can drive the connected browser. Do not expose ports 7330 or 7331 beyond loopback. A configured CDP endpoint has the same trust model and can read cookies, inject script and control every profile in that browser instance; keep 9222, 9223 and 9333 on loopback too. The Windows installer registers the service with the nssm default account, LocalSystem; change the service account with nssm when policy requires a dedicated identity. The root contains recorded commands, arguments and results, so treat `<root>/data/corvus.db` and the logs as sensitive data and remove them before handing the machine to someone else. The Linux installer creates a dedicated `corvus` service user and restricts `data/`, `logs/` and `config/` to it.

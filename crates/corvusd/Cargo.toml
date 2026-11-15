@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 corvus-proto.workspace = true
+corvus-cdp.workspace = true
 corvus-transport.workspace = true
 corvus-runtime.workspace = true
 corvus-mcp.workspace = true

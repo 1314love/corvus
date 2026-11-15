@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
 
 use corvus_proto::{Envelope, ErrorBody, ErrorCode, Hello, HelloAck, Kind};
 use corvus_record::SessionContext;
@@ -57,20 +57,27 @@ async fn start_daemon_at(default_timeout_ms: u64, db_path: PathBuf) -> Daemon {
         },
         db_path: Some(db_path),
         home: None,
+        ..DaemonConfig::default()
     })
     .await
     .expect("the daemon binds its ephemeral ports")
 }
 
 async fn handshake(addr: SocketAddr, browser: &str) -> Socket {
+    handshake_with(
+        addr,
+        browser,
+        Hello::new("default", "0.1.0").with_capability("dom"),
+    )
+    .await
+}
+
+async fn handshake_with(addr: SocketAddr, browser: &str, hello: Hello) -> Socket {
+    let offered = hello.capabilities.clone();
     let (mut socket, _) = connect_async(format!("ws://{addr}"))
         .await
         .expect("the websocket listener accepts the fake extension");
-    let hello = Envelope::hello(
-        "hello-1",
-        browser,
-        &Hello::new("default", "0.1.0").with_capability("dom"),
-    );
+    let hello = Envelope::hello("hello-1", browser, &hello);
     socket
         .send(Message::text(
             serde_json::to_string(&hello).expect("encode hello"),
@@ -90,7 +97,7 @@ async fn handshake(addr: SocketAddr, browser: &str) -> Socket {
     assert_eq!(ack.id, "hello-1");
     let payload: HelloAck = serde_json::from_value(ack.args).expect("decode hello_ack payload");
     assert_eq!(payload.daemon, "corvus");
-    assert_eq!(payload.capabilities, vec!["dom".to_string()]);
+    assert_eq!(payload.capabilities, offered);
     assert_eq!(payload.limits.max_timeout_ms, 125_000);
     assert_eq!(payload.limits.default_timeout_ms, 60_000);
     socket
@@ -3112,6 +3119,329 @@ async fn stdio_cancellation_returns_minus_32800_and_keeps_serving() {
     );
 }
 
+async fn start_mock_cdp() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock cdp");
+    let address = listener.local_addr().expect("mock address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(serve_mock_cdp(stream));
+        }
+    });
+    format!("ws://{address}/devtools/browser/mock")
+}
+
+async fn serve_mock_cdp(stream: TcpStream) {
+    let Ok(socket) = accept_async(stream).await else {
+        return;
+    };
+    let (mut sink, mut stream) = socket.split();
+    while let Some(frame) = stream.next().await {
+        let Ok(Message::Text(text)) = frame else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(text.as_str()) else {
+            continue;
+        };
+        let Some(id) = value.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
+        let method = value
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if method == "Target.setDiscoverTargets" {
+            let event = json!({
+                "method": "Target.targetCreated",
+                "params": { "targetInfo": {
+                    "targetId": "T1",
+                    "type": "page",
+                    "title": "Mock page",
+                    "url": "https://example.test/",
+                }}
+            });
+            let _ = sink.send(Message::Text(event.to_string().into())).await;
+        }
+        let result = match method {
+            "Browser.getVersion" => json!({
+                "product": "MockChrome/1.0",
+                "protocolVersion": "1.3",
+            }),
+            "Target.attachToTarget" => json!({ "sessionId": "SESSION-1" }),
+            "Page.navigate" => json!({ "frameId": "F1" }),
+            "Runtime.evaluate" => {
+                let expression = value
+                    .get("params")
+                    .and_then(|params| params.get("expression"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let value = if expression.contains("location.href") {
+                    "https://example.test/"
+                } else if expression.contains("readyState") {
+                    "complete"
+                } else {
+                    ""
+                };
+                json!({ "result": { "type": "string", "value": value } })
+            }
+            _ => json!({}),
+        };
+        let response = json!({ "id": id, "result": result }).to_string();
+        if sink.send(Message::Text(response.into())).await.is_err() {
+            return;
+        }
+    }
+}
+
+#[tokio::test]
+async fn cdp_discovery_skips_an_invalid_browser_and_uses_the_next_valid_one() {
+    let endpoint = start_mock_cdp().await;
+    let daemon = start_daemon(60_000).await;
+
+    // Profiles are random extension tokens, not browser families. The family
+    // must come from the handshake identity/family field.
+    let invalid_profile = "4f1c9a2e7b6d4085";
+    let mut invalid = Hello::new(invalid_profile, "0.1.0").with_capability("cdp");
+    invalid.browser_family = Some("edge".into());
+    invalid.cdp = Some(corvus_proto::CdpDescriptor {
+        available: true,
+        web_socket_debugger_url: Some("ws://127.0.0.1:9222/devtools/browser/edge".into()),
+        browser_family: Some("chrome".into()),
+        source: Some("auto".into()),
+        ..Default::default()
+    });
+    let _invalid_socket = handshake_with(
+        daemon.ws_addr(),
+        &format!("edge:{invalid_profile}"),
+        invalid,
+    )
+    .await;
+
+    let mut mismatched = false;
+    for _ in 0..100 {
+        if daemon.channel().status()["browser_mismatch"].as_bool() == Some(true) {
+            mismatched = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        mismatched,
+        "auto discovery did not reject the mismatched family: {:?}",
+        daemon.channel().status()
+    );
+
+    let valid_profile = "9b3e5d7a1c2f4068";
+    let mut valid = Hello::new(valid_profile, "0.1.0").with_capability("cdp");
+    valid.browser_family = Some("chrome".into());
+    valid.cdp = Some(corvus_proto::CdpDescriptor {
+        available: true,
+        web_socket_debugger_url: Some(endpoint),
+        browser_family: Some("chromium".into()),
+        source: Some("auto".into()),
+        ..Default::default()
+    });
+    let _valid_socket =
+        handshake_with(daemon.ws_addr(), &format!("chrome:{valid_profile}"), valid).await;
+
+    let mut connected = false;
+    for _ in 0..200 {
+        if daemon.channel().cdp().is_connected() {
+            connected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        connected,
+        "the second, valid descriptor was never used: {:?}",
+        daemon.channel().status()
+    );
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn tools_list_brief_stays_within_the_token_budget() {
+    let daemon = start_daemon(60_000).await;
+    let request = |params: Value| {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "tools/list",
+            "params": params,
+        })
+        .to_string()
+    };
+
+    let brief_text = daemon
+        .mcp()
+        .handle_message_with(&request(json!({})), None)
+        .await
+        .expect("tools/list always answers");
+    let brief: Value = serde_json::from_str(&brief_text).expect("decode brief tools/list");
+    let tools = brief["result"]["tools"].as_array().expect("tools array");
+    assert_eq!(tools.len(), 42);
+    println!(
+        "tools/list brief bytes={} tools={}",
+        brief_text.len(),
+        tools.len()
+    );
+    assert!(
+        brief_text.len() <= 30_000,
+        "brief catalogue is {} bytes",
+        brief_text.len()
+    );
+
+    let full_text = daemon
+        .mcp()
+        .handle_message_with(&request(json!({ "detail": "full" })), None)
+        .await
+        .expect("tools/list always answers");
+    let full: Value = serde_json::from_str(&full_text).expect("decode full tools/list");
+    println!(
+        "tools/list full bytes={} tools={}",
+        full_text.len(),
+        full["result"]["tools"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0)
+    );
+
+    let page_text = daemon
+        .mcp()
+        .handle_message_with(
+            &request(json!({ "category": "page", "detail": "brief" })),
+            None,
+        )
+        .await
+        .expect("tools/list always answers");
+    let page: Value = serde_json::from_str(&page_text).expect("decode page tools/list");
+    let page_tools = page["result"]["tools"].as_array().expect("page tools");
+    assert!(!page_tools.is_empty() && page_tools.len() < 42);
+    assert!(page_tools
+        .iter()
+        .all(|tool| { tool["_meta"]["corvus.category"].as_str() == Some("page") }));
+
+    let invalid = daemon
+        .mcp()
+        .handle_message_with(&request(json!({ "category": "other" })), None)
+        .await
+        .expect("tools/list always answers");
+    let invalid: Value = serde_json::from_str(&invalid).expect("decode invalid tools/list");
+    assert_eq!(invalid["error"]["code"].as_i64(), Some(-32600));
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn cdp_channel_serves_browser_tools_without_an_extension() {
+    let endpoint = start_mock_cdp().await;
+    let daemon = Daemon::start(DaemonConfig {
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ws_port: 0,
+        http_port: 0,
+        router: RouterConfig::default(),
+        db_path: Some(temporary_database()),
+        home: None,
+        channel: corvusd::channel::ChannelMode::Cdp,
+        cdp_endpoint: Some(endpoint),
+        ..DaemonConfig::default()
+    })
+    .await
+    .expect("the daemon starts in cdp mode");
+
+    let mut ready = false;
+    for _ in 0..100 {
+        let status = daemon.channel().cdp().status();
+        if status.connected && !daemon.channel().cdp().targets().is_empty() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(ready, "the mock CDP endpoint never connected");
+
+    let navigate = tools_call(
+        &daemon,
+        "browser_navigate",
+        json!({ "url": "https://example.test/" }),
+    )
+    .await;
+    assert!(
+        !is_error(&navigate),
+        "navigate failed: {}",
+        content_text(&navigate)
+    );
+    let value = navigate
+        .get("structuredContent")
+        .cloned()
+        .expect("structured content");
+    assert_eq!(value.get("tab_id").and_then(Value::as_str), Some("T1"));
+    assert_eq!(
+        value.get("url").and_then(Value::as_str),
+        Some("https://example.test/")
+    );
+
+    let channel = tools_call(&daemon, "browser_channel", json!({})).await;
+    let channel = channel
+        .get("structuredContent")
+        .cloned()
+        .expect("channel status");
+    assert_eq!(channel.get("channel").and_then(Value::as_str), Some("cdp"));
+    assert_eq!(
+        channel
+            .get("cdp")
+            .and_then(|cdp| cdp.get("connected"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let status = tools_call(&daemon, "cdp_status", json!({})).await;
+    assert!(!is_error(&status));
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn extension_channel_ignores_cdp_and_rejects_cdp_only_tools() {
+    let endpoint = start_mock_cdp().await;
+    let daemon = Daemon::start(DaemonConfig {
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ws_port: 0,
+        http_port: 0,
+        router: RouterConfig::default(),
+        db_path: Some(temporary_database()),
+        home: None,
+        channel: corvusd::channel::ChannelMode::Extension,
+        cdp_endpoint: Some(endpoint),
+        ..DaemonConfig::default()
+    })
+    .await
+    .expect("the daemon starts in extension mode");
+
+    let status = tools_call(&daemon, "cdp_status", json!({})).await;
+    assert!(is_error(&status));
+    assert!(
+        content_text(&status).starts_with("CAPABILITY_UNAVAILABLE"),
+        "unexpected error: {}",
+        content_text(&status)
+    );
+
+    let navigate = tools_call(
+        &daemon,
+        "browser_navigate",
+        json!({ "url": "https://example.test/" }),
+    )
+    .await;
+    assert!(
+        is_error(&navigate),
+        "the extension channel must not use CDP"
+    );
+    daemon.shutdown().await;
+}
+
 #[tokio::test]
 async fn home_layout_owns_the_database_logs_and_doctor_report() {
     let home = temporary_directory();
@@ -3122,6 +3452,7 @@ async fn home_layout_owns_the_database_logs_and_doctor_report() {
         router: RouterConfig::default(),
         db_path: None,
         home: Some(home.clone()),
+        ..DaemonConfig::default()
     })
     .await
     .expect("the daemon starts on the configured home");
@@ -3154,6 +3485,7 @@ async fn home_layout_owns_the_database_logs_and_doctor_report() {
         router: RouterConfig::default(),
         db_path: Some(explicit.clone()),
         home: Some(home),
+        ..DaemonConfig::default()
     })
     .await
     .expect("the daemon starts with an explicit database");

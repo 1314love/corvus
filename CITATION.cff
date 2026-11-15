@@ -1,0 +1,19 @@
+# Citation metadata for Corvus. GitHub renders this file as "Cite this repository".
+cff-version: 1.2.0
+message: "If you use Corvus in research or in a publication, cite it with this metadata."
+title: "Corvus"
+abstract: "Corvus is a local browser hub for AI agents. A Rust daemon serves the Model Context Protocol over stdio and streamable HTTP, a Manifest V3 extension connects the browser the user already runs, and an optional browser-level CDP channel drives a browser started with remote debugging on loopback. The daemon exposes 42 tools for perception, action, network control, session recording, replay and diagnostics, and records every call to a local SQLite session store."
+type: software
+authors:
+  - name: "cosher"
+    email: "cosher@163.com"
+    website: "https://github.com/1314love"
+license: PolyForm-Noncommercial-1.0.0
+repository-code: "https://github.com/1314love/corvus"
+url: "https://github.com/1314love/corvus"
+version: "1.2.0"
+date-released: "2026-11-15"
+keywords:
+  - "browser automation"
+  - "Model Context Protocol"
+  - "Rust"

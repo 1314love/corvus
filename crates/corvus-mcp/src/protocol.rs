@@ -12,7 +12,7 @@ use corvus_proto::{ErrorBody, ErrorCode};
 use corvus_record::{now_millis, SessionContext, StepRecord, Store};
 
 use crate::backend::{ToolBackend, ToolCall};
-use crate::metrics::Metrics;
+use crate::metrics::{ChannelMetrics, Metrics};
 use crate::tools;
 
 /// MCP revision this server implements.
@@ -98,7 +98,7 @@ impl McpServer {
             backend,
             name: "corvus".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            instructions: "Corvus drives a real browser through the Corvus extension. Call page_snapshot before browser_click or browser_type and pass a reference from the snapshot as target. Every failure names an error code; retry only when the answer says the failure is retryable.".to_string(),
+            instructions: "Corvus drives a real browser over CDP when a browser-level endpoint is available, and through the Corvus extension otherwise. Call browser_channel to see which channel is active. The extension owns page_snapshot and the reference-based tools: call page_snapshot before browser_click or browser_type and pass a reference from the snapshot as target. Every failure names an error code; retry only when the answer says the failure is retryable.".to_string(),
             health: Arc::new(|| json!({ "status": "ok" })),
             store: None,
             metrics: Arc::new(Metrics::new()),
@@ -133,7 +133,31 @@ impl McpServer {
             .and_then(|recording| recording.get("steps"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        self.metrics.prometheus(browsers, sessions, steps)
+        let channel = health.get("channel");
+        let channel_metrics = ChannelMetrics {
+            mode: channel
+                .and_then(|channel| channel.get("channel"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            cdp_connected: channel
+                .and_then(|channel| channel.get("cdp"))
+                .and_then(|cdp| cdp.get("connected"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            cdp_targets: channel
+                .and_then(|channel| channel.get("cdp"))
+                .and_then(|cdp| cdp.get("targets"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            extension_browsers: channel
+                .and_then(|channel| channel.get("extension"))
+                .and_then(|extension| extension.get("browsers"))
+                .and_then(Value::as_array)
+                .map_or(0, |browsers| browsers.len() as u64),
+        };
+        self.metrics
+            .prometheus_with_channel(browsers, sessions, steps, &channel_metrics)
     }
 
     /// Attach the recording store used for session bookkeeping.
@@ -372,7 +396,14 @@ impl McpServer {
                 None
             }
             "ping" => Some(success(id, json!({}))),
-            "tools/list" => Some(success(id, json!({ "tools": tools::definitions() }))),
+            "tools/list" => match tools::list(&params) {
+                Ok(tools) => Some(success(id, json!({ "tools": tools }))),
+                Err(error) => Some(error_response(
+                    id,
+                    INVALID_REQUEST,
+                    format!("invalid tools/list params: {}", error.message),
+                )),
+            },
             "tools/call" => match self.call_tool(&params, session, &id).await {
                 CallOutcome::Answer(answer) => Some(success(id, answer)),
                 CallOutcome::Cancelled => {

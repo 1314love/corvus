@@ -2,12 +2,12 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-Status: 1.1.0 ships the M1-M4 backend surface plus single-root packaging, Linux packages, Docker and Kubernetes deployment. Audience: engineers.
+Status: 1.2.0 ships the M1-M4 backend surface, the 42-tool MCP surface with hybrid CDP and extension transport, single-root packaging, Linux packages, Docker and Kubernetes deployment. Audience: engineers.
 
 ## 1. Constraints that shape the design
 
-1. **Must drive the browser the user is already using.** No relaunch, no dedicated profile, no remote-debugging flag. This forbids a CDP-only design: the extension is the only way in.
-2. **Zero approvals, zero pairing, no required setup page.** The extension ships without a setup step; the optional options page only overrides the daemon URL.
+1. **Must drive the browser the user is already using by default.** The zero-setup path uses the extension in a browser that is already running: no relaunch, no dedicated profile and no remote-debugging flag. v1.2.0 adds an optional, explicitly configured CDP path for a browser launched with remote debugging, so the design is still not CDP-only: the extension remains the only path that provides DOM references and extension-only tools.
+2. **Zero approvals, zero pairing, no required setup page.** The extension ships without a setup step; the optional options page only overrides the daemon URL and the optional CDP endpoint.
 3. **Connection is the product.** MV3 service workers are killed after ~30s idle; the design must assume the browser side is hostile to long-lived sockets.
 4. **Multi-browser, multi-profile, concurrent.** One daemon, N extensions, independent sessions.
 5. **Everything observable.** Every command and its page context must be replayable after the fact.
@@ -20,8 +20,9 @@ Status: 1.1.0 ships the M1-M4 backend surface plus single-root packaging, Linux 
         v
     +--------------------------------------------------------------+
     | corvusd                                                      |
-    |  mcp-server  -> tool registry -> router -> session runtime    |
+    |  mcp-server  -> tool registry -> channel router -> runtime    |
     |  transport hub (ws / native-messaging / long-poll)            |
+    |  cdp client (optional): browser-level WS, Target sessions     |
     |  recorder (sqlite + jsonl + trace)                            |
     |  recording (sqlite)    metrics (prometheus)   health          |
     +--------------------------------------------------------------+
@@ -30,7 +31,7 @@ Status: 1.1.0 ships the M1-M4 backend surface plus single-root packaging, Linux 
     extension (MV3): service worker + content script + offscreen keepalive
         |  chrome.tabs / scripting / debugger / webRequest / downloads
         v
-    browser
+    browser  <--- optional direct CDP from corvusd (loopback only)
 
 Processes: one corvusd per user session (a service on Windows and Linux; foreground on macOS), one extension per browser profile, one CLI client (corvus).
 
@@ -43,6 +44,7 @@ Processes: one corvusd per user session (a service on Windows and Linux; foregro
 | corvus-transport | WS server, native-messaging host, long-poll fallback, browser registry |
 | corvus-runtime | command router, per-tab lanes, timeouts, idempotency, cancellation |
 | corvus-record | session recorder, sqlite schema, step store, replay support |
+| corvus-cdp | browser-level CDP client, endpoint validation, event ring, raw and high-level CDP tools |
 | corvusd | daemon binary: wires everything, service lifecycle, config |
 | corvus | CLI: doctor, serve, attach, replay, bench, config print |
 
@@ -75,6 +77,7 @@ Rules:
 
 - Transports: stdio (default for IDE clients) and streamable-http on 127.0.0.1:7331/mcp (default for DSH and web clients).
 - Tool naming: <domain>_<verb>, stable forever; aliases never removed, only deprecated.
+- Discovery: `tools/list` returns brief descriptions by default (29,971 bytes for 42 tools); `detail: "full"` returns 35,552 bytes of complete descriptions, and `tool_help` describes one tool on demand.
 - Every tool declares annotations: readOnlyHint, destructiveHint, idempotentHint, openWorldHint.
 - Long outputs are capped per call: `max_chars` truncates long strings and sets `truncated: true`; M2 has no cursor pagination.
 - Resource: corvus://session/<id>/step/<n> returns the recorded page snapshot of that step, so agents can inspect history without re-running.
@@ -209,6 +212,35 @@ M4 wave 1 adds no tools. It changes how the router schedules calls and how an in
 
 **What is not cancelled.** The daemon stops waiting immediately and returns `-32800` without waiting for the browser. Browser work is aborted cooperatively for `browser_wait`, `download_wait`, `browser_eval` and `browser_navigate`, and may finish late for other tools. Effects already applied to a page, a download or a tab are not rolled back.
 
+### 5.6 Hybrid CDP transport
+
+v1.2.0 adds ten tools for a total of 42. The original 32 keep their arguments and result shapes. Browser-facing calls now travel over one of two channels.
+
+**Detection.** The extension options page may store a CDP endpoint under `corvus.cdpEndpoint`. `auto` probes loopback ports 9222, 9223 and 9333 with an 800 ms timeout, reads `/json/version`, and chooses an available endpoint whose browser family matches the extension. Chrome and Chromium share a family; Edge, Brave, Opera and Vivaldi are distinct. The handshake carries a descriptor with the endpoint, WebSocket debugger URL, browser, protocol version, source and family. The `cdp` capability is advertised only when detection succeeded.
+
+**Client.** `corvus-cdp` validates that the descriptor endpoint and debugger URL are loopback `ws://` or `wss://` and keeps one long-lived browser-level WebSocket. Page work uses flattened `Target.attachToTarget` sessions; requests are correlated by numeric id. The client retains a 1000-event ring with monotonic sequence numbers and a `dropped` counter. Reconnects back off from 250 ms to 10 s, a heartbeat runs every 15 s, and request timeouts default to 10 s with a 60 s maximum. A dropped socket fails pending requests; it never replays them.
+
+**Routing.** `auto` prefers CDP and falls back to the extension only when the CDP call reports `Unsupported`. `cdp` is strict and never falls back. `extension` ignores CDP. `--no-cdp` removes the CDP path, and a `cdp` mode request against it fails. `browser_channel` switches the running daemon between modes; the startup mode comes from `--channel` or `CORVUS_CHANNEL`.
+
+**Availability.** Eight tools are extension-only (snapshot and the reference actions), eight are CDP-only, seventeen are shared and nine are daemon-local. Forced modes fail the tools they cannot run with `CAPABILITY_UNAVAILABLE`; they do not silently switch channels. Auto mode may only move a call after an `Unsupported` CDP result.
+
+**Categories.** Discovery uses two levels: `tools/list` returns brief descriptions by default (29,971 bytes for 42 tools), while `detail: "full"` returns the complete descriptions (35,552 bytes). `tool_help` describes one tool on demand.
+
+| Category | Tools |
+|---|---|
+| page | 9 |
+| input | 7 |
+| tabs | 4 |
+| network | 5 |
+| files | 3 |
+| cdp | 5 |
+| sessions | 4 |
+| diagnostics | 4 |
+| help | 1 |
+| **total** | **42** |
+
+**Security.** A browser-level CDP endpoint can read cookies, inject script, intercept traffic and drive every profile in that browser instance. Corvus adds no authentication in front of it. Validation accepts loopback only, but any local process that reaches the debugging port has the same power. Never expose 9222, 9223, 9333, 7330 or 7331 beyond loopback.
+
 ## 6. Extension design
 
 Three runtime contexts and two small UI surfaces:
@@ -217,7 +249,7 @@ Three runtime contexts and two small UI surfaces:
 2. **content script**: DOM snapshot, click/type synthesis, waits, mutation observers.
 3. **offscreen document**: WebSocket owner (SW cannot hold a socket reliably), keepalive, reconnect loop.
 
-The popup is status-only: one connection dot and one status line, with no controls. The options page is optional and only stores the daemon WebSocket URL (`ws://` or `wss://`, default `ws://127.0.0.1:7330`) under `corvus.daemonUrl`; it is not part of the command path. The debugger capability is advertised unconditionally and attached on demand when a CDP-backed tool needs it; a refused attach is the only reason the channel becomes unavailable.
+The popup is status-only: one connection dot and one status line, with no controls. The options page is optional and stores the daemon WebSocket URL (`ws://` or `wss://`, default `ws://127.0.0.1:7330`) under `corvus.daemonUrl`, plus the optional CDP endpoint under `corvus.cdpEndpoint`; neither setting is part of the command path. The `cdp` capability is advertised only when endpoint detection succeeded. The debugger capability is advertised as a base capability and attached on demand when a CDP-backed tool needs it; a refused attach is the only reason the debugger channel becomes unavailable.
 
 Reconnect policy: exponential backoff with jitter (250ms -> 8s cap), immediate retry on network-online, alarm every 30s as a floor, and a daemon-push "resume" message when the daemon restarts.
 
@@ -283,6 +315,9 @@ No `config.toml` is loaded in this release. Settings come from flags and environ
 | File log | `--log-file`, `--no-log-file` | `<root>/logs/corvusd.log` |
 | Log filter | `RUST_LOG` | `info` |
 | MCP transport | `--stdio`, or HTTP on `/mcp` | HTTP |
+| CDP endpoint | `--cdp-endpoint`, `CORVUS_CDP_ENDPOINT` | none; extension descriptor |
+| Channel | `--channel`, `CORVUS_CHANNEL` | `auto` |
+| CDP disable | `--no-cdp` | CDP enabled |
 
 Recording is always on and keeps the fixed 30-day retention. `corvus config --client <name> --transport stdio|http [--home <dir>]` prints a ready `mcpServers` JSON object on stdout, with a location hint on stderr; the stdio form pins `--home` when supplied, and the HTTP form points at `http://127.0.0.1:7331/mcp`.
 
@@ -292,13 +327,13 @@ Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capp
 
 - cargo workspace, edition 2021, Rust 1.90 as MSRV in `Cargo.toml` and `rust-toolchain.toml`.
 - CI matrix: windows-latest, macos-latest and ubuntu-latest; each runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
-- Packaging jobs: `scripts/package-linux.sh` builds the x86_64 tar.gz and verifies the systemd unit; a Docker job builds the image, checks the reported version and `/health`, and asserts the 32-tool list.
+- Packaging jobs: `scripts/package-linux.sh` builds the x86_64 tar.gz and verifies the systemd unit; a Docker job builds the image, checks the reported version and `/health`, and asserts the 42-tool list.
 - Extension: hand-written MV3, no bundler; manifest key pinned so the extension id is stable across machines.
-- Release: platform packages with `SHA256SUMS`; macOS has no packaged installer in 1.1.0.
+- Release: platform packages with `SHA256SUMS`; macOS has no packaged installer in 1.2.0.
 
 ## 12. Security posture
 
-Deliberate: no permission prompts, no allow-list, no per-action confirmation, and no authentication or pairing secret. The trust boundary is the OS user account: browser transports and the MCP HTTP server bind to loopback, and home-root file permissions protect the recording database. Any local process that can reach ports 7330 or 7331 can drive the connected browser, so never expose those ports beyond loopback.
+Deliberate: no permission prompts, no allow-list, no per-action confirmation, and no authentication or pairing secret. The trust boundary is the OS user account: browser transports and the MCP HTTP server bind to loopback, and home-root file permissions protect the recording database. Any local process that can reach ports 7330 or 7331 can drive the connected browser, so never expose those ports beyond loopback. The optional CDP client has the same boundary: a browser-level debugging endpoint can read cookies, inject script and control every profile in that browser instance, it has no authentication, and the daemon accepts only loopback `ws://` or `wss://` endpoints. Never expose 9222, 9223 or 9333 either.
 
 Threats considered:
 
@@ -312,7 +347,7 @@ Non-goal: protecting the user from their own agent. That is out of scope by desi
 
     corvus/
       crates/corvus-proto, corvus-mcp, corvus-transport, corvus-runtime,
-             corvus-record, corvusd, corvus
+             corvus-record, corvus-cdp, corvusd, corvus
       extension/
         manifest.json, background.js, content.js, offscreen.html,
         popup.html, popup.js, options.html, options.js, daemon_url.js

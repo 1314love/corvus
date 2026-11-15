@@ -8,7 +8,10 @@ use corvus_proto::{ErrorBody, ErrorCode};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendError {
     /// The connection is closed or the browser disconnected.
-    Disconnected { browser: String },
+    Disconnected {
+        /// Browser id whose connection was gone.
+        browser: String,
+    },
 }
 
 impl SendError {

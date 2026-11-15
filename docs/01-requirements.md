@@ -195,8 +195,21 @@ v1.1.0 is a deployment-release slice. It adds no MCP tools and keeps the 32-tool
 - **Single-root layout** — Every backend file now lives under `--home <dir>` or `CORVUS_HOME`: `bin/`, `data/corvus.db`, `logs/`, `config/` and `extension/`. The database resolves as `--db`, then the configured home root, then `CORVUS_DB_PATH`, then the platform default. `doctor` reports the active database path, schema version, session and step counts. This is the operational foundation for FR-S1-FR-S4, not their completion; the storage and identity family remains open.
 - **NFR-5 (partial)** — The Windows installer uses one `%ProgramData%\Corvus` root and the Linux package uses `/opt/corvus` with a systemd unit. Linux packaging is x86_64 only. macOS still has no packaged installer in this release; arm64 Linux packages remain open.
 - **Deployment packaging** — A Docker amd64 image and Kubernetes manifests put the same single root at `/data`. Packaging and container checks run in CI; they are not a hosted service.
-- **NFR-3 (not completed)** — The clean 72-hour soak started 2026-11-14T14:41:37Z and was stopped at the client's request after about eight hours (last checkpoint 8 at 2026-11-14T22:41:37Z). The planned 72-hour run will not be completed. Shorter soak runs are evidence only. NFR-3 is not passed and 1.1.0 is not 72-hour soak certified.
+- **NFR-3 (not completed)** — The clean 72-hour soak started 2026-11-14T14:41:37Z and was stopped at the client's request after about eight hours (last checkpoint 8 at 2026-11-14T22:41:37Z). The planned 72-hour run was not completed. Shorter soak runs are evidence only. NFR-3 is not passed and 1.1.0 is not 72-hour soak certified.
 - **NFR-6 (recorded deviation)** — Firefox remains unsupported. The supported browsers are Edge 120+, Chrome 120+ and current Brave; Firefox support is not claimed by this release.
+
+### 4.6 v1.2.0 hybrid transport traceability
+
+v1.2.0 adds ten tools, including eight CDP-backed tools, taking the MCP surface from 32 to 42. The original 32 tools keep their arguments and result shapes.
+
+- **Extension CDP detection** — The extension probes loopback ports 9222, 9223 and 9333, reads `/json/version`, and prefers the same browser family. It advertises the `cdp` capability only when a valid endpoint is found; the handshake carries the endpoint, browser, protocol version and family for the daemon to re-validate.
+- **Direct CDP client** — The daemon keeps one long-lived browser-level WebSocket, uses flattened `Target` sessions for page work, retains a 1000-event ring, reconnects with 250 ms to 10 s backoff, heartbeats every 15 s, and uses a 10 s default request timeout with a 60 s maximum.
+- **Channel selection** — `auto`, `cdp` and `extension` are selectable at startup (`--channel`, `CORVUS_CHANNEL`) and at runtime (`browser_channel`). `auto` prefers CDP and falls back to the extension only for an `Unsupported` CDP result; `cdp` is strict and never falls back; `extension` ignores CDP. `--no-cdp` removes the CDP path entirely.
+- **Fallback and tool availability** — Eight tools are extension-only, eight are CDP-only, seventeen are shared and nine are daemon-local. A forced channel fails the tools it cannot run with `CAPABILITY_UNAVAILABLE` rather than silently switching.
+- **Raw and high-level CDP** — `cdp_send` and `cdp_events` expose the protocol and the event ring directly; `browser_console`, `browser_cookies`, `browser_dialog` and `browser_emulate` cover the common cases without raw protocol calls. `tool_help` describes any tool on demand.
+- **MCP categories and token budget** — `tools/list` now describes two levels: a brief default of 29,971 bytes for 42 tools, and a full detail mode of 35,552 bytes. `tool_help` carries the long descriptions so routine listings stay small.
+- **NFR-3 (not completed)** — The clean 72-hour soak was stopped at the client's request after about eight hours. NFR-3 is not passed and 1.2.0 is not 72-hour soak certified.
+- **NFR-6 (recorded deviation, unchanged)** — Firefox remains unsupported. Supported browsers are Edge 120+, Chrome 120+ and current Brave; Firefox is not claimed by this release.
 
 ## 5. Non-functional requirements
 

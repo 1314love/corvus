@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Corvus content script.
+ * @fileoverview Corvus content script.
  *
  * Runs in the top frame of every http, https and file page. Receives command
  * messages from the service worker, executes one of the browser tools it owns
@@ -14,7 +14,7 @@
   if (window.__corvusContentLoaded === true) return;
   window.__corvusContentLoaded = true;
 
-  const CONTENT_VERSION = '1.1.0';
+  const CONTENT_VERSION = '1.2.0';
   const MAX_NODES_DEFAULT = 700;
   const MAX_NODES_LIMIT = 3000;
   const MIN_NODES_LIMIT = 40;

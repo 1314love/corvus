@@ -2,12 +2,12 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：1.1.0 交付 M1 至 M4 的后端能力，并加入单根目录打包、Linux 安装包、Docker 与 Kubernetes 部署。读者：工程实现者。
+状态：1.2.0 交付 M1 至 M4 的后端能力、采用 CDP 与扩展混合传输的 42 工具 MCP 面，并加入单根目录打包、Linux 安装包、Docker 与 Kubernetes 部署。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
-1. **必须驱动用户正在使用的那个浏览器。** 不重启、不建独立 profile、不加远程调试开关。因此纯 CDP 方案被排除：扩展是唯一的入口。
-2. **零审批、零配对、无必需设置页。** 扩展开箱即用；可选设置页只用于覆盖守护进程 URL。
+1. **默认必须驱动用户正在使用的那个浏览器。** 零配置路径使用已在运行浏览器中的扩展：不重启、不建独立 profile、不加远程调试开关。v1.2.0 为已开启远程调试的浏览器增加一条可选、显式配置的 CDP 路径，因此设计仍不是纯 CDP：扩展仍是唯一提供 DOM 引用与仅扩展工具的路径。
+2. **零审批、零配对、无必需设置页。** 扩展开箱即用；可选设置页只用于覆盖守护进程 URL 与可选 CDP 端点。
 3. **连接就是产品。** MV3 的 Service Worker 空闲约 30 秒即被回收，设计必须假定浏览器一侧对长连接是敌意的。
 4. **多浏览器、多 profile、并发。** 一个守护进程、N 个扩展、互相独立的会话。
 5. **一切可观测。** 每条命令及其页面上下文事后都必须能回放。
@@ -20,8 +20,9 @@
         v
     +--------------------------------------------------------------+
     | corvusd                                                      |
-    |  mcp-server  -> 工具注册表 -> 路由器 -> 会话运行时              |
+    |  mcp-server  -> 工具注册表 -> 通道路由器 -> 会话运行时           |
     |  传输中枢（ws / native-messaging / long-poll）                  |
+    |  CDP 客户端（可选）：浏览器级 WS、Target 会话                   |
     |  录制器（sqlite + jsonl + trace）                              |
     |  录制（sqlite）       指标（prometheus）   健康检查             |
     +--------------------------------------------------------------+
@@ -30,7 +31,7 @@
     扩展（MV3）：Service Worker + 内容脚本 + offscreen 保活
         |  chrome.tabs / scripting / debugger / webRequest / downloads
         v
-    浏览器
+    浏览器  <--- corvusd 可选直连 CDP（仅回环）
 
 进程模型：每个用户会话一个 corvusd（Windows 与 Linux 上注册为服务，macOS 以前台方式运行），每个浏览器 profile 一个扩展，另有一个 CLI 客户端 corvus。
 
@@ -43,6 +44,7 @@
 | corvus-transport | WS 服务端、native-messaging 宿主、long-poll 兜底、浏览器注册表 |
 | corvus-runtime | 命令路由、按标签的通道、超时、幂等、取消 |
 | corvus-record | 会话录制、SQLite schema、步骤存储、回放支撑 |
+| corvus-cdp | 浏览器级 CDP 客户端、端点校验、事件环、原始与高层 CDP 工具 |
 | corvusd | 守护进程二进制：装配、服务生命周期、配置 |
 | corvus | CLI：doctor、serve、attach、replay、bench、打印配置 |
 
@@ -75,6 +77,7 @@
 
 - 传输：stdio（IDE 类客户端默认）与 streamable-http，监听 127.0.0.1:7331/mcp（DSH 及 Web 类客户端默认）。
 - 工具命名：<域>_<动词>，一经发布永久稳定；别名只废弃不删除。
+- 发现：`tools/list` 默认返回简版描述（42 个工具 29,971 字节）；`detail: "full"` 返回 35,552 字节的完整描述，`tool_help` 按需说明单个工具。
 - 每个工具都声明注解：readOnlyHint、destructiveHint、idempotentHint、openWorldHint。
 - 长输出按调用截断：`max_chars` 截断长字符串并置 `truncated: true`；M2 不做游标分页。
 - Resource：corvus://session/<id>/step/<n> 返回该步骤记录下来的页面快照，代理无需重跑即可查看历史。
@@ -209,6 +212,35 @@ M4 第一波不新增工具。它改变路由器调度调用的方式，以及�
 
 **取消不做什么。** 守护进程立即停止等待并返回 `-32800`，不等待浏览器完成。浏览器工作对 `browser_wait`、`download_wait`、`browser_eval` 与 `browser_navigate` 采用协作式中止，其他工具可能延迟完成。已经作用于页面、下载或标签的效果不会回滚。
 
+### 5.6 混合 CDP 传输
+
+v1.2.0 新增十个工具，工具面达到 42 个。原有 32 个工具的参数与结果形状保持不变。浏览器类调用现在走两个通道之一。
+
+**探测。** 扩展设置页可以把 CDP 端点保存在 `corvus.cdpEndpoint`。`auto` 以 800 毫秒超时探测回环端口 9222、9223 与 9333，读取 `/json/version`，选择与本扩展浏览器家族匹配的可用端点。Chrome 与 Chromium 同族；Edge、Brave、Opera 与 Vivaldi 各自独立。握手携带包含端点、WebSocket 调试地址、浏览器、协议版本、来源与家族的 descriptor。只有探测成功时才声明 `cdp` 能力。
+
+**客户端。** `corvus-cdp` 校验 descriptor 端点与调试地址必须是回环 `ws://` 或 `wss://`，并保持一条浏览器级长连接 WebSocket。页面操作使用扁平 `Target.attachToTarget` 会话；请求按数字 id 关联。客户端保留 1000 条事件环，序号单调递增，并有 `dropped` 计数。重连退避从 250 毫秒到 10 秒，每 15 秒心跳，请求超时默认 10 秒、最大 60 秒。套接字断开会让未完成请求失败，绝不重放。
+
+**路由。** `auto` 优先 CDP，仅在 CDP 调用返回 `Unsupported` 时回退扩展。`cdp` 严格不回退。`extension` 忽略 CDP。`--no-cdp` 移除 CDP 路径，此时请求 `cdp` 模式会失败。`browser_channel` 在运行中的守护进程上切换模式；启动模式来自 `--channel` 或 `CORVUS_CHANNEL`。
+
+**可用性。** 八个工具仅扩展（快照与引用动作），八个仅 CDP，十七个共享，九个守护进程本地。强制模式对无法执行的工具返回 `CAPABILITY_UNAVAILABLE`，不会静默切换通道。只有 `auto` 可能在 CDP 返回 `Unsupported` 后移动调用。
+
+**分类。** 发现采用两级：`tools/list` 默认返回简版描述（42 个工具 29,971 字节），`detail: "full"` 返回完整描述（35,552 字节）。`tool_help` 按需说明单个工具。
+
+| 分类 | 工具数 |
+|---|---|
+| 页面 | 9 |
+| 输入 | 7 |
+| 标签 | 4 |
+| 网络 | 5 |
+| 文件 | 3 |
+| CDP | 5 |
+| 会话 | 4 |
+| 诊断 | 4 |
+| 帮助 | 1 |
+| **合计** | **42** |
+
+**安全。** 浏览器级 CDP 端点可以读取 cookie、注入脚本、拦截流量，并驱动该浏览器实例中的所有 profile。Corvus 不在其前面增加认证。校验只接受回环，但任何能访问调试端口的本地进程都拥有同等能力。绝不要把 9222、9223、9333、7330 或 7331 暴露到回环之外。
+
 ## 6. 扩展设计
 
 三个运行时上下文与两个小型界面：
@@ -217,7 +249,7 @@ M4 第一波不新增工具。它改变路由器调度调用的方式，以及�
 2. **内容脚本**：DOM 快照、点击与输入合成、等待、变更观察。
 3. **offscreen 文档**：WebSocket 持有者（Service Worker 无法可靠持有长连接）、保活、重连循环。
 
-弹窗只读：一个连接状态点加一行状态文字，没有任何控件。设置页是可选的，只把守护进程 WebSocket URL（`ws://` 或 `wss://`，默认 `ws://127.0.0.1:7330`）保存在 `corvus.daemonUrl`，不参与命令链路。debugger 能力在握手中始终声明，需要 CDP 的工具按需挂载；只有浏览器拒绝挂载时该通道才不可用。
+弹窗只读：一个连接状态点加一行状态文字，没有任何控件。设置页是可选的，把守护进程 WebSocket URL（`ws://` 或 `wss://`，默认 `ws://127.0.0.1:7330`）保存在 `corvus.daemonUrl`，并把可选 CDP 端点保存在 `corvus.cdpEndpoint`；两者都不参与命令链路。只有端点探测成功时才声明 `cdp` 能力。debugger 作为基础能力声明，需要 CDP 的工具按需挂载；只有浏览器拒绝挂载时该 debugger 通道才不可用。
 
 重连策略：指数退避加抖动（250ms 起，顶到 8s），网络恢复事件立即重试，30 秒一次 alarm 兜底，守护进程重启时主动下发 resume 消息。
 
@@ -283,6 +315,9 @@ M4 第一波不新增工具。它改变路由器调度调用的方式，以及�
 | 文件日志 | `--log-file`、`--no-log-file` | `<root>/logs/corvusd.log` |
 | 日志过滤 | `RUST_LOG` | `info` |
 | MCP 传输 | `--stdio`，或 HTTP 的 `/mcp` | HTTP |
+| CDP 端点 | `--cdp-endpoint`、`CORVUS_CDP_ENDPOINT` | 无；使用扩展 descriptor |
+| 通道 | `--channel`、`CORVUS_CHANNEL` | `auto` |
+| 关闭 CDP | `--no-cdp` | 启用 CDP |
 
 录制始终开启，保留期固定 30 天。`corvus config --client <name> --transport stdio|http [--home <dir>]` 在 stdout 输出可直接粘贴的 `mcpServers` JSON，位置提示写到 stderr；stdio 形式在给出 `--home` 时把它写入参数，HTTP 形式指向 `http://127.0.0.1:7331/mcp`。
 
@@ -292,13 +327,13 @@ M4 第一波不新增工具。它改变路由器调度调用的方式，以及�
 
 - cargo workspace，edition 2021，`Cargo.toml` 与 `rust-toolchain.toml` 固定 Rust 1.90 为 MSRV。
 - CI 矩阵：windows-latest、macos-latest、ubuntu-latest，各自运行 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace`。
-- 打包任务：`scripts/package-linux.sh` 构建 x86_64 tar.gz 并校验 systemd 单元；Docker 任务构建镜像、检查版本与 `/health`，并断言工具面为 32 个。
+- 打包任务：`scripts/package-linux.sh` 构建 x86_64 tar.gz 并校验 systemd 单元；Docker 任务构建镜像、检查版本与 `/health`，并断言工具面为 42 个。
 - 扩展：手写 MV3，无打包器；manifest key 固定，保证扩展 id 跨机器稳定。
-- 发布：平台安装包附 `SHA256SUMS`；1.1.0 不提供 macOS 安装包。
+- 发布：平台安装包附 `SHA256SUMS`；1.2.0 不提供 macOS 安装包。
 
 ## 12. 安全姿态
 
-刻意为之：没有权限弹窗、没有白名单、没有逐动作确认，也没有任何认证或配对密钥。信任边界是操作系统用户账号：浏览器传输与 MCP HTTP 服务只监听回环地址，根目录文件权限保护录制库。任何能访问 7330 或 7331 端口的本机进程都能驱动已连接的浏览器，因此绝不要把这两个端口暴露到回环之外。
+刻意为之：没有权限弹窗、没有白名单、没有逐动作确认，也没有任何认证或配对密钥。信任边界是操作系统用户账号：浏览器传输与 MCP HTTP 服务只监听回环地址，根目录文件权限保护录制库。任何能访问 7330 或 7331 端口的本机进程都能驱动已连接的浏览器，因此绝不要把这两个端口暴露到回环之外。可选 CDP 客户端具有同样的边界：浏览器级调试端点可以读取 cookie、注入脚本并控制该浏览器实例中的所有 profile，它没有认证，守护进程只接受回环 `ws://` 或 `wss://` 端点。也绝不要暴露 9222、9223 或 9333。
 
 已考虑的威胁：
 
@@ -312,7 +347,7 @@ M4 第一波不新增工具。它改变路由器调度调用的方式，以及�
 
     corvus/
       crates/corvus-proto, corvus-mcp, corvus-transport, corvus-runtime,
-             corvus-record, corvusd, corvus
+             corvus-record, corvus-cdp, corvusd, corvus
       extension/
         manifest.json, background.js, content.js, offscreen.html,
         popup.html, popup.js, options.html, options.js, daemon_url.js

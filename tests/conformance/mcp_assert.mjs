@@ -64,6 +64,16 @@ const TOOLS = (
     "session_export",
     "metrics",
     "logs_tail",
+    "browser_channel",
+    "browser_console",
+    "browser_cookies",
+    "browser_dialog",
+    "browser_emulate",
+    "cdp_events",
+    "cdp_send",
+    "cdp_status",
+    "cdp_targets",
+    "tool_help",
   ].join(",")
 )
   .split(",")
@@ -579,7 +589,7 @@ if (mode === "tools") {
       )
       .join(" "),
   );
-  ok("input schemas match the frozen 32-tool argument shapes and declare browser_id");
+  ok("input schemas match the frozen 42-tool argument shapes and declare browser_id");
   process.exit(0);
 }
 

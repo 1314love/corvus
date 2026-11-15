@@ -1,0 +1,66 @@
+name: Feature request / 功能请求
+description: A scenario Corvus does not cover yet. / Corvus 尚未覆盖的使用场景。
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **English** - Describe the scenario and the outcome you need. The implementation is deliberately left open.
+
+        **中文** - 请说明使用场景与期望结果，实现方式刻意保持开放。
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file / 提交前确认
+      options:
+        - label: I checked the tool surface in docs/02-architecture.md and the roadmap in docs/03-roadmap.md. / 我已核对 docs/02-architecture.md 的工具面与 docs/03-roadmap.md 的路线图。
+          required: true
+        - label: I searched the existing issues and pull requests. / 我已搜索过已有 issue 与 pull request。
+          required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Scenario / 使用场景
+      description: What the agent is trying to accomplish, on which kind of page, and why the current surface cannot do it. / 代理想完成什么、在什么类型的页面上、为什么现有能力做不到。
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome / 期望结果
+      description: The result the agent should get, and how it would know the call succeeded. / 代理应得到的结果，以及如何判断调用成功。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered / 已考虑的替代方案
+      description: Existing tools, an external script, or a different channel - and why they fall short. / 现有工具、外部脚本或另一条通道，以及为什么不够。
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 范围
+      options:
+        - Daemon and CLI / 守护进程与命令行
+        - MCP tools / MCP 工具
+        - Extension / 扩展
+        - CDP channel / CDP 通道
+        - Packaging and deployment / 打包与部署
+        - Documentation / 文档
+        - other / 其他
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Corvus version / Corvus 版本
+      description: Optional. The version you run today. / 可选。你当前运行的版本。
+      placeholder: "1.2.0"
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution / 参与实现
+      options:
+        - label: I can test a preview build on my setup. / 我可以在自己的环境上测试预览版本。
+        - label: I can open a pull request for this. / 我可以为此提交 pull request。

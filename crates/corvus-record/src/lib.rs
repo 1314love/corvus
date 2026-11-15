@@ -1,4 +1,5 @@
 //! Persistent recording of MCP sessions and their tool calls.
+#![warn(missing_docs)]
 //!
 //! The store is a small SQLite database. Reads and session bookkeeping use a
 //! shared connection behind a mutex; steps are funnelled through one writer

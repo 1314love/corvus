@@ -1,0 +1,44 @@
+# Automatic release notes, used by "Generate release notes" and by the GitHub
+# release form. https://docs.github.com/repositories/releasing-projects-on-github/automatically-generated-release-notes
+#
+# Labels are part of the change: a pull request that should not reach the notes
+# carries skip-changelog, and a pull request that breaks a surface carries
+# breaking-change.
+changelog:
+  exclude:
+    labels:
+      - "skip-changelog"
+    authors:
+      - "dependabot[bot]"
+      - "github-actions[bot]"
+  categories:
+    - title: "Breaking changes"
+      labels:
+        - "breaking-change"
+    - title: "Added"
+      labels:
+        - "feat"
+        - "feature"
+        - "enhancement"
+    - title: "Fixed"
+      labels:
+        - "fix"
+        - "bug"
+    - title: "Performance"
+      labels:
+        - "perf"
+    - title: "Security"
+      labels:
+        - "security"
+    - title: "Documentation"
+      labels:
+        - "docs"
+        - "documentation"
+    - title: "Build and CI"
+      labels:
+        - "build"
+        - "ci"
+        - "dependencies"
+    - title: "Other changes"
+      labels:
+        - "*"

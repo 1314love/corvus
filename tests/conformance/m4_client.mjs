@@ -300,9 +300,9 @@ async function schemaCheck([toolsPath, snapshotPath]) {
   const body = parseRpc(readFileSync(toolsPath, "utf8"));
   const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
   const currentTools = body?.result?.tools ?? body?.tools;
-  if (snapshot.length !== 32) fail("snapshot has " + snapshot.length + " tools, expected 32");
-  if (!Array.isArray(currentTools) || currentTools.length !== 32) {
-    fail("tools/list has " + (Array.isArray(currentTools) ? currentTools.length : 0) + " tools, expected 32");
+  if (snapshot.length !== 42) fail("snapshot has " + snapshot.length + " tools, expected 42");
+  if (!Array.isArray(currentTools) || currentTools.length !== 42) {
+    fail("tools/list has " + (Array.isArray(currentTools) ? currentTools.length : 0) + " tools, expected 42");
   }
   const byName = new Map(currentTools.map((tool) => [tool.name, tool]));
   const diffs = [];
@@ -317,7 +317,7 @@ async function schemaCheck([toolsPath, snapshotPath]) {
     }
   }
   if (diffs.length) fail("schema drift: " + diffs.join("; "));
-  console.log("schema snapshot matches 32 tools");
+  console.log("schema snapshot matches 42 tools");
 }
 
 const [, , mode, ...args] = process.argv;
