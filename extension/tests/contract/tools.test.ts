@@ -8,7 +8,7 @@ interface SnapshotTool {
   inputSchema: Record<string, unknown>;
 }
 
-const snapshotPath = resolve(process.cwd(), '../tests/conformance/schema-snapshot.v1.3.0.json');
+const snapshotPath = resolve(process.cwd(), '../tests/conformance/schema-snapshot.v1.5.0.json');
 const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8')) as SnapshotTool[];
 
 describe('generated tool contracts', () => {
