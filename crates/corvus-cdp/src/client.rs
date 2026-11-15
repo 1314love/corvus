@@ -111,7 +111,23 @@ impl Inner {
         }
     }
 
+    fn clear_targets(&self) {
+        if let Ok(mut targets) = self.targets.lock() {
+            targets.clear();
+        }
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.clear();
+        }
+        if let Ok(mut active) = self.active_target.lock() {
+            *active = None;
+        }
+    }
+
     fn mark_connected(&self, endpoint: &str) {
+        // A fresh socket has a fresh target set. Drop everything observed on
+        // the previous connection before Target.setDiscoverTargets repopulates
+        // the cache, so a stale active target can never leak into a tool call.
+        self.clear_targets();
         self.connected.store(true, Ordering::SeqCst);
         self.connected_since_ms.store(now_ms(), Ordering::SeqCst);
         if let Ok(mut guard) = self.endpoint.lock() {
@@ -123,10 +139,8 @@ impl Inner {
     fn mark_disconnected(&self, reason: impl Into<String>) {
         self.connected.store(false, Ordering::SeqCst);
         self.connected_since_ms.store(0, Ordering::SeqCst);
+        self.clear_targets();
         self.set_error(reason);
-        if let Ok(mut sessions) = self.sessions.lock() {
-            sessions.clear();
-        }
         self.fail_pending(CdpError::Transport("connection closed".into()));
         self.state_notify.notify_waiters();
     }
@@ -194,6 +208,85 @@ impl Inner {
         }
     }
 
+    fn is_page_target(&self, target_id: &str) -> bool {
+        self.targets
+            .lock()
+            .map(|targets| {
+                targets
+                    .get(target_id)
+                    .is_some_and(|target| target.target_type == "page")
+            })
+            .unwrap_or(false)
+    }
+
+    fn page_target_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .targets
+            .lock()
+            .map(|targets| {
+                targets
+                    .values()
+                    .filter(|target| target.target_type == "page")
+                    .map(|target| target.target_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
+
+    fn repair_active_target(&self) -> Option<String> {
+        let pages = self.page_target_ids();
+        let mut active = match self.active_target.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let valid = active
+            .as_ref()
+            .is_some_and(|target| pages.iter().any(|page| page == target));
+        if !valid {
+            *active = pages.first().cloned();
+        }
+        active.clone()
+    }
+
+    fn set_active_target(&self, target_id: &str) -> bool {
+        if !self.is_page_target(target_id) {
+            return false;
+        }
+        if let Ok(mut active) = self.active_target.lock() {
+            *active = Some(target_id.to_string());
+        }
+        true
+    }
+
+    fn remember_page_target(&self, target_id: &str, url: &str) {
+        if let Ok(mut targets) = self.targets.lock() {
+            targets
+                .entry(target_id.to_string())
+                .and_modify(|target| {
+                    target.url = url.to_string();
+                })
+                .or_insert_with(|| TargetState {
+                    target_id: target_id.to_string(),
+                    target_type: "page".into(),
+                    title: String::new(),
+                    url: url.to_string(),
+                    status: None,
+                });
+        }
+    }
+
+    fn forget_target(&self, target_id: &str) {
+        if let Ok(mut targets) = self.targets.lock() {
+            targets.remove(target_id);
+        }
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.remove(target_id);
+        }
+        self.repair_active_target();
+    }
+
     fn detach_target(&self, session_id: &str) {
         let target = self.sessions.lock().ok().and_then(|mut sessions| {
             let target = sessions
@@ -205,25 +298,13 @@ impl Inner {
             }
             target
         });
-        if let Some(target) = target {
-            if let Ok(mut active) = self.active_target.lock() {
-                if active.as_deref() == Some(target.as_str()) {
-                    *active = None;
-                }
-            }
+        if target.is_some() {
+            self.repair_active_target();
         }
     }
 
     fn active_target(&self) -> Option<String> {
-        if let Ok(active) = self.active_target.lock() {
-            if let Some(target) = active.as_ref() {
-                return Some(target.clone());
-            }
-        }
-        self.targets
-            .lock()
-            .ok()
-            .and_then(|targets| targets.keys().next().cloned())
+        self.repair_active_target()
     }
 }
 
@@ -402,6 +483,26 @@ impl CdpClient {
         self.inner.active_target()
     }
 
+    /// Whether a discovered target is a live page target.
+    pub(crate) fn is_page_target(&self, target_id: &str) -> bool {
+        self.inner.is_page_target(target_id)
+    }
+
+    /// Remember a page target that the browser just created.
+    pub(crate) fn remember_page_target(&self, target_id: &str, url: &str) {
+        self.inner.remember_page_target(target_id, url);
+    }
+
+    /// Select an existing page target as the active tab.
+    pub(crate) fn set_active_target(&self, target_id: &str) -> bool {
+        self.inner.set_active_target(target_id)
+    }
+
+    /// Forget a closed target and repair the active target if needed.
+    pub(crate) fn forget_target(&self, target_id: &str) {
+        self.inner.forget_target(target_id);
+    }
+
     /// Send one CDP command and wait for its correlated response.
     pub async fn send(
         &self,
@@ -460,6 +561,12 @@ impl CdpClient {
         timeout_ms: Option<u64>,
     ) -> Result<Option<String>, CdpError> {
         let _guard = self.attach_lock.lock().await;
+        if !self.inner.is_page_target(target_id) {
+            if let Ok(mut sessions) = self.inner.sessions.lock() {
+                sessions.remove(target_id);
+            }
+            return Ok(None);
+        }
         if let Some(session) = self
             .inner
             .sessions
@@ -469,14 +576,26 @@ impl CdpClient {
         {
             return Ok(Some(session));
         }
-        let value = self
+        let value = match self
             .send_raw(
                 "Target.attachToTarget",
                 json!({ "targetId": target_id, "flatten": true }),
                 None,
                 timeout_ms,
             )
-            .await?;
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                if is_missing_target_error(&error) {
+                    if let Ok(mut sessions) = self.inner.sessions.lock() {
+                        sessions.remove(target_id);
+                    }
+                    return Err(CdpError::TargetNotFound(target_id.to_string()));
+                }
+                return Err(error);
+            }
+        };
         let session = value
             .get("sessionId")
             .and_then(Value::as_str)
@@ -909,6 +1028,8 @@ mod tests {
         close_first: bool,
         close_on_eval: bool,
         dialog_not_showing: bool,
+        attach_not_found: bool,
+        create_targets: bool,
         log: Option<Arc<Mutex<Vec<Value>>>>,
     }
 
@@ -1001,6 +1122,51 @@ mod tests {
                                     "error": {
                                         "code": -32602,
                                         "message": "No dialog is showing",
+                                    }
+                                });
+                                if sink
+                                    .send(Message::Text(response.to_string().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                continue;
+                            }
+                            if method == "Target.createTarget" && options.create_targets {
+                                let url = value
+                                    .pointer("/params/url")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("about:blank");
+                                let event = json!({
+                                    "method": "Target.targetCreated",
+                                    "params": { "targetInfo": {
+                                        "targetId": "T2",
+                                        "type": "page",
+                                        "title": "Mock created",
+                                        "url": url,
+                                    }}
+                                });
+                                let _ = sink.send(Message::Text(event.to_string().into())).await;
+                                let response = json!({
+                                    "id": id,
+                                    "result": { "targetId": "T2" }
+                                });
+                                if sink
+                                    .send(Message::Text(response.to_string().into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                continue;
+                            }
+                            if method == "Target.attachToTarget" && options.attach_not_found {
+                                let response = json!({
+                                    "id": id,
+                                    "error": {
+                                        "code": -32602,
+                                        "message": "No target with given id found",
                                     }
                                 });
                                 if sink
@@ -1185,6 +1351,169 @@ mod tests {
         client.disconnect();
     }
 
+    #[test]
+    fn disconnect_clears_cached_targets_and_the_active_target() {
+        let inner = Inner::new();
+        inner.upsert_target(
+            &json!({
+                "targetId": "T1",
+                "type": "page",
+                "title": "One",
+                "url": "https://one.test/",
+            }),
+            Some("S1"),
+        );
+        assert!(inner.set_active_target("T1"));
+        assert_eq!(inner.active_target().as_deref(), Some("T1"));
+        inner.mark_disconnected("closed");
+        assert!(inner.page_target_ids().is_empty());
+        assert!(inner.sessions.lock().expect("sessions").is_empty());
+        assert!(inner.active_target().is_none());
+    }
+
+    #[test]
+    fn forgetting_the_active_target_repairs_to_a_remaining_page() {
+        let inner = Inner::new();
+        for id in ["T1", "T2"] {
+            inner.upsert_target(
+                &json!({
+                    "targetId": id,
+                    "type": "page",
+                    "title": id,
+                    "url": "https://example.test/",
+                }),
+                None,
+            );
+        }
+        assert!(inner.set_active_target("T2"));
+        assert_eq!(inner.active_target().as_deref(), Some("T2"));
+        assert!(!inner.set_active_target("missing"));
+        assert_eq!(inner.active_target().as_deref(), Some("T2"));
+        inner.forget_target("T2");
+        assert_eq!(inner.active_target().as_deref(), Some("T1"));
+    }
+
+    #[test]
+    fn target_destroyed_event_repairs_the_active_target() {
+        let inner = Arc::new(Inner::new());
+        for id in ["T1", "T2"] {
+            inner.upsert_target(
+                &json!({
+                    "targetId": id,
+                    "type": "page",
+                    "title": id,
+                    "url": "https://example.test/",
+                }),
+                None,
+            );
+        }
+        assert!(inner.set_active_target("T2"));
+        handle_text(
+            &inner,
+            &json!({
+                "method": "Target.targetDestroyed",
+                "params": { "targetId": "T2" },
+            })
+            .to_string(),
+            0,
+        );
+        assert_eq!(inner.active_target().as_deref(), Some("T1"));
+    }
+
+    #[tokio::test]
+    async fn page_tools_map_an_unknown_target_to_not_found() {
+        let (endpoint, _) = mock_cdp(false).await;
+        let client = CdpClient::new();
+        client.connect(&endpoint).expect("connect");
+        assert!(client.wait_connected(Duration::from_secs(2)).await);
+        wait_for_page(&client).await;
+        let error = client
+            .call_tool(
+                "page_text",
+                &json!({ "tab_id": "0123456789abcdef0123456789abcdef" }),
+            )
+            .await
+            .expect_err("unknown target should fail");
+        assert!(
+            matches!(error, CdpError::TargetNotFound(_)),
+            "unexpected error: {error:?}"
+        );
+        client.disconnect();
+    }
+
+    #[tokio::test]
+    async fn attach_maps_a_missing_target_to_not_found() {
+        let (endpoint, _, _) = mock_cdp_with(MockOptions {
+            attach_not_found: true,
+            ..MockOptions::default()
+        })
+        .await;
+        let client = CdpClient::new();
+        client.connect(&endpoint).expect("connect");
+        assert!(client.wait_connected(Duration::from_secs(2)).await);
+        wait_for_page(&client).await;
+        let error = client
+            .attach("T1", Some(2_000))
+            .await
+            .expect_err("attach to missing target should fail");
+        assert!(
+            matches!(error, CdpError::TargetNotFound(_)),
+            "unexpected error: {error:?}"
+        );
+        client.disconnect();
+    }
+
+    #[tokio::test]
+    async fn tab_tools_keep_the_active_target_valid() {
+        let (endpoint, _, _) = mock_cdp_with(MockOptions {
+            create_targets: true,
+            ..MockOptions::default()
+        })
+        .await;
+        let client = CdpClient::new();
+        client.connect(&endpoint).expect("connect");
+        assert!(client.wait_connected(Duration::from_secs(2)).await);
+        wait_for_page(&client).await;
+        assert_eq!(client.default_target_id().as_deref(), Some("T1"));
+
+        let created = client
+            .call_tool(
+                "tab_new",
+                &json!({ "url": "https://two.test/", "active": true }),
+            )
+            .await
+            .expect("tab_new");
+        assert_eq!(created["tab_id"], "T2");
+        assert_eq!(client.default_target_id().as_deref(), Some("T2"));
+
+        let switched = client
+            .call_tool("tab_switch", &json!({ "tab_id": "T1" }))
+            .await
+            .expect("tab_switch");
+        assert_eq!(switched["active"], true);
+        assert_eq!(client.default_target_id().as_deref(), Some("T1"));
+
+        let closed = client
+            .call_tool("tab_close", &json!({ "tab_id": "T1" }))
+            .await
+            .expect("tab_close");
+        assert_eq!(closed["next_tab_id"], "T2");
+        assert_eq!(client.default_target_id().as_deref(), Some("T2"));
+
+        let error = client
+            .call_tool(
+                "tab_switch",
+                &json!({ "tab_id": "0123456789abcdef0123456789abcdef" }),
+            )
+            .await
+            .expect_err("stale tab id should fail");
+        assert!(
+            matches!(error, CdpError::TargetNotFound(_)),
+            "unexpected error: {error:?}"
+        );
+        client.disconnect();
+    }
+
     #[tokio::test]
     async fn enables_download_events_on_every_connection() {
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -1240,6 +1569,7 @@ mod tests {
         let client = CdpClient::new();
         client.connect(&endpoint).expect("connect");
         assert!(client.wait_connected(Duration::from_secs(2)).await);
+        wait_for_page(&client).await;
         client
             .send(
                 "Test.echo",
@@ -1419,11 +1749,10 @@ fn handle_text(inner: &Arc<Inner>, text: &str, version_id: u64) {
                 if let Ok(mut targets) = inner.targets.lock() {
                     targets.remove(target_id);
                 }
-                if let Ok(mut active) = inner.active_target.lock() {
-                    if active.as_deref() == Some(target_id) {
-                        *active = None;
-                    }
+                if let Ok(mut sessions) = inner.sessions.lock() {
+                    sessions.remove(target_id);
                 }
+                inner.repair_active_target();
             }
         }
         "Target.attachedToTarget" => {
@@ -1442,6 +1771,14 @@ fn handle_text(inner: &Arc<Inner>, text: &str, version_id: u64) {
         _ => {}
     }
     inner.push_event(method.to_string(), session_id, params);
+}
+
+fn is_missing_target_error(error: &CdpError) -> bool {
+    matches!(
+        error,
+        CdpError::Remote { code: -32602, message }
+            if message.to_ascii_lowercase().contains("no target with given id")
+    )
 }
 
 fn now_ms() -> u64 {

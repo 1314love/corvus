@@ -1,8 +1,9 @@
 # Corvus browser extension
 
 A Manifest V3 extension that bridges the local Corvus daemon and this browser.
-Every file in this directory is shipped as is: there is no bundler, no npm
-package, no build step, no remote code and no inline script.
+The shipped extension is built from TypeScript and Vue 3 sources. There is no
+remote code and no inline script. Content scripts stay framework-free, and
+`build/extension` is the directory to load or package.
 
 The visible surfaces are one read-only popup status card and a small options page.
 The popup shows the connection dot and state, browser id, extension version,
@@ -12,17 +13,58 @@ and can reset either to the default. Everything else runs without a page.
 
 ## Files
 
-| File | Role |
-| --- | --- |
-| manifest.json | MV3 manifest: permissions, content script, service worker, popup and options page. |
-| background.js | Service worker: protocol envelopes, command routing, tab resolution, content-script injection, network capture, downloads, uploads, the managed debugger channel and the watchdog alarm. |
-| daemon_url.js | Shared daemon URL validation and chrome.storage.local helpers; loaded by the worker, offscreen document, popup and options page. |
-| cdp_endpoint.js | CDP endpoint detection: read-only loopback probe of ports 9222, 9223 and 9333, endpoint validation and browser-family matching. |
-| offscreen.html / offscreen.js | Offscreen document: owns the only WebSocket to the configured daemon URL, reconnects with backoff, relays frames to the service worker. |
-| content.js | Content script: page-scoped tools inside the page (snapshot, text, HTML, find, click, type, hover, press, scroll, select, wait probes, upload target resolution). |
-| popup.html / popup.js | Read-only status card: connection dot and state, browser id, version, capabilities, configured daemon URL and a Change link. |
-| options.html / options.js | Daemon URL and CDP endpoint settings: connection and detection status, editable fields, Save, Reset to default and inline validation. |
-| README.md | This document. |
+| File                             | Role                                                                                                                                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| manifest.json                    | MV3 manifest: permissions, content script, service worker, popup and options page.                                                                                                       |
+| src/background/runtime.ts        | Service worker: protocol envelopes, command routing, tab resolution, content-script injection, network capture, downloads, uploads, the managed debugger channel and the watchdog alarm. |
+| src/shared/storage/daemon-url.ts | Shared daemon URL validation and chrome.storage.local helpers; loaded by the worker, offscreen document, popup and options page.                                                         |
+| src/shared/cdp-endpoint.ts       | CDP endpoint detection: read-only loopback probe of ports 9222, 9223 and 9333, endpoint validation and browser-family matching.                                                          |
+| src/offscreen/index.ts           | Offscreen document: owns the only WebSocket to the configured daemon URL, reconnects with backoff, relays frames to the service worker.                                                  |
+| src/content/runtime.ts           | Content script: page-scoped tools inside the page (snapshot, text, HTML, find, click, type, hover, press, scroll, select, wait probes, upload target resolution).                        |
+| src/ui/popup/App.vue             | Read-only status card: connection dot and state, browser id, version, capabilities, configured daemon URL and a Change link.                                                             |
+| src/ui/options/App.vue           | Daemon URL and CDP endpoint settings: connection and detection status, editable fields, Save, Reset to default and inline validation.                                                    |
+| README.md                        | This document.                                                                                                                                                                           |
+
+## Development
+
+The source tree is TypeScript-first:
+
+| Path                              | Role                                                                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| src/background/index.ts           | Typed UI Port entry. Validates UI requests and forwards them to the background dispatcher.                                                       |
+| src/background/runtime.ts         | Command engine ported from the v1.3 worker: protocol, tabs, content injection, network, downloads, uploads, debugger, cancellation and watchdog. |
+| src/content/index.ts / runtime.ts | Framework-free content script. No Vue or global CSS is loaded into pages.                                                                        |
+| src/offscreen/index.ts            | Offscreen WebSocket host and heartbeat.                                                                                                          |
+| src/shared/                       | Typed tool contracts, UI and protocol messages, storage adapter, daemon URL, CDP endpoint and shared ToolError.                                  |
+| src/ui/                           | Vue 3 popup and options pages, Pinia projections, view models, typed Port client and Naive UI.                                                   |
+| scripts/                          | Contract generation, clean, manifest copy and build verification.                                                                                |
+| tests/                            | Vitest unit, contract and component tests plus isolated Playwright E2E.                                                                          |
+
+Build and verify:
+
+```bash
+pnpm install
+pnpm generate:contracts
+pnpm typecheck
+pnpm lint
+pnpm format:check
+pnpm test
+pnpm build
+```
+
+Three Vite passes produce the ESM service worker, the IIFE content script and
+the multi-page popup/options/offscreen bundle. The manifest is copied last and
+`scripts/check-build.mjs` verifies the required files, version, ten permissions,
+module worker and absence of source maps. Tool argument types and Zod schemas are
+generated from `../tests/conformance/schema-snapshot.v1.3.0.json`; rerun
+`pnpm generate:contracts` when that snapshot changes. The Vitest suite covers
+21 unit, contract and component tests before any browser is launched.
+
+`pnpm test:e2e` launches a separate headless Chrome with the built extension and
+an in-process mock daemon on port 29330. It copies `build/extension` and patches
+the CDP probe ports to 29331, so it never contacts a live daemon or the user's
+browser CDP endpoint. Set `CORVUS_CHROME_PATH` when Chrome for Testing is not in
+its default temporary location.
 
 ## Message flow
 
@@ -133,7 +175,7 @@ document.
 
 Command from the daemon:
 
-~~~json
+```json
 {
   "v": 1,
   "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6",
@@ -144,11 +186,11 @@ Command from the daemon:
   "args": { "target": "@e12" },
   "meta": { "timeout_ms": 5000, "idempotency_key": "01J8Z9M1A2", "trace_id": "tr-44" }
 }
-~~~
+```
 
 Successful response, same id:
 
-~~~json
+```json
 {
   "v": 1,
   "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6",
@@ -158,11 +200,11 @@ Successful response, same id:
   "tool": "browser_click",
   "args": { "clicked": true, "ref": "@e12", "selector": null, "tag": "button", "role": "button" }
 }
-~~~
+```
 
 Failed response, same id:
 
-~~~json
+```json
 {
   "v": 1,
   "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6",
@@ -171,7 +213,7 @@ Failed response, same id:
   "args": null,
   "error": { "code": "NOT_FOUND", "message": "no element matches the selector", "retryable": true }
 }
-~~~
+```
 
 The envelope carries a response in one of two shapes. On success args is the raw
 tool result, with no wrapper and no extra fields, so the daemon can hand it
@@ -180,22 +222,36 @@ object sits in the top level error field; it is never a bare string.
 
 Hello and hello_ack:
 
-~~~json
-{ "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello",
+```json
+{
+  "v": 1,
+  "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6",
+  "kind": "hello",
   "browser": "edge:7f3a91c0d2b4e6f8",
-  "args": { "profile": "7f3a91c0d2b4e6f8", "version": "1.3.0",
-            "capabilities": ["dom", "scripting", "debugger", "cdp"],
-            "cdpEndpoint": "auto" } }
-~~~
+  "args": {
+    "profile": "7f3a91c0d2b4e6f8",
+    "version": "1.4.0",
+    "capabilities": ["dom", "scripting", "debugger", "cdp"],
+    "cdpEndpoint": "auto"
+  }
+}
+```
 
-~~~json
-{ "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello_ack",
+```json
+{
+  "v": 1,
+  "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6",
+  "kind": "hello_ack",
   "browser": "edge:default",
-  "args": { "daemon": "corvus", "version": "1.3.0", "protocol": 1,
-            "capabilities": ["dom", "scripting", "debugger", "cdp"],
-            "limits": { "max_timeout_ms": 125000, "default_timeout_ms": 60000,
-                        "max_inflight": 64, "max_snapshot_nodes": 20000 } } }
-~~~
+  "args": {
+    "daemon": "corvus",
+    "version": "1.4.0",
+    "protocol": 1,
+    "capabilities": ["dom", "scripting", "debugger", "cdp"],
+    "limits": { "max_timeout_ms": 125000, "default_timeout_ms": 60000, "max_inflight": 64, "max_snapshot_nodes": 20000 }
+  }
+}
+```
 
 The advertised capabilities start with dom, scripting and debugger. The debugger
 name is part of the hello even before any session exists; the channel itself is
@@ -208,7 +264,7 @@ chrome.storage.local. Extension APIs cannot read the real profile name.
 ## Tool contract
 
 There are forty-three MCP tool names in the current surface. This extension
-handles the twenty-five browser-facing names it has always served; in 1.3.0 all
+handles the twenty-five browser-facing names it has always served; in 1.4.0 all
 of them are also available over CDP, so the extension-only set is empty. The
 eight CDP-only names (browser_dialog, browser_emulate, browser_cookies,
 browser_console, cdp_status, cdp_targets, cdp_send and cdp_events) and the ten
@@ -255,34 +311,34 @@ Common rules:
 
 ### Payload table
 
-| Tool | Arguments | Success result |
-| --- | --- | --- |
-| browser_navigate | { "url": string, "tab_id"?: string } | { navigated, loaded, url, previous, same_document, started_at } |
-| page_snapshot | { "tab_id"?: string, "mode"?: "interactive" \| "full", "format"?: "compact" \| "json", "max_nodes"?: 40..3000, "viewport_only"?: boolean, "include_bbox"?: boolean } | compact: { format: "compact", tab_id, url, title, viewport, mode, node_count, truncated, text }; json: { format: "json", tab_id, url, title, viewport, mode, node_cap, node_count, element_count, text_count, ref_count, truncated, nodes } |
-| page_text | { "tab_id"?: string, "max_chars"?: 1..200000 } | { url, title, text, truncated } |
-| page_html | { "tab_id"?: string, "target"?: string, "max_chars"?: 1..500000 } | { url, html, truncated } |
-| page_find | { "query": string, "tab_id"?: string, "role"?: string, "limit"?: 1..100, "regex"?: boolean } | { url, count, matches: [{ ref, tag, role, text }] } |
-| browser_click | { "target": string, "tab_id"?: string } | { clicked, ref, selector, tag, role, name, bbox, point, events, url } |
-| browser_type | { "target": string, "text": string, "clear"?: boolean, "blur"?: boolean, "tab_id"?: string } | { typed, ref, selector, tag, role, cleared, events, value, value_length, url } |
-| browser_hover | { "target": string, "tab_id"?: string } | { hovered: true, url, target: { ref, tag, text? } } |
-| browser_press | { "keys": string \| string[], "target"?: string, "tab_id"?: string } | { pressed: true, keys, url } |
-| browser_scroll | { "direction": "up" \| "down" \| "left" \| "right", "pages"?: 0..50, "target"?: string, "tab_id"?: string } | { scrolled: true, x, y, url } |
-| browser_select | { "target": string, "values": string[], "tab_id"?: string } | { selected, value, url } |
-| browser_eval | { "expression": string, "world"?: "main" \| "isolated", "tab_id"?: string } | { ok: true, value } or { ok: false, error: { name, message } } |
-| browser_wait | { "tab_id"?: string, "selector"?: string, "text"?: string, "url_contains"?: string, "timeout_ms"?: 100..120000 } | { matched: true, waited_ms, url } |
-| browser_history | { "action": "back" \| "forward" \| "reload", "tab_id"?: string } | { action, url, loaded } |
-| net_capture | { "action": "start" \| "stop" \| "status", "tab_id"?: string } | start: { capturing: true, tab_id, started_at, capacity }; stop: { capturing: false, tab_id, entries }; status: { capturing, tab_id, started_at?, entries } |
-| net_log | { "tab_id"?: string, "since_seq"?: number, "limit"?: 1..1000, "url_contains"?: string, "method"?: string, "resource_type"?: string, "status_min"?: 0..999, "status_max"?: 0..999, "include_headers"?: boolean } | { entries, next_seq, capturing } |
-| net_clear | { "tab_id"?: string } | { cleared } |
-| net_intercept | { "action": "set" \| "clear", "tab_id"?: string, "rules"?: object[] } | { ok: true, scope: "tab" \| "browser", tab_id?, rules, applied } |
-| download_list | { "limit"?: 1..200 } | { downloads: [{ id, filename, url, state, bytes_received, total_bytes, danger, exists, started_at, tab_id? }] } |
-| download_wait | { "id"?: number \| string, "timeout_ms"?: 100..120000 } | { id, state, filename, url, bytes_received, total_bytes } |
-| upload_file | { "target": string, "files": string[1..10], "tab_id"?: string } | { uploaded: true, files, target: { ref?, tag, text }, input: { accept?, multiple } } |
-| tab_list | {} | { tabs: [{ tab_id, index, active, url, title, status }] } |
-| tab_new | { "url"?: string, "active"?: boolean } | { tab_id, url, loaded, previous_tab_id } |
-| tab_close | { "tab_id": string } | { closed: true, tab_id, next_tab_id? } |
-| tab_switch | { "tab_id": string } | { tab_id, url, title, active: true } |
-| browser_list | {} | { browsers: [{ browser_id, profile, version, capabilities, connected_at_ms }] } |
+| Tool             | Arguments                                                                                                                                                                                                       | Success result                                                                                                                                                                                                                              |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| browser_navigate | { "url": string, "tab_id"?: string }                                                                                                                                                                            | { navigated, loaded, url, previous, same_document, started_at }                                                                                                                                                                             |
+| page_snapshot    | { "tab_id"?: string, "mode"?: "interactive" \| "full", "format"?: "compact" \| "json", "max_nodes"?: 40..3000, "viewport_only"?: boolean, "include_bbox"?: boolean }                                            | compact: { format: "compact", tab_id, url, title, viewport, mode, node_count, truncated, text }; json: { format: "json", tab_id, url, title, viewport, mode, node_cap, node_count, element_count, text_count, ref_count, truncated, nodes } |
+| page_text        | { "tab_id"?: string, "max_chars"?: 1..200000 }                                                                                                                                                                  | { url, title, text, truncated }                                                                                                                                                                                                             |
+| page_html        | { "tab_id"?: string, "target"?: string, "max_chars"?: 1..500000 }                                                                                                                                               | { url, html, truncated }                                                                                                                                                                                                                    |
+| page_find        | { "query": string, "tab_id"?: string, "role"?: string, "limit"?: 1..100, "regex"?: boolean }                                                                                                                    | { url, count, matches: [{ ref, tag, role, text }] }                                                                                                                                                                                         |
+| browser_click    | { "target": string, "tab_id"?: string }                                                                                                                                                                         | { clicked, ref, selector, tag, role, name, bbox, point, events, url }                                                                                                                                                                       |
+| browser_type     | { "target": string, "text": string, "clear"?: boolean, "blur"?: boolean, "tab_id"?: string }                                                                                                                    | { typed, ref, selector, tag, role, cleared, events, value, value_length, url }                                                                                                                                                              |
+| browser_hover    | { "target": string, "tab_id"?: string }                                                                                                                                                                         | { hovered: true, url, target: { ref, tag, text? } }                                                                                                                                                                                         |
+| browser_press    | { "keys": string \| string[], "target"?: string, "tab_id"?: string }                                                                                                                                            | { pressed: true, keys, url }                                                                                                                                                                                                                |
+| browser_scroll   | { "direction": "up" \| "down" \| "left" \| "right", "pages"?: 0..50, "target"?: string, "tab_id"?: string }                                                                                                     | { scrolled: true, x, y, url }                                                                                                                                                                                                               |
+| browser_select   | { "target": string, "values": string[], "tab_id"?: string }                                                                                                                                                     | { selected, value, url }                                                                                                                                                                                                                    |
+| browser_eval     | { "expression": string, "world"?: "main" \| "isolated", "tab_id"?: string }                                                                                                                                     | { ok: true, value } or { ok: false, error: { name, message } }                                                                                                                                                                              |
+| browser_wait     | { "tab_id"?: string, "selector"?: string, "text"?: string, "url_contains"?: string, "timeout_ms"?: 100..120000 }                                                                                                | { matched: true, waited_ms, url }                                                                                                                                                                                                           |
+| browser_history  | { "action": "back" \| "forward" \| "reload", "tab_id"?: string }                                                                                                                                                | { action, url, loaded }                                                                                                                                                                                                                     |
+| net_capture      | { "action": "start" \| "stop" \| "status", "tab_id"?: string }                                                                                                                                                  | start: { capturing: true, tab_id, started_at, capacity }; stop: { capturing: false, tab_id, entries }; status: { capturing, tab_id, started_at?, entries }                                                                                  |
+| net_log          | { "tab_id"?: string, "since_seq"?: number, "limit"?: 1..1000, "url_contains"?: string, "method"?: string, "resource_type"?: string, "status_min"?: 0..999, "status_max"?: 0..999, "include_headers"?: boolean } | { entries, next_seq, capturing }                                                                                                                                                                                                            |
+| net_clear        | { "tab_id"?: string }                                                                                                                                                                                           | { cleared }                                                                                                                                                                                                                                 |
+| net_intercept    | { "action": "set" \| "clear", "tab_id"?: string, "rules"?: object[] }                                                                                                                                           | { ok: true, scope: "tab" \| "browser", tab_id?, rules, applied }                                                                                                                                                                            |
+| download_list    | { "limit"?: 1..200 }                                                                                                                                                                                            | { downloads: [{ id, filename, url, state, bytes_received, total_bytes, danger, exists, started_at, tab_id? }] }                                                                                                                             |
+| download_wait    | { "id"?: number \| string, "timeout_ms"?: 100..120000 }                                                                                                                                                         | { id, state, filename, url, bytes_received, total_bytes }                                                                                                                                                                                   |
+| upload_file      | { "target": string, "files": string[1..10], "tab_id"?: string }                                                                                                                                                 | { uploaded: true, files, target: { ref?, tag, text }, input: { accept?, multiple } }                                                                                                                                                        |
+| tab_list         | {}                                                                                                                                                                                                              | { tabs: [{ tab_id, index, active, url, title, status }] }                                                                                                                                                                                   |
+| tab_new          | { "url"?: string, "active"?: boolean }                                                                                                                                                                          | { tab_id, url, loaded, previous_tab_id }                                                                                                                                                                                                    |
+| tab_close        | { "tab_id": string }                                                                                                                                                                                            | { closed: true, tab_id, next_tab_id? }                                                                                                                                                                                                      |
+| tab_switch       | { "tab_id": string }                                                                                                                                                                                            | { tab_id, url, title, active: true }                                                                                                                                                                                                        |
+| browser_list     | {}                                                                                                                                                                                                              | { browsers: [{ browser_id, profile, version, capabilities, connected_at_ms }] }                                                                                                                                                             |
 
 Defaults: page_snapshot format is "compact", mode is "interactive" and
 max_nodes is 300 (clamped to 40 through 3000), and viewport_only/include_bbox
@@ -298,16 +354,22 @@ download_list limit is 50; download_wait timeout_ms is 30000.
 
 browser_navigate
 
-~~~json
+```json
 { "url": "https://github.com/" }
-~~~
+```
 
 Result:
 
-~~~json
-{ "navigated": true, "loaded": true, "url": "https://github.com/",
-  "previous": "about:blank", "same_document": false, "started_at": 1763100000000 }
-~~~
+```json
+{
+  "navigated": true,
+  "loaded": true,
+  "url": "https://github.com/",
+  "previous": "about:blank",
+  "same_document": false,
+  "started_at": 1763100000000
+}
+```
 
 The content script answers before it starts the navigation, then sets
 location.assign after a short delay so the reply is not lost by the unload. The
@@ -325,19 +387,19 @@ wait. The URL must be http, https or file.
 
 page_snapshot
 
-~~~json
+```json
 { "format": "compact", "mode": "interactive", "max_nodes": 300 }
-~~~
+```
 
 The service worker adds tab_id (a string) to every result. format "compact" (the
 default) returns
 {format:"compact", tab_id, url, title, viewport {width,height,scrollX,scrollY},
 mode, node_count, truncated, text}. text holds one line per node, in DOM order:
 
-~~~text
+```text
 # "Surrounding text"
 @e12 button "Submit" [disabled,checked] value="..." bbox=10,20,80,30
-~~~
+```
 
 Element lines start with the ref, then the lowercase role (or tag when no role
 is known), then the name in quotes, optional states, optional value and optional
@@ -398,15 +460,15 @@ browser_click, browser_hover, browser_type and the other target tools.
 
 browser_click
 
-~~~json
+```json
 { "target": "@e12" }
-~~~
+```
 
 or a CSS selector:
 
-~~~json
+```json
 { "target": "button[type=submit]" }
-~~~
+```
 
 Result: clicked, ref, selector, tag, role, name, bbox, point, events, url. The
 handler scrolls the element into view, checks that the center point hit-tests to
@@ -417,9 +479,9 @@ handlers run.
 
 browser_type
 
-~~~json
+```json
 { "target": "@e5", "text": "hello world", "clear": true, "blur": false }
-~~~
+```
 
 Result: typed, ref, selector, tag, role, cleared, events, value (masked for
 password fields), value_length, url. The handler focuses the field, writes
@@ -461,15 +523,15 @@ Runtime.evaluate (awaitPromise true, returnByValue true, userGesture true).
 world "isolated" (the default) creates a private world named corvus-eval with
 Page.createIsolatedWorld and evaluates there; "main" evaluates in the page world.
 
-~~~json
+```json
 { "expression": "document.title" }
-~~~
+```
 
 Result:
 
-~~~json
+```json
 { "ok": true, "value": "Example Domain" }
-~~~
+```
 
 If page code throws, the tool call itself succeeds and args is
 { "ok": false, "error": { "name": "TypeError", "message": "..." } }; the
@@ -528,12 +590,23 @@ active.
 
 An entry is:
 
-~~~json
-{ "seq": 42, "ts": 1763100000123, "tab_id": "7", "request_id": "1234.5",
-  "method": "GET", "url": "https://example.test/app.js", "status": 200,
-  "mime": "text/javascript", "resource_type": "Script", "from_cache": false,
-  "duration_ms": 18, "error": null, "intercepted": null }
-~~~
+```json
+{
+  "seq": 42,
+  "ts": 1763100000123,
+  "tab_id": "7",
+  "request_id": "1234.5",
+  "method": "GET",
+  "url": "https://example.test/app.js",
+  "status": 200,
+  "mime": "text/javascript",
+  "resource_type": "Script",
+  "from_cache": false,
+  "duration_ms": 18,
+  "error": null,
+  "intercepted": null
+}
+```
 
 status and mime are null until a response arrives. error is the CDP error text
 for a failed request. intercepted is null or {action, rule_id} for a request
@@ -639,31 +712,32 @@ registry to resolve browser_id for the other tools.
 
 ## Error codes
 
-| Code | When this extension emits it | Retryable |
-| --- | --- | --- |
-| BAD_ARGS | Missing tool, unknown tool, missing url, target, text, keys, values or files, invalid direction, invalid world, invalid action, invalid CSS selector, ref not shaped like @e12, number out of range, malformed regex, a non-file upload target, a relative or unreadable upload path, a malformed browser_id, or an omitted browser_id while several browsers are connected (daemon-side). | no |
-| NOT_FOUND | No element matches the selector, ref is unknown or from an old document, the tab does not exist, the select option value does not exist, the upload target disappeared, or browser_history has no history entry. | yes, after a new snapshot, page change or different target |
-| NOT_INTERACTABLE | Element hidden, disabled, read only, not editable, zero hit area, covered by another element (details.covering), or a target outside the viewport. | yes, after scrolling or a new snapshot |
-| TIMEOUT | The content script or the tab did not answer inside meta.timeout_ms plus 1.5 s, browser_wait reached its deadline, or download_wait reached its deadline (details.waited_ms, details.id?). | yes |
-| NAVIGATION_LOST | The page started navigating while a content-script command was running, so its document and refs are gone. | yes, after re-resolving on the new page |
-| CAPABILITY_UNAVAILABLE | The managed debugger could not attach (for example another debugger or DevTools is attached), the page is a restricted scheme, or the browser lacks a permission for this operation. details carries tab_id, cause and reason when known. | no, until the blocking condition is removed |
-| BROWSER_GONE | The tab or browser was closed during the command. | no |
-| TRANSPORT_DOWN | The daemon socket is not connected, or the requested browser_id is not this browser. | yes, after the connection is re-established |
-| CANCELLED | The daemon sent a cancel event for this command id and the extension stopped the command. The daemon has already dropped it, so no retry is needed. | no |
-| INTERNAL | An unexpected browser or extension API failure; includes a trace id when the command carried one. | no |
+| Code                   | When this extension emits it                                                                                                                                                                                                                                                                                                                                                               | Retryable                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| BAD_ARGS               | Missing tool, unknown tool, missing url, target, text, keys, values or files, invalid direction, invalid world, invalid action, invalid CSS selector, ref not shaped like @e12, number out of range, malformed regex, a non-file upload target, a relative or unreadable upload path, a malformed browser_id, or an omitted browser_id while several browsers are connected (daemon-side). | no                                                         |
+| NOT_FOUND              | No element matches the selector, ref is unknown or from an old document, the tab does not exist, the select option value does not exist, the upload target disappeared, or browser_history has no history entry.                                                                                                                                                                           | yes, after a new snapshot, page change or different target |
+| NOT_INTERACTABLE       | Element hidden, disabled, read only, not editable, zero hit area, covered by another element (details.covering), or a target outside the viewport.                                                                                                                                                                                                                                         | yes, after scrolling or a new snapshot                     |
+| TIMEOUT                | The content script or the tab did not answer inside meta.timeout_ms plus 1.5 s, browser_wait reached its deadline, or download_wait reached its deadline (details.waited_ms, details.id?).                                                                                                                                                                                                 | yes                                                        |
+| NAVIGATION_LOST        | The page started navigating while a content-script command was running, so its document and refs are gone.                                                                                                                                                                                                                                                                                 | yes, after re-resolving on the new page                    |
+| CAPABILITY_UNAVAILABLE | The managed debugger could not attach (for example another debugger or DevTools is attached), the page is a restricted scheme, or the browser lacks a permission for this operation. details carries tab_id, cause and reason when known.                                                                                                                                                  | no, until the blocking condition is removed                |
+| BROWSER_GONE           | The tab or browser was closed during the command.                                                                                                                                                                                                                                                                                                                                          | no                                                         |
+| TRANSPORT_DOWN         | The daemon socket is not connected, or the requested browser_id is not this browser.                                                                                                                                                                                                                                                                                                       | yes, after the connection is re-established                |
+| CANCELLED              | The daemon sent a cancel event for this command id and the extension stopped the command. The daemon has already dropped it, so no retry is needed.                                                                                                                                                                                                                                        | no                                                         |
+| INTERNAL               | An unexpected browser or extension API failure; includes a trace id when the command carried one.                                                                                                                                                                                                                                                                                          | no                                                         |
 
 ## Loading unpacked
 
 1. Start the Corvus daemon so ws://127.0.0.1:7330 is listening, or plan to set a
    different URL from the options page after loading.
-2. Open the browser extensions page, enable developer mode and choose "Load
-   unpacked". Select this directory, the one containing manifest.json.
+2. Run `pnpm build`, then open the browser extensions page, enable developer
+   mode and choose "Load unpacked". Select `build/extension`, the directory
+   containing the generated manifest.json and background.js.
 3. There is no side panel. Open the toolbar popup to see the read-only status
    card: connection dot and state, browser id, extension version, advertised
-   capabilities, configured daemon URL and the automatic debugger channel note.
-   Click Change in the popup, or open the extension options page, to edit the
-   daemon URL. Save writes the URL and reconnects immediately; Reset to default
-   removes the stored URL.
+   capabilities, configured daemon URL and CDP endpoint, and the automatic
+   debugger channel note. Click Change in the popup, or open the extension
+   options page, to edit the daemon URL and the CDP endpoint. Save applies the
+   settings and reconnects immediately; Reset restores that field's default.
 4. If the daemon was not running when the extension loaded, start it and wait
    for the watchdog (at most 30 s), or reopen the options page. The status card
    turns green when hello_ack has been processed.
@@ -725,9 +799,10 @@ sends command envelopes through the daemon's MCP surface. A minimal check:
   before DOM.setFileInputFiles, which can otherwise accept a non-existent path.
   If the browser disables extension access to file URLs, valid paths are
   reported unreadable.
-- The extension has no automated browser end-to-end test in this repository.
-  Verification is the static syntax and protocol checks plus a live daemon probe
-  against an unpacked load.
+- `pnpm test:e2e` launches an isolated headless Chrome and an in-process mock
+  daemon; it patches the built CDP probe ports so it never attaches to the user's
+  browser or a live daemon. It is not a substitute for a release smoke against a
+  real daemon.
 - CDP detection is a read-only discovery probe; it never attaches the debugger by
   itself. A configured browser-level endpoint can see every profile in that
   browser instance, so keep 9222, 9223 and 9333 on loopback.

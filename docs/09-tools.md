@@ -2,9 +2,9 @@
 
 [English](09-tools.md) | [中文](09-tools.zh.md)
 
-Status: 1.3.0. Audience: MCP client authors and tool users.
+Status: 1.4.0. Audience: MCP client authors, REST client authors and tool users.
 
-Corvus exposes 43 MCP tools in nine categories. Thirty-three tools operate on a browser through either the extension or a direct loopback CDP connection; ten tools are answered by the daemon. The tool names, input schemas and result shapes in this reference describe 1.3.0.
+Corvus exposes 43 MCP tools in nine categories. Thirty-three tools operate on a browser through either the extension or a direct loopback CDP connection; ten tools are answered by the daemon. The tool names, input schemas and result shapes in this reference describe 1.4.0. The MCP surface is unchanged from 1.3.0: 1.4.0 adds no tools. The same 43-tool catalogue and executor are also available over the REST surface at `/api/v1/tools` and `/api/v1/tools/call`; the envelope in section 1 is MCP-specific.
 
 ## 1. MCP result envelope
 
@@ -246,7 +246,7 @@ The ten daemon-local tools work in every mode. `browser_channel` changes only th
 |---|---:|---|
 | Both channels | 25 | page 7, input 7, tabs 4, network 4, files 3 |
 | CDP only | 8 | `browser_dialog`, `browser_emulate`, `browser_cookies`, `browser_console`, `cdp_status`, `cdp_targets`, `cdp_send`, `cdp_events` |
-| Extension only | 0 | None in 1.3.0 |
+| Extension only | 0 | None in 1.4.0 |
 | Daemon local | 10 | `browser_list`, `browser_channel`, `tool_help`, `browser_batch`, four session tools, `metrics`, `logs_tail` |
 
 The extension remains the zero-setup path. A forced `cdp` process can drive every browser-facing tool without an extension, but the browser must be launched with remote debugging and a dedicated profile. See [07-cdp.md](07-cdp.md) for endpoint setup, routing and security.
@@ -276,4 +276,4 @@ The release-candidate benchmark measured compact output against the JSON compati
 
 Token counts use the benchmark's tokenizer estimate. The default brief `tools/list` is 20,452 bytes for 43 tools; full detail is 37,067 bytes. These are release-candidate measurements; live acceptance evidence belongs in the release notes when QA attaches it.
 
-Version: 1.3.0. Tool catalogues and schemas in this document were checked against the 1.3.0 workspace.
+Version: 1.4.0. Tool catalogues and schemas in this document were checked against the 1.4.0 workspace; the MCP catalogue is unchanged from 1.3.0.

@@ -60,13 +60,17 @@ Corvus starts from the opposite premise: **the browser is an organ of the agent,
 - **Continuity**: idempotent commands, replayable sessions, resumable connection across daemon restarts, multi-browser fan-out.
 - **Hybrid transport**: the extension by default, plus optional direct browser-level CDP over loopback with target sessions, a bounded event ring and explicit `auto`, `cdp` and `extension` channel selection.
 - **Efficiency**: compact page snapshots with `@eN` or `@c` references, lean brief tool discovery, and `browser_batch` for up to 20 sequenced browser calls per MCP round trip.
+- **Surface**: MCP over stdio and streamable HTTP, plus a REST API at `/api/v1` with OpenAPI and Swagger documentation, sharing one 43-tool catalogue and executor.
+- **Structure**: ports and adapters across `corvus-domain`, `corvus-application` and the CDP, transport, record, MCP and REST adapters, composed by `corvusd`.
 - **Memory**: per-domain site cards learned from successful runs, stored in SQLite, exportable and shareable.
 
 ### Status
 
-1.3.0 ships the full 43-tool surface over stdio and streamable HTTP. The original 32 tools keep their arguments and result shapes; 1.2.0 added ten CDP and helper tools and 1.3.0 adds `browser_batch`. `page_snapshot` defaults to compact text on both channels, with `format: "json"` for node objects, and a successful `tools/call` returns one compact JSON text block. Tool discovery has two levels: the brief default list is 20,452 bytes and full detail is 37,067 bytes, and `tool_help` returns one tool's full descriptor. The daemon is a hybrid transport: the extension remains the zero-setup default with 25 browser-facing tools, while a browser explicitly launched with remote debugging can be driven directly over browser-level CDP on loopback; forced CDP covers all 33 browser-facing tools, including `@c` references. The daemon records every call, per-tab lanes let independent tabs run concurrently, and any in-flight MCP request can be cancelled. Windows has a service installer; Linux x86_64 has a tarball with systemd; an amd64 Docker image and Kubernetes manifests are release-gate checks covered by CI. All backend files live under one root selected by `--home` or `CORVUS_HOME`: binaries, `data/corvus.db`, logs, config and the extension. The clean 72-hour NFR-3 soak was stopped at the client's request after about eight hours, so NFR-3 is not passed and 1.3.0 is not 72-hour soak certified. CDP endpoints are loopback-only and unauthenticated; the shipped container image has no browser and cannot reach host loopback. See [docs/09-tools.md](docs/09-tools.md), [docs/07-cdp.md](docs/07-cdp.md), [docs/03-roadmap.md](docs/03-roadmap.md), [docs/02-architecture.md](docs/02-architecture.md) and [docs/05-deployment.md](docs/05-deployment.md).
+1.4.0 is the current release; the workspace and extension are both versioned 1.4.0. The MCP surface is unchanged at 43 tools over stdio and streamable HTTP: the original 32 tools keep their arguments and result shapes, 1.2.0 added ten CDP and helper tools, and 1.3.0 added `browser_batch`. `page_snapshot` defaults to compact text on both channels, with `format: "json"` for node objects, and a successful `tools/call` returns one compact JSON text block. Tool discovery has two levels: the brief default list measured 20,451 bytes and full detail 37,066 bytes in the 1.4.0 acceptance run, and `tool_help` returns one tool's full descriptor. The daemon is a hybrid transport: the extension remains the zero-setup default with 25 browser-facing tools, while a browser explicitly launched with remote debugging can be driven directly over browser-level CDP on loopback; forced CDP covers all 33 browser-facing tools, including `@c` references. The v1.4.0 acceptance report records PASS for 199 workspace tests in 25 suites, 135 conformance checks and the extension 21-test plus Playwright gates; CI identifiers and published asset hashes remain pending.
 
-The uncommitted working tree adds in-progress 1.4.0 work on both sides: hexagonal crates and a REST surface in Rust, and a TypeScript and Vue 3 extension rewrite. The same tree wires the daemon to the new crates and mounts the REST router, but nothing is committed or released: the workspace version is still 1.3.0 while the extension reports 1.4.0. See [docs/10-project-state.md](docs/10-project-state.md).
+The 1.4.0 backend is split into ports and adapters: `corvus-domain`, `corvus-application` with the browser, session, recording and tool-catalogue ports, the CDP, transport, record, MCP and REST adapters, and `corvusd` as the composition root. A REST surface serves `/api/v1` for health, browsers, sessions, tools and tool calls, with OpenAPI at `/api-docs/openapi.json` and Swagger at `/docs`. REST authentication is optional: `off` by default, `local` enables Argon2id and HS256 JWT, and a non-loopback bind requires `local`; accounts and refresh tokens live in memory, there is no default account, and the guard does not cover `/mcp`. Recording moved to SeaORM with schema version 1, a pre-migration backup for existing databases and the same 30-day retention. The extension is rewritten in TypeScript and Vue 3 with Vite, Pinia and Naive UI; `pnpm build` produces `extension/build/extension`.
+
+The daemon records every call, per-tab lanes let independent tabs run concurrently, and any in-flight MCP request can be cancelled. Windows has a service installer; Linux x86_64 has a tarball with systemd; an amd64 Docker image and Kubernetes manifests are release-gate checks covered by CI. All backend files live under one root selected by `--home` or `CORVUS_HOME`: binaries, `data/corvus.db`, logs, config and the extension. The clean 72-hour NFR-3 soak was stopped at the client's request after about eight hours, so NFR-3 is not passed and 1.4.0 is not 72-hour soak certified. CDP endpoints are loopback-only and unauthenticated; the shipped container image has no browser and cannot reach host loopback. See [docs/09-tools.md](docs/09-tools.md), [docs/07-cdp.md](docs/07-cdp.md), [docs/03-roadmap.md](docs/03-roadmap.md), [docs/02-architecture.md](docs/02-architecture.md) and [docs/05-deployment.md](docs/05-deployment.md).
 
 Network capture is opt-in per tab and keeps a 2000-entry ring. Interception supports block, mock and continue rules. Downloads can be listed and awaited, and uploads set file inputs through CDP, including hidden ones.
 
@@ -88,12 +92,14 @@ Linux x86_64: run `scripts/package-linux.sh`, verify `SHA256SUMS`, then run `sud
 package installs under `/opt/corvus` with a systemd unit.
 
 Docker and Kubernetes: the amd64 image and manifests are described in
-[docs/05-deployment.md](docs/05-deployment.md). The examples keep ports 7330 and 7331 on loopback. The daemon
-has no authentication, so never expose them publicly.
+[docs/05-deployment.md](docs/05-deployment.md). The examples keep ports 7330 and 7331 on loopback. MCP and the
+extension WebSocket have no authentication; REST `/api/v1` can enable local auth, but that guard does not cover
+`/mcp`, so never expose the ports publicly without a trusted proxy.
 
-Extension: load the unpacked `extension/` directory; the optional options page stores a custom `ws://` or
-`wss://` daemon URL and an optional loopback CDP endpoint. A remote `wss://` endpoint still needs a trusted tunnel. Full install, extension loading,
-upgrade and the five-minute walkthrough are in [docs/04-install.md](docs/04-install.md).
+Extension: run `pnpm --dir extension install && pnpm --dir extension build`, then load
+`extension/build/extension`; the optional options page stores a custom `ws://` or `wss://` daemon URL and an
+optional loopback CDP endpoint. A remote `wss://` endpoint still needs a trusted tunnel. Full install, extension
+loading, upgrade and the five-minute walkthrough are in [docs/04-install.md](docs/04-install.md).
 
 Supported platforms: Windows 10+ and Linux x86_64 packages; macOS runs from source with no packaged
 installer. Supported browsers: Edge, Chrome and Brave (Chromium 120+). Firefox is not supported (recorded
@@ -108,7 +114,8 @@ NFR-6 deviation).
 - [Deployment](docs/05-deployment.md) - Windows service, Linux systemd, Docker and Kubernetes
 - [CDP guide](docs/07-cdp.md) - optional browser-level channel, tools and troubleshooting
 - [Tool reference](docs/09-tools.md) - all 43 tools, compact snapshot grammar and batching
-- [Project state](docs/10-project-state.md) - released surface, in-flight 1.4.0 work and document confidence
+- [Project state](docs/10-project-state.md) - released 1.4.0 surface and document confidence
+- [Release notes 1.4.0](docs/release-notes/v1.4.0.md) - what ships, evidence and limitations
 - [Release notes 1.3.0](docs/release-notes/v1.3.0.md) - what ships, evidence and limitations
 - [Release notes 1.2.0](docs/release-notes/v1.2.0.md) - what ships, evidence and limitations
 - [Release notes 1.1.0](docs/release-notes/v1.1.0.md) - what ships, evidence and limitations
@@ -182,13 +189,17 @@ Corvus 换一个假设：**浏览器是 AI 的器官，不是它造访的沙箱�
 - **连续性**：幂等命令、可回放会话、守护进程重启后连接自愈、多浏览器分发。
 - **混合传输**：默认走扩展，另可选经回环直连浏览器级 CDP，支持 Target 会话、有界事件环与显式 `auto`、`cdp`、`extension` 通道选择。
 - **效率**：紧凑页面快照使用 `@eN` 或 `@c` 引用，简版工具发现更精简，`browser_batch` 可在一次 MCP 往返中顺序执行最多 20 个浏览器调用。
+- **接口面**：MCP 覆盖 stdio 与 streamable HTTP，另在 `/api/v1` 提供 REST API，并附 OpenAPI 与 Swagger 文档；两者共用同一套 43 工具目录与执行器。
+- **结构**：`corvus-domain`、`corvus-application` 与 CDP、传输、录制、MCP、REST 适配器构成端口与适配器分层，由 `corvusd` 装配。
 - **记忆**：按域名从成功运行中学习站点卡片，存于 SQLite，可导出、可分享。
 
 ### 状态
 
-1.3.0 已交付完整的 43 工具面，覆盖 stdio 与 streamable HTTP。原有 32 个工具的参数与结果结构保持不变；1.2.0 新增十个 CDP 与辅助工具，1.3.0 新增 `browser_batch`。`page_snapshot` 在两个通道上都默认紧凑文本，`format: "json"` 返回节点对象；成功的 `tools/call` 只返回一个紧凑 JSON 文本块。工具发现分为简版默认列表与完整详情两级：简版为 20,452 字节，完整为 37,067 字节，`tool_help` 可返回单个工具的完整描述。守护进程采用混合传输：扩展仍是零配置默认路径，提供 25 个浏览器类工具；显式以远程调试启动的浏览器则可经回环浏览器级 CDP 直连驱动，强制 CDP 覆盖全部 33 个浏览器类工具，包括 `@c` 引用。守护进程记录每次调用，按标签通道让独立标签并行执行，任何进行中的 MCP 请求都可取消。Windows 提供服务安装器；Linux x86_64 提供带 systemd 的 tar 包；amd64 Docker 镜像与 Kubernetes 清单属于由 CI 覆盖的发布门禁检查。所有后端文件都位于 `--home` 或 `CORVUS_HOME` 指定的单一根目录下：二进制、`data/corvus.db`、日志、配置与扩展。干净的 72 小时 NFR-3 压测在客户要求下于约八小时后停止，因此 1.3.0 未通过 NFR-3，也不能宣称通过 72 小时压测。CDP 端点仅限回环且没有认证；发布容器镜像不含浏览器，也无法访问宿主机回环。见 [docs/09-tools.zh.md](docs/09-tools.zh.md)、[docs/07-cdp.zh.md](docs/07-cdp.zh.md)、[docs/03-roadmap.zh.md](docs/03-roadmap.zh.md)、[docs/02-architecture.zh.md](docs/02-architecture.zh.md) 与 [docs/05-deployment.zh.md](docs/05-deployment.zh.md)。
+1.4.0 是当前版本；cargo 工作区与扩展均为 1.4.0。MCP 面保持 43 个工具不变，覆盖 stdio 与 streamable HTTP：原有 32 个工具的参数与结果结构保持不变，1.2.0 新增十个 CDP 与辅助工具，1.3.0 新增 `browser_batch`。`page_snapshot` 在两个通道上都默认紧凑文本，`format: "json"` 返回节点对象；成功的 `tools/call` 只返回一个紧凑 JSON 文本块。工具发现分为简版默认列表与完整详情两级：1.4.0 验收实测简版为 20,451 字节，完整为 37,066 字节，`tool_help` 可返回单个工具的完整描述。守护进程采用混合传输：扩展仍是零配置默认路径，提供 25 个浏览器类工具；显式以远程调试启动的浏览器则可经回环浏览器级 CDP 直连驱动，强制 CDP 覆盖全部 33 个浏览器类工具，包括 `@c` 引用。v1.4.0 验收报告记录了 199 个 workspace 测试（25 个套件）、135 项一致性检查以及扩展 21 个测试与 Playwright 门禁全部通过；CI 标识与发布产物哈希仍待补。
 
-未提交的工作树承载在研的 1.4.0：Rust 侧新增六边形 crate 与 REST 面，扩展侧重写为 TypeScript 与 Vue 3。同一工作树已把守护进程接到新 crate 并挂载 REST 路由，但改动尚未提交或发布：工作区版本仍为 1.3.0，扩展已标 1.4.0。见 [docs/10-project-state.zh.md](docs/10-project-state.zh.md)。
+1.4.0 后端拆分为端口与适配器：`corvus-domain`、承载浏览器、会话、录制与工具目录端口的 `corvus-application`、CDP、传输、录制、MCP 与 REST 适配器，以及作为装配根的 `corvusd`。REST 面在 `/api/v1` 提供 health、browsers、sessions、tools 与工具调用，OpenAPI 位于 `/api-docs/openapi.json`，Swagger 位于 `/docs`。REST 认证可选：默认 `off`，`local` 启用 Argon2id 与 HS256 JWT；绑定非回环地址必须启用 `local`。账号与刷新令牌保存在内存中，系统没有默认账号，且认证守卫不覆盖 `/mcp`。录制改用 SeaORM，schema 版本为 1；既有数据库在迁移前自动备份，30 天保留期不变。扩展重写为 TypeScript 与 Vue 3，使用 Vite、Pinia 与 Naive UI；`pnpm build` 产出 `extension/build/extension`。
+
+守护进程记录每次调用，按标签通道让独立标签并行执行，任何进行中的 MCP 请求都可取消。Windows 提供服务安装器；Linux x86_64 提供带 systemd 的 tar 包；amd64 Docker 镜像与 Kubernetes 清单属于由 CI 覆盖的发布门禁检查。所有后端文件都位于 `--home` 或 `CORVUS_HOME` 指定的单一根目录下：二进制、`data/corvus.db`、日志、配置与扩展。干净的 72 小时 NFR-3 压测在客户要求下于约八小时后停止，因此 1.4.0 未通过 NFR-3，也不能宣称通过 72 小时压测。CDP 端点仅限回环且没有认证；发布容器镜像不含浏览器，也无法访问宿主机回环。见 [docs/09-tools.zh.md](docs/09-tools.zh.md)、[docs/07-cdp.zh.md](docs/07-cdp.zh.md)、[docs/03-roadmap.zh.md](docs/03-roadmap.zh.md)、[docs/02-architecture.zh.md](docs/02-architecture.zh.md) 与 [docs/05-deployment.zh.md](docs/05-deployment.zh.md)。
 
 网络捕获按标签显式开启，每个标签保留 2000 条环形缓冲。拦截支持 block、mock 与 continue 规则；下载可列出并等待完成，上传通过 CDP 设置文件 input，隐藏 input 也可用。
 
@@ -209,9 +220,11 @@ Linux x86_64：运行 `scripts/package-linux.sh`，校验 `SHA256SUMS` 后执行
 安装包默认放在 `/opt/corvus` 并注册 systemd unit。
 
 Docker 与 Kubernetes：amd64 镜像与清单见 [docs/05-deployment.zh.md](docs/05-deployment.zh.md)。
-示例中的 7330 与 7331 只绑定回环地址。守护进程没有认证层，绝不能把这些端口暴露到公网。
+示例中的 7330 与 7331 只绑定回环地址。MCP 与扩展 WebSocket 没有认证；REST `/api/v1` 可启用本地认证，
+但该守卫不覆盖 `/mcp`，因此没有可信代理时绝不能把这些端口暴露到公网。
 
-扩展：加载未打包的 `extension/` 目录；可选设置页可保存自定义 `ws://` 或 `wss://` 守护进程地址及可选回环 CDP 端点。
+扩展：运行 `pnpm --dir extension install && pnpm --dir extension build`，再加载
+`extension/build/extension`；可选设置页可保存自定义 `ws://` 或 `wss://` 守护进程地址及可选回环 CDP 端点。
 远程 `wss://` 端点仍需要可信隧道。完整安装、扩展加载、升级与五分钟流程见
 [docs/04-install.zh.md](docs/04-install.zh.md)。
 
@@ -227,7 +240,8 @@ Docker 与 Kubernetes：amd64 镜像与清单见 [docs/05-deployment.zh.md](docs
 - [部署](docs/05-deployment.zh.md) —— Windows 服务、Linux systemd、Docker 与 Kubernetes
 - [CDP 指南](docs/07-cdp.zh.md) —— 可选浏览器级通道、工具与故障排查
 - [工具参考](docs/09-tools.zh.md) —— 全部 43 个工具、紧凑快照语法与批量调用
-- [项目现状](docs/10-project-state.zh.md) —— 已发布能力、在研 1.4.0 与文档置信度
+- [项目现状](docs/10-project-state.zh.md) —— 1.4.0 已发布能力与文档置信度
+- [1.4.0 发布说明](docs/release-notes/v1.4.0.zh.md) —— 交付内容、证据与限制
 - [1.3.0 发布说明](docs/release-notes/v1.3.0.zh.md) —— 交付内容、证据与限制
 - [1.2.0 发布说明](docs/release-notes/v1.2.0.zh.md) —— 交付内容、证据与限制
 - [1.1.0 发布说明](docs/release-notes/v1.1.0.zh.md) —— 交付内容、证据与限制

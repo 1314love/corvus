@@ -56,7 +56,7 @@ body:
     attributes:
       label: Corvus version / Corvus 版本
       description: Optional. The version you run today. / 可选。你当前运行的版本。
-      placeholder: "1.3.0"
+      placeholder: "1.4.0"
   - type: checkboxes
     id: contribution
     attributes:

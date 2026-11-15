@@ -6,8 +6,19 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --locked -p corvusd -p corvus
 
+# Build the extension with a pinned Node and pnpm toolchain so the image does
+# not depend on a host-side build or an ignored build directory.
+FROM node:22-bookworm-slim AS extension-build
+RUN corepack enable && corepack prepare pnpm@10 --activate
+WORKDIR /build/extension
+COPY extension/package.json extension/pnpm-lock.yaml extension/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY extension/ ./
+COPY tests/conformance/schema-snapshot.v1.3.0.json /build/tests/conformance/schema-snapshot.v1.3.0.json
+RUN pnpm build
+
 FROM debian:bookworm-slim AS runtime
-ARG CORVUS_VERSION=1.3.0
+ARG CORVUS_VERSION=1.4.0
 LABEL org.opencontainers.image.title="Corvus" \
       org.opencontainers.image.description="Corvus browser hub daemon" \
       org.opencontainers.image.version="$CORVUS_VERSION"
@@ -20,7 +31,7 @@ RUN apt-get update \
 
 COPY --from=builder /build/target/release/corvusd /usr/local/bin/corvusd
 COPY --from=builder /build/target/release/corvus /usr/local/bin/corvus
-COPY extension /opt/corvus/extension
+COPY --from=extension-build /build/extension/build/extension /opt/corvus/extension
 
 RUN mkdir -p /data/data /data/logs /data/config \
     && chown -R 10001:10001 /data /opt/corvus
@@ -32,4 +43,4 @@ EXPOSE 7330 7331
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 CMD curl -fsS http://127.0.0.1:7331/health || exit 1
 
-ENTRYPOINT ["corvusd", "serve", "--bind", "0.0.0.0", "--home", "/data"]
+ENTRYPOINT ["corvusd", "serve", "--bind", "0.0.0.0", "--home", "/data", "--allow-no-auth"]

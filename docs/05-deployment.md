@@ -45,9 +45,9 @@ File logging is on by default under `logs/`. `--log-file <PATH>` overrides it, `
 The Linux release archive is built for x86_64 only. Extract it into a directory, then install:
 
 ```bash
-mkdir -p corvus-1.3.0-linux-x86_64
-tar -xzf corvus-1.3.0-linux-x86_64.tar.gz -C corvus-1.3.0-linux-x86_64
-cd corvus-1.3.0-linux-x86_64
+mkdir -p corvus-1.4.0-linux-x86_64
+tar -xzf corvus-1.4.0-linux-x86_64.tar.gz -C corvus-1.4.0-linux-x86_64
+cd corvus-1.4.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -71,7 +71,7 @@ The unit runs as the unprivileged service user with a read-only system view, `Pr
 
 ## 3. Linux upgrade and uninstall
 
-Upgrade by extracting a newer archive and running the same installer. It stops the service, replaces the binaries and extension, rewrites the unit and restarts it; `data/corvus.db` and `logs/` are preserved. The database schema is version 1, so a 1.0.0 database opens in place.
+Upgrade by extracting a newer archive and running the same installer. It stops the service, replaces the binaries and extension, rewrites the unit and restarts it; `data/corvus.db` and `logs/` are preserved. The database schema is version 1, so a 1.0.0 database opens in place; when 1.4.0 first opens an existing database, it writes a `VACUUM INTO` backup beside it before applying the schema baseline, and aborts startup if that backup fails.
 
 Uninstall keeps data and logs by default:
 
@@ -98,22 +98,42 @@ The Windows bundle is a ZIP containing `corvusd.exe`, `corvus.exe`, `nssm.exe`, 
 Build the image from the repository root:
 
 ```bash
-docker build -t corvus:1.3.0 .
+docker build -t corvus:1.4.0 .
 ```
 
-The image runs `corvusd serve --bind 0.0.0.0 --home /data` as UID/GID 10001, stores runtime data under the `/data` volume, and exposes 7330 (WebSocket) and 7331 (MCP HTTP). The unpacked extension is carried at `/opt/corvus/extension`, not `/data`; copy it out with `docker cp` or load the extension from the release ZIP on the host. Publish only to host loopback:
+The image runs `corvusd serve --bind 0.0.0.0 --home /data` as UID/GID 10001, stores runtime data under the `/data` volume, and exposes 7330 (WebSocket) and 7331 (MCP HTTP and REST). The unpacked extension is carried at `/opt/corvus/extension`, not `/data`; copy it out with `docker cp` or load the extension from the release ZIP on the host.
+
+Because the image binds a non-loopback address, its entrypoint passes `--allow-no-auth`. That explicit opt-out keeps the container starting without REST authentication, which preserves the old container behaviour but is **not turnkey secure**: MCP, the extension WebSocket, `/health`, `/metrics` and the docs endpoints are unauthenticated. Publish only to host loopback:
 
 ```bash
 docker volume create corvus-data
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
-  -v corvus-data:/data corvus:1.3.0
+  -v corvus-data:/data corvus:1.4.0
 curl -fsS http://127.0.0.1:7331/health
 ```
 
-Compose uses the same image, a named volume, a read-only root filesystem, a `/tmp` tmpfs, all capabilities dropped and `no-new-privileges`:
+REST is the only authenticated surface; `/health` above needs no token. To add local REST authentication, put these four variables in a root-only env file:
+
+```text
+CORVUS_AUTH=local
+CORVUS_AUTH_SECRET=<at least 32 bytes>
+CORVUS_AUTH_USERNAME=admin
+CORVUS_AUTH_PASSWORD=<bootstrap password>
+```
 
 ```bash
+chmod 600 corvus-auth.env
+docker run -d --name corvus \
+  -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
+  --env-file corvus-auth.env \
+  -v corvus-data:/data corvus:1.4.0
+```
+
+With local auth on, REST `/api/v1` requires a bearer token from `/api/v1/auth/login`; `/mcp`, the WebSocket, `/health`, `/metrics`, `/api-docs/openapi.json` and `/docs` remain unauthenticated. The opt-out flag does not weaken a daemon that has local auth enabled. A deployment that overrides the image entrypoint must pass `--allow-no-auth` or local auth itself; the checked-in Kubernetes Deployment overrides the command and args and passes `--allow-no-auth`, so it starts but is explicitly unauthenticated. That is an unsafe default, not a turnkey secure deployment; use a trusted authenticating proxy.
+
+Compose uses the same image, a named volume, a read-only root filesystem, a `/tmp` tmpfs, all capabilities dropped and `no-new-privileges`:
+```
 docker compose up -d --build
 docker compose logs -f corvus
 docker compose down
@@ -126,8 +146,8 @@ docker compose down
 The manifests in `deploy/k8s/` create a `corvus` namespace, a 1 GiB ReadWriteOnce PVC, one daemon replica, a ClusterIP Service, and a default-deny NetworkPolicy. The deployment runs with a read-only root filesystem, no capabilities, a RuntimeDefault seccomp profile and an init container that seeds the extension from the image into the volume.
 
 ```bash
-docker build -t corvus:1.3.0 .
-kind load docker-image corvus:1.3.0   # or push to your registry
+docker build -t corvus:1.4.0 .
+kind load docker-image corvus:1.4.0   # or push to your registry
 kubectl apply -k deploy/k8s
 kubectl -n corvus rollout status deployment/corvus
 kubectl -n corvus port-forward svc/corvus 7330:7330 7331:7331
@@ -136,14 +156,16 @@ curl -fsS http://127.0.0.1:7331/health
 
 The Service is ClusterIP on purpose. A browser extension cannot reach a ClusterIP directly; desktop clients should use the port-forward, or an authenticated ingress or proxy that the operator provides. Same-namespace clients need no extra label; clients in other namespaces need both the `corvus.io/allow-client: "true"` namespace label and the `corvus.io/client: "true"` pod label. See [deploy/k8s/README.md](../deploy/k8s/README.md) for the exact policy, storage and upgrade notes.
 
-## 7. Ports, exposure and the no-authentication boundary
+## 7. Ports, exposure and the authentication boundary
 
 | Port | Protocol | Purpose |
 |---|---|---|
 | 7330 | WebSocket | Extension transport |
-| 7331 | HTTP | MCP streamable HTTP at `/mcp`, `/health`, `/metrics` |
+| 7331 | HTTP | MCP streamable HTTP at `/mcp`, REST at `/api/v1`, `/health`, `/metrics`, OpenAPI at `/api-docs/openapi.json` and Swagger at `/docs` |
 
-Corvus has **no authentication**. The security boundary is the operating-system account plus loopback binding. Never expose 7330 or 7331 on a public interface, public LoadBalancer or public Ingress. If a remote browser must reach the daemon, put a trusted tunnel or an authenticating proxy in front of it and use a `wss://` URL in the extension options page; do not send the socket over an untrusted network. `/health`, `/metrics` and the MCP endpoint share the same trust boundary.
+MCP, the extension WebSocket and CDP have **no authentication**. The security boundary for them is the operating-system account plus loopback binding. Never expose 7330 or 7331 on a public interface, public LoadBalancer or public Ingress. If a remote browser must reach the daemon, put a trusted tunnel or an authenticating proxy in front of it and use a `wss://` URL in the extension options page; do not send the socket over an untrusted network.
+
+REST `/api/v1` can optionally use local authentication. The bearer guard covers `/api/v1` only: within it, `/api/v1/health`, `/api/v1/auth/login` and `/api/v1/auth/refresh` are exempt, and `/mcp`, the legacy `/health` and `/metrics`, `/api-docs/openapi.json`, `/docs` and the WebSocket are outside the guard. They stay unauthenticated even when local auth is on. A daemon bound to a non-loopback address refuses to start unless auth is `local` or the operator passes the explicit `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` opt-out; that guard protects startup only and does not protect `/mcp`. Enabling REST auth therefore does not make a non-loopback daemon remote-safe; require a trusted proxy that authenticates every port.
 
 ### CDP in containers and Kubernetes
 
@@ -151,7 +173,7 @@ CDP is host-loopback only. The daemon accepts a browser-level endpoint whose hos
 
 ## 8. Backup, restore and retention
 
-The recording database is ordinary SQLite in WAL mode. For a consistent copy, stop the daemon or use SQLite's online backup, then copy `data/corvus.db` (and any `-wal`/`-shm` files when stopped). Logs are not required for restore.
+The recording database is SQLite in WAL mode behind SeaORM, with schema version 1 and a single writer connection. For a consistent copy, stop the daemon or use SQLite's online backup, then copy `data/corvus.db` (and any `-wal`/`-shm` files when stopped). On the first 1.4.0 start against an existing database, the recorder writes `data/corvus.db.backup-<millis>.db` with `VACUUM INTO` before applying the baseline migration; if that backup cannot be written, startup aborts. Logs are not required for restore.
 
 The daemon marks previously active sessions `abandoned` at startup and prunes sessions older than 30 days. Treat the database as sensitive: it contains tool arguments and results, including page text. Kubernetes users can snapshot the PVC; Docker users can back up the named volume.
 
@@ -168,6 +190,7 @@ Restore by stopping the daemon, replacing `data/corvus.db` with the backup, and 
 | Logs missing | Root `logs/` directory | Check `--log-file`/`--no-log-file`; the file is `corvusd.log.YYYY-MM-DD` |
 | Disk grows | `data/` and `logs/` | Retention is 30 days; archive or rotate logs as needed |
 | Docker health fails | `docker logs corvus` | Confirm the `/data` volume is writable by UID 10001 |
-| Kubernetes pod not ready | `kubectl -n corvus describe pod` | Check the PVC binding, init container and NetworkPolicy |
+| Kubernetes pod not ready | `kubectl -n corvus describe pod` | Check the PVC binding, init container and NetworkPolicy; an overridden entrypoint must pass `--allow-no-auth` or local auth |
+| `/api/v1` returns 401 | `--auth`/`CORVUS_AUTH` and request headers | Log in at `/api/v1/auth/login` and send `authorization: Bearer <token>` |
 
 Run `corvus doctor` for version, ports, database, uptime, tool counts and connected browsers. Run `corvusd doctor --home <DIR>` when the service is not running.

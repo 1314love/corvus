@@ -55,18 +55,24 @@ v1.3.0 是上下文效率与对等性切片。它新增 `browser_batch`，MCP �
 
 紧凑与 JSON 的基准记录候选均值：364.83 字节 / 91.21 tokens，对比 JSON 的 2,077.33 字节 / 519.33 tokens，缩小 82.44%。实测资产行在 CI 发布前保持待定标记。
 
-## v1.4.0 结构里程碑（在研）
+## v1.4.0 结构里程碑
 
-v1.4.0 把后端拆成六边形 crate，并把扩展重写为 TypeScript 与 Vue 3。它不新增 MCP 工具，43 工具面保持 1.3.0 已发布状态。
+v1.4.0 把后端拆成端口与适配器 crate，在 MCP 之外增加 REST 面，并把扩展重写为 TypeScript 与 Vue 3。它不新增 MCP 工具：43 工具面及其紧凑信封保持 1.3.0 已发布状态。
 
 | 项目 | 退出标准 |
 |---|---|
-| domain、application、api 三个 crate | domain 与 application 承载模型、用例与 32 个浏览器侧工具规格；api 提供 `/api/v1`，附 OpenAPI 描述、JWT 认证与 argon2 口令散列。 |
-| 扩展重写 | `extension/src` 下的 TypeScript 与 Vue 3 源码，使用 Vite、Vitest 与 Playwright；`pnpm build` 产出可加载包。 |
-| 守护进程接入 | `corvusd` 依赖新 crate 并提供 REST 面。工作树已接通：依赖覆盖 domain、application、api，`corvusd` 挂载 `corvus_api::router`；尚无已发布二进制包含它。 |
-| 版本对齐 | 发布打标签前，cargo 工作区与扩展使用同一版本。当前 `Cargo.toml` 为 1.3.0，扩展为 1.4.0。 |
+| 端口与适配器 | `corvus-domain` 为纯领域层；`corvus-application` 承载用例、`BrowserRegistry`、`BrowserSession`、`StepRecorder`、`ToolCatalog` 四个端口，以及原有 32 条路由器规格；`corvus-cdp`、`corvus-transport`、`corvus-record`、`corvus-mcp`、`corvus-api` 为适配器；`corvusd` 是装配根；`corvus-runtime` 已移除。 |
+| REST 与认证 | `/api/v1` 提供 health、browsers、sessions、tools 与工具调用，OpenAPI 位于 `/api-docs/openapi.json`，Swagger 位于 `/docs`。认证默认 `off`；`local` 启用 Argon2id 与 HS256 JWT；绑定非回环地址必须启用 `local`。账号与刷新令牌保存在内存中。 |
+| 持久化 | SeaORM 与 `sea-orm-migration` 管理 schema 版本 1；既有 1.3.0 数据库无需数据迁移即可打开，迁移前的 `VACUUM INTO` 备份提供保护；适配器保持 WAL、单写入者、5 秒 busy timeout、30 天保留与 262144 字节截断。 |
+| 扩展重写 | `extension/src` 下的 TypeScript 与 Vue 3 源码，使用 Pinia 与 Naive UI；三次 Vite 构建产出 `extension/build/extension`；21 个单元、契约与组件测试加隔离 Playwright 端到端套件覆盖构建。 |
+| 版本对齐 | 发布打标签前，cargo 工作区、扩展 package 与 manifest 统一为 1.4.0。 |
+| 发布 | 1.4.0 二进制、变更日志与双语发布说明。QA 验收记录在 `tests/acceptance/v1.4.0.md`；CI 运行标识与已发布资产哈希仍待补；NFR-3 与 Firefox 偏差仍未关闭。 |
 
-现状：新 crate、守护进程接入与扩展重写只存在于工作树。已发布的 1.3.0 二进制没有变化，工作区版本仍为 1.3.0，因此 1.4.0 是未发布的在研工作，不是独立构建。
+现状：1.4.0 已交付。cargo 工作区与扩展均为 1.4.0，[v1.4.0.md](../tests/acceptance/v1.4.0.md) 记录了 199 个 workspace 测试（25 个套件）、135 项一致性检查与扩展门禁的 PASS。NFR-3 仍未通过，不宣称已有 1.4.0 实机部署，CI 标识与已发布资产哈希仍待补。下一里程碑为 1.5.0。
+
+## v1.5.0 下一步
+
+1.5.0 是下一里程碑，尚未确定范围。其范围、出口标准与日期将在实现前记录；本节不对其作交付或实机部署声明。
 
 ## 建议排期（以 1 名主力 + AI 结对估算）
 

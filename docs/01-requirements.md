@@ -221,6 +221,17 @@ v1.3.0 adds `browser_batch` for 43 tools across nine categories and reduces defa
 - **CDP parity** — forced CDP serves all 33 browser-facing tools, including the eight former extension-only tools; the extension-only tool count is now zero. Cross-channel references fail with typed `BAD_ARGS`.
 - **NFR-3 (not completed)** — 1.3.0 is not 72-hour soak certified; the 72-hour run remains incomplete after the earlier stop at about eight hours. **NFR-6 (unchanged)** — Firefox remains unsupported; supported browsers are Edge 120+, Chrome 120+ and current Brave.
 
+### 4.8 v1.4.0 structural and REST traceability
+
+v1.4.0 adds no MCP tools: the 1.3.0 surface of 43 tools in nine categories, the compact single-text envelope and `browser_batch` are unchanged. The release restructures the backend and adds a separate REST surface.
+
+- **Ports and adapters.** `corvus-domain` holds the pure domain model with no I/O. `corvus-application` holds use cases and the ports `BrowserRegistry`, `BrowserSession`, `StepRecorder` and `ToolCatalog`, plus the 32 original router specifications. `corvus-cdp`, `corvus-transport`, `corvus-record`, `corvus-mcp` and `corvus-api` are adapters; `corvusd` is the composition root. `corvus-runtime` is removed and its routing responsibilities move into the application crate and `corvusd`. Dependencies point inward: domain has no adapter dependency.
+- **REST API.** The daemon serves `/api/v1/health`, `/api/v1/browsers`, `/api/v1/browsers/{id}`, `/api/v1/sessions`, `/api/v1/sessions/{id}`, `/api/v1/sessions/{id}/steps`, `/api/v1/tools` and `/api/v1/tools/call`, plus the auth routes. OpenAPI is at `/api-docs/openapi.json` and Swagger UI at `/docs`. REST uses the same 43-tool `ToolCatalog` and `ToolBackend` as MCP. Every request has an `x-request-id`, tracing, a 120-second timeout returning 408, gzip compression and CORS limited to loopback origins; errors are typed.
+- **Authentication.** Auth is off by default on loopback. A non-loopback bind with auth off fails startup unless the operator passes the explicit `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` opt-out, which logs an unsafe-configuration warning; no default account exists. `--auth local` enables Argon2id password verification and HS256 JWTs: access tokens last 900 seconds, refresh tokens last 30 days and rotate on use. `/api/v1/auth/login`, `/refresh`, `/logout` and `/me` implement the flow; `/api/v1/health`, login and refresh are unauthenticated. The REST auth guard wraps `/api/v1` only and does not cover the existing `/mcp` endpoint, the extension WebSocket, legacy `/health`, `/metrics`, `/api-docs/openapi.json` or `/docs`; all of those keep their 1.3.0 no-authentication behavior. Accounts and refresh tokens are held in memory in 1.4.0 and do not survive a restart; persistent auth storage is future work.
+- **Persistence.** `corvus-record` uses SeaORM and `sea-orm-migration` with `schema_version` 1. A 1.3.0 database opens without a data migration; before the baseline migration runs on an existing file the daemon writes a `VACUUM INTO` backup, and a failed backup aborts startup. The store keeps WAL, a single writer connection, a 5-second busy timeout, 30-day session retention and 262144-byte payload truncation.
+- **Extension.** The extension is built from TypeScript and Vue 3 sources with three Vite passes, producing the loadable `extension/build/extension` tree. The popup and options page use Vue 3, Pinia and Naive UI; the service worker, content script and offscreen document stay framework-free TypeScript with typed RPC. The MV3 manifest declares ten permissions and an ESM service worker, and the build checks the expected files and manifest shape.
+- **NFR-3 (not completed) and NFR-6 (unchanged).** 1.4.0 is not 72-hour soak certified; the planned run remains incomplete after the earlier stop at about eight hours. Firefox remains unsupported; supported browsers are Edge 120+, Chrome 120+ and current Brave.
+
 ## 5. Non-functional requirements
 
 | ID | Category | Requirement |
@@ -233,7 +244,7 @@ v1.3.0 adds `browser_batch` for 43 tools across nine categories and reduces defa
 | NFR-6 | Browsers | Edge 120+, Chrome 120+, current Brave, Firefox 121+ |
 | NFR-7 | Maintainability | Rust workspace split into crates, zero clippy warnings, three-platform CI |
 | NFR-8 | Observability | structured JSON logs, adjustable level, never log page content by default |
-| NFR-9 | Security posture | no approvals, no allow-list, no sandbox; runs as the OS user, endpoints bound to loopback only |
+| NFR-9 | Security posture | no approvals, no allow-list, no sandbox; runs as the OS user; MCP, the extension WebSocket and CDP bind loopback only; REST may bind a non-loopback address only with local auth or the explicit unsafe opt-out |
 | NFR-10 | Compatibility | MCP 2025-06-18, complete tool annotations (readOnly / destructive / idempotent) |
 
 ## 6. Acceptance tasks (real scenarios; M2 is done only when all pass)

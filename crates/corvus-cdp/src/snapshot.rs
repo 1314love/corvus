@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use corvus_domain::SnapshotPolicy;
 use serde_json::{json, Value};
 
 use crate::CdpError;
@@ -117,7 +118,7 @@ impl Default for Options {
         Self {
             mode: Mode::Interactive,
             format: Format::Compact,
-            max_nodes: 300,
+            max_nodes: SnapshotPolicy::DEFAULT_MAX_NODES as usize,
             viewport_only: false,
             include_bbox: false,
         }

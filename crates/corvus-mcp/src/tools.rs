@@ -2,6 +2,7 @@
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use corvus_domain::BatchPolicy;
 use corvus_proto::{ErrorBody, ErrorCode};
 use serde_json::{json, Map, Value};
 
@@ -452,15 +453,7 @@ const SPECS: [Spec; 43] = [
 /// Whether browser_batch may call this tool. Daemon control, recording,
 /// diagnostic-log and help tools are deliberately excluded, as is recursion.
 pub fn batch_tool_allowed(name: &str) -> bool {
-    SPECS.iter().any(|spec| spec.name == name)
-        && matches!(
-            category(name),
-            "page" | "input" | "tabs" | "network" | "files" | "cdp" | "diagnostics"
-        )
-        && !matches!(
-            name,
-            "browser_batch" | "browser_channel" | "metrics" | "logs_tail"
-        )
+    SPECS.iter().any(|spec| spec.name == name) && BatchPolicy::allows(category(name), name)
 }
 
 /// Names of every tool, in catalogue order.
@@ -1621,7 +1614,7 @@ fn batch_schema() -> Value {
             "steps": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 20,
+                "maxItems": BatchPolicy::MAX_STEPS,
                 "description": "Browser tool calls to run in order.",
                 "items": {
                     "type": "object",
@@ -1663,11 +1656,14 @@ fn tool_help_schema() -> Value {
 
 fn validate_batch(object: &mut Map<String, Value>) -> Result<(), ErrorBody> {
     let steps = match object.get_mut("steps") {
-        Some(Value::Array(steps)) if !steps.is_empty() && steps.len() <= 20 => steps,
+        Some(Value::Array(steps)) if BatchPolicy::validate_count(steps.len()).is_ok() => steps,
         _ => {
             return Err(ErrorBody::new(
                 ErrorCode::BadArgs,
-                "browser_batch steps must be an array of 1 to 20 steps",
+                format!(
+                    "browser_batch steps must be an array of 1 to {} steps",
+                    BatchPolicy::MAX_STEPS
+                ),
             ))
         }
     };

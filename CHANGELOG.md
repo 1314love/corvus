@@ -6,6 +6,39 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
+## 1.4.0 - 2026-11-15
+
+Structural release. The MCP surface stays at 43 tools with the same compact envelope and `browser_batch`; the backend moves to ports and adapters, a REST `/api/v1` surface is added, recording moves to SeaORM migrations, and the extension is rebuilt from TypeScript and Vue 3 sources.
+
+### Added
+
+- `corvus-domain` for the pure domain model and `corvus-application` for use cases plus the `BrowserRegistry`, `BrowserSession`, `StepRecorder` and `ToolCatalog` ports; `corvusd` is the composition root.
+- `corvus-api`: Axum REST on `/api/v1` for health, browsers, sessions, tools and auth, plus OpenAPI at `/api-docs/openapi.json` and Swagger UI at `/docs`. REST shares the 43-tool catalogue and executor with MCP.
+- Optional local authentication: Argon2id passwords, HS256 JWTs, 900-second access tokens and rotating 30-day refresh tokens, with no default account. `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` is an explicit unsafe opt-out for a non-loopback bind without auth.
+- SeaORM and `sea-orm-migration` recording with `schema_version` 1, a baseline migration, a pre-migration `VACUUM INTO` backup for existing databases, one writer connection, WAL, a 5-second busy timeout, 30-day retention and 262144-byte payload truncation.
+- Extension rewrite: Vue 3, Pinia and Naive UI for the popup and options page; framework-free TypeScript for the service worker, content script and offscreen document; typed RPC; three Vite builds to `extension/build/extension`; ten MV3 permissions; 21 unit, contract and component tests plus an isolated Playwright suite.
+
+### Changed
+
+- `corvus-runtime` is removed. Routing now lives in `corvus-application` and `corvusd`; dependencies point inward to the domain.
+- The extension is built with `pnpm install && pnpm build` and loaded from `extension/build/extension`, not from the source tree.
+- Metadata and release assertions state 1.4.0. The MCP catalogue remains 43 tools in nine categories with the 1.3.0 schemas, compact single-text result and `browser_batch`.
+
+### Fixed
+
+- The recording store now has an explicit migration baseline instead of relying on ad-hoc table creation, and an existing 1.3.0 database opens without a data migration.
+- Stale 1.3.0 and unpacked-source extension instructions were replaced across the README, install and architecture documents.
+
+### Limitations
+
+- REST auth accounts and refresh tokens are held in memory in 1.4.0 and do not survive a restart; persistent auth storage is future work.
+- The bearer guard covers `/api/v1` only, with `/api/v1/health`, login and refresh exempt. `/mcp`, the extension WebSocket, legacy `/health`, `/metrics`, `/api-docs/openapi.json` and `/docs` remain unauthenticated even when local auth is on. Enabling REST auth does not make a non-loopback daemon remote-safe.
+- The checked-in Kubernetes Deployment overrides the image entrypoint and does not yet pass `--allow-no-auth` or local auth, so it fails the 1.4.0 startup guard as checked in. The image entrypoint does pass the opt-out, but the resulting container is explicitly unauthenticated and is not turnkey secure.
+- NFR-3 is not passed: the planned 72-hour soak remains incomplete after the earlier stop at about eight hours. 1.4.0 is not soak certified.
+- Firefox remains unsupported (NFR-6 deviation unchanged). Supported browsers are Edge, Chrome and Brave (Chromium 120+).
+- CDP is loopback-only and unauthenticated; the shipped Docker image and Kubernetes manifests contain no browser and cannot reach browser loopback on the host.
+- Forced `cdp` has no fallback, macOS has no packaged installer, Linux packaging is x86_64 only, and extension tab ids are still not bridged to CDP target ids.
+
 ## 1.3.0 - 2026-11-15
 
 Token-efficiency release. The MCP surface grows from 42 to 43 tools; the original 32 result shapes remain. Default snapshot and discovery output is leaner, and forced CDP now serves every browser-facing tool.
@@ -156,6 +189,39 @@ First public release.
 ---
 
 ## 中文
+
+## 1.4.0 - 2026-11-15
+
+结构版本。MCP 工具面保持 43 个工具、紧凑信封与 `browser_batch` 不变；后端改为端口与适配器结构，新增 REST `/api/v1` 面，录制迁移到 SeaORM，扩展改为由 TypeScript 与 Vue 3 源码构建。
+
+### 新增
+
+- `corvus-domain` 承载纯领域模型，`corvus-application` 承载用例与 `BrowserRegistry`、`BrowserSession`、`StepRecorder`、`ToolCatalog` 四个端口；`corvusd` 是装配根。
+- `corvus-api`：基于 Axum 的 REST `/api/v1`，覆盖健康、浏览器、会话、工具与认证，OpenAPI 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`。REST 与 MCP 共用同一套 43 工具目录与执行器。
+- 可选的本地认证：Argon2id 口令、HS256 JWT、900 秒访问令牌与轮换的 30 天刷新令牌，且没有默认账号。`--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` 是非回环绑定且不启用认证时的显式不安全豁免。
+- SeaORM 与 `sea-orm-migration` 录制：`schema_version` 为 1，提供基线迁移；既有数据库在迁移前执行 `VACUUM INTO` 备份；单写入连接、WAL、5 秒 busy timeout、30 天保留与 262144 字节载荷截断。
+- 扩展重写：弹窗与设置页使用 Vue 3、Pinia 与 Naive UI；Service Worker、内容脚本与 offscreen 文档使用无框架 TypeScript；类型化 RPC；三次 Vite 构建输出到 `extension/build/extension`；MV3 十项权限；21 个单元、契约与组件测试，外加隔离的 Playwright 套件。
+
+### 变更
+
+- 删除 `corvus-runtime`。路由职责移入 `corvus-application` 与 `corvusd`，依赖只指向内部领域层。
+- 扩展改用 `pnpm install && pnpm build` 构建，并从 `extension/build/extension` 加载，而不是源码目录。
+- 元数据与发布断言改为 1.4.0。MCP 目录仍为九个类别、43 个工具，沿用 1.3.0 的 schema、紧凑单文本结果与 `browser_batch`。
+
+### 修复
+
+- 录制库改为显式的迁移基线，不再依赖临时建表；既有 1.3.0 数据库无需数据迁移即可打开。
+- 替换 README、安装与架构文档中过时的 1.3.0 版本号与“未打包源码扩展”说明。
+
+### 限制
+
+- 1.4.0 的 REST 认证账号与刷新令牌保存在内存中，重启后不保留；持久化认证存储属于后续工作。
+- bearer 守卫只覆盖 `/api/v1`，其中 `/api/v1/health`、login 与 refresh 豁免。即使启用本地认证，`/mcp`、扩展 WebSocket、旧版 `/health`、`/metrics`、`/api-docs/openapi.json` 与 `/docs` 仍无认证。启用 REST 认证不会让非回环守护进程对远程安全。
+- 仓库内的 Kubernetes Deployment 覆盖了镜像入口，却没有传入 `--allow-no-auth` 或本地认证，因此按现状会在 1.4.0 启动守卫处失败。镜像入口确实传入了该豁免，但由此得到的容器明确无认证，不是开箱即用的安全配置。
+- NFR-3 未通过：计划中的 72 小时压测在约八小时停止后仍未完成，1.4.0 不能宣称通过压测。
+- Firefox 仍不支持（NFR-6 偏差不变）。支持浏览器为 Edge、Chrome 与 Brave（Chromium 120+）。
+- CDP 仅限回环且没有认证；发布 Docker 镜像与 Kubernetes 清单不含浏览器，也无法访问宿主机浏览器回环。
+- 强制 `cdp` 不回退，macOS 没有打包安装器，Linux 打包仅支持 x86_64，扩展标签 id 仍未与 CDP 目标 id 桥接。
 
 ## 1.3.0 - 2026-11-15
 

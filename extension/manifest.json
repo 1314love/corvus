@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Corvus",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Local bridge between the Corvus daemon and this browser.",
   "minimum_chrome_version": "116",
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "permissions": [
     "tabs",

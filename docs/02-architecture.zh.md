@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：1.3.0 是已发布版本，交付采用 CDP 与扩展混合传输的 43 工具 MCP 面，并加入精简快照、批量调用、单根目录打包、Linux 安装包、Docker 与 Kubernetes 部署。未提交的工作树新增 1.4.0 在研内容：domain、application、api 三个 crate 与 TypeScript/Vue 3 扩展重写；同一工作树已把守护进程接到新 crate，但改动尚未提交或发布。读者：工程实现者。
+状态：1.4.0 是当前交付面：端口与适配器后端、保持不变的 43 工具 MCP 面、带可选 JWT 认证的 REST `/api/v1` 面，以及 TypeScript 与 Vue 3 扩展。cargo 工作区与扩展均为 1.4.0；v1.4.0 验收报告记录了通过的发布矩阵。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
@@ -19,12 +19,14 @@
         |  MCP：stdio 或 streamable-http（JSON-RPC 2.0）
         v
     +--------------------------------------------------------------+
-    | corvusd                                                      |
-    |  mcp-server  -> 工具注册表 -> 通道路由器 -> 会话运行时           |
+    | corvusd（装配根）                                             |
+    |  mcp-server  -> application 用例 -> 通道路由器                  |
+    |  rest api    -> /api/v1、/docs、/api-docs/openapi.json         |
+    |  端口：BrowserRegistry、BrowserSession、StepRecorder、           |
+    |        ToolCatalog；适配器依赖指向内部                          |
     |  传输中枢（ws / native-messaging / long-poll）                  |
     |  CDP 客户端（可选）：浏览器级 WS、Target 会话                   |
-    |  录制器（sqlite + jsonl + trace）                              |
-    |  录制（sqlite）       指标（prometheus）   健康检查             |
+    |  录制适配器（SeaORM SQLite）   指标   健康检查                  |
     +--------------------------------------------------------------+
         |  分帧 JSON 信封，走 WS（主通道）
         v
@@ -40,20 +42,19 @@
 | crate | 职责 |
 |---|---|
 | corvus-proto | 线格式：信封、命令、响应、错误分类、版本协商 |
-| corvus-domain | 1.4.0 重构的领域模型与端口；不含 I/O、传输与存储 |
-| corvus-application | 用例，以及 MCP 与 REST 两个面共用的 32 个浏览器侧工具规格 |
+| corvus-domain | 1.4.0 架构的领域模型与端口；不含 I/O、传输与存储 |
+| corvus-application | 用例、`BrowserRegistry`、`BrowserSession`、`StepRecorder`、`ToolCatalog` 四个端口，以及 MCP 与 REST 共用的原有 32 条路由器规格 |
 | corvus-api | `/api/v1` REST 面，附 OpenAPI 描述、JWT 认证与 argon2 口令散列 |
 | corvus-mcp | MCP 服务端：工具注册表、JSON-RPC、stdio 与 streamable-http 传输 |
 | corvus-transport | WS 服务端、native-messaging 宿主、long-poll 兜底、浏览器注册表 |
-| corvus-runtime | 1.3.0 已发布的命令路由；工作树已把它并入 corvus-application 与 corvusd |
 | corvus-record | 会话录制、SQLite schema、步骤存储、回放支撑 |
 | corvus-cdp | 浏览器级 CDP 客户端、端点校验、事件环、原始与高层 CDP 工具 |
 | corvusd | 守护进程二进制：装配、服务生命周期、配置 |
 | corvus | CLI：doctor、serve、attach、replay、bench、打印配置 |
 
-domain、application、api 三个 crate 属于 1.4.0 重构。工作树中 `corvusd` 与 `corvus-mcp` 已依赖它们，`corvusd` 挂载 `corvus_api::router`；已发布的 1.3.0 二进制仍是旧装配。
+依赖规则指向内部：`corvus-domain` 不依赖 I/O 或适配器，`corvus-application` 依赖 domain 并定义端口，适配器实现这些端口，`corvusd` 是唯一的装配根。`corvus-runtime` 已不存在，其路由职责位于 `corvus-application` 与 `corvusd`。
 
-关键依赖：tokio、axum、serde、serde_json、rusqlite（bundled）、tracing、tracing-subscriber、tracing-appender、thiserror、clap、uuid。
+关键依赖：tokio、axum、serde、serde_json、sea-orm、sea-orm-migration、sqlx、tracing、tracing-subscriber、tracing-appender、thiserror、clap、uuid。
 
 ## 4. 线协议
 
@@ -252,13 +253,46 @@ v1.3.0 保持混合传输并降低默认上下文开销。`page_snapshot` 在两
 
 `browser_batch` 在守护进程本地一次执行最多 20 个 `{tool,args}` 步骤，默认在首个失败步骤停止（`stop_on_error: true`），并拒绝递归与守护进程控制类工具。工具发现默认精简：`tools/list` 简版为 43 个工具 20,452 字节，`detail: "full"` 为 37,067 字节，`tool_help` 返回单个完整描述。成功的 `tools/call` 只返回一个紧凑 JSON 文本块，不含 `structuredContent`，客户端解析 `content[0].text`。强制 CDP 覆盖全部 33 个浏览器类工具。
 
+### 5.8 端口适配器后端与 REST API（v1.4.0）
+
+v1.4.0 保持 MCP 面不变：43 个工具、九个类别、紧凑单文本信封与 `browser_batch` 均与 [09-tools.zh.md](09-tools.zh.md) 一致。本版本改变的是结构，并在同一应用层上增加 REST 面。
+
+**模块图。** `corvus-domain` 承载纯领域模型，包括录制与批量策略类型，不依赖传输、存储或文件系统。`corvus-application` 承载用例与 `BrowserRegistry`、`BrowserSession`、`StepRecorder`、`ToolCatalog` 四个端口，并保留原有 32 条路由器规格。适配器为 `corvus-cdp`（浏览器级 CDP）、`corvus-transport`（扩展 WebSocket、native messaging 与 long-poll）、`corvus-record`（SeaORM SQLite）、`corvus-mcp`（MCP 目录与 JSON-RPC）与 `corvus-api`（Axum REST）。`corvusd` 构造适配器并注入应用层。依赖指向内部；domain crate 不依赖任何适配器。
+
+**REST 路由。** 守护进程在 `/mcp` 所在的同一 HTTP 端口上提供：
+
+| 方法 | 路径 | 结果 |
+|---|---|---|
+| GET | `/api/v1/health` | 守护进程健康、版本与监听地址 |
+| GET | `/api/v1/browsers` | 已连接浏览器摘要 |
+| GET | `/api/v1/browsers/{id}` | 单个浏览器摘要 |
+| GET | `/api/v1/sessions` | 已录制会话 |
+| GET | `/api/v1/sessions/{id}` | 单个会话 |
+| GET | `/api/v1/sessions/{id}/steps` | 已录制步骤 |
+| GET | `/api/v1/tools` | 简版工具定义；`detail=full` 需显式指定 |
+| POST | `/api/v1/tools/call` | `{name, arguments?, browser_id?, session_id?}`；成功为 `{ok:true,data}` |
+| POST | `/api/v1/auth/login` | 令牌对 |
+| POST | `/api/v1/auth/refresh` | 轮换后的令牌对 |
+| POST | `/api/v1/auth/logout` | 撤销所提交的刷新令牌 |
+| GET | `/api/v1/auth/me` | 当前用户 |
+
+OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两者都挂在认证中间件之外。REST 与 MCP 共用 `ToolCatalog` 与 `ToolBackend`，工具名、schema、校验与执行路径不分叉。`browser_id` 在派发前合并进参数；`session_id` 可接受，但尚未用于标注录制。每个响应都带 `x-request-id`；路由器加入链路追踪、120 秒超时并返回 408、gzip 压缩，CORS 仅允许 `http://localhost`、`http://127.0.0.1` 与 `http://[::1]`。
+
+**认证。** 认证有两种模式。`off` 为默认值，仅允许绑定回环地址。`local` 启用 Argon2id 口令校验与 HS256 JWT；绑定非回环地址且认证为 `off` 时启动失败，除非运维显式传入 `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` 豁免；豁免会记录一条不安全配置警告。密钥短于 32 字节会被拒绝。系统不存在默认账号：认证为 `local` 时，启动时提供的用户名与口令会创建一个管理员账号。访问令牌有效期 900 秒；刷新令牌 30 天，以 Argon2id 散列保存并在使用时轮换。login、refresh 与 health 不经过认证守卫；启用认证后，其余 REST 路由（包括 `/auth/me` 与 `/tools/call`）都需要 bearer 令牌。JWT 的 issuer 为 `corvus`，audience 为 `corvus-api`。
+
+**认证不覆盖的范围。** 守卫只安装在 REST 路由器上。`/mcp`、扩展 WebSocket、旧版 `/health`、`/metrics`、`/api-docs/openapi.json` 与 `/docs` 都保持无认证行为。因此启用 REST 认证并不会让非回环 MCP 部署变安全；任何非回环监听都应在可信认证代理之后。1.4.0 的账号与刷新令牌保存在内存中：重启会使全部令牌失效，并重新创建启动账号。持久化账号存储属于后续工作。
+
+**持久化。** 录制适配器使用 SeaORM 与 SQLite，迁移由 `sea-orm-migration` 管理。`SCHEMA_VERSION` 仍为 1，基线迁移创建相同的 `sessions`、`steps` 表以及 `schema_meta`，因此既有 1.3.0 数据库无需数据迁移即可打开，也仍可被 1.3.0 二进制读取。对于没有迁移历史且非空的既有数据库，守护进程在迁移前执行 `VACUUM INTO <db>.backup-<millis>.db`；备份失败则中止启动。连接池只使用一条连接，启用 WAL、`synchronous=NORMAL`、外键与 5 秒 busy timeout。单个录制任务消费无界写入队列；读取与会话记账在专用录制线程上执行。启动时把此前活动的会话标记为 `abandoned`，删除超过 30 天的会话，并在 UTF-8 边界处把参数与结果截断到 262144 字节。
+
 ## 6. 扩展设计
 
-三个运行时上下文与两个小型界面，源码都在 `extension/src`：
+三个运行时上下文与两个小型界面，源码都在 `extension/src`，由三次 Vite 构建输出到 `extension/build/extension`：
 
 1. **Service Worker**：命令分发、tabs API、scripting、debugger 挂载/卸载、下载。
 2. **内容脚本**：DOM 快照、点击与输入合成、等待、变更观察。
 3. **offscreen 文档**：WebSocket 持有者（Service Worker 无法可靠持有长连接）、保活、重连循环。
+
+弹窗与设置页是使用 Pinia 与 Naive UI 的 Vue 3 应用；Service Worker、内容脚本与 offscreen 文档保持无框架 TypeScript。Pinia 会话 store 只是守护进程下发 UI 状态的只读投影，界面通过类型化 RPC 与 worker 通信。`pnpm build` 先清理输出，再执行三次构建，最后复制 manifest，并校验必需文件、版本、10 项权限、ESM Service Worker 与无 source map。
 
 弹窗只读：一个连接状态点加一行状态文字，没有任何控件。设置页是可选的，把守护进程 WebSocket URL（`ws://` 或 `wss://`，默认 `ws://127.0.0.1:7330`）保存在 `corvus.daemonUrl`，并把可选 CDP 端点保存在 `corvus.cdpEndpoint`；两者都不参与命令链路。只有端点探测成功时才声明 `cdp` 能力。debugger 作为基础能力声明，需要 CDP 的工具按需挂载；只有浏览器拒绝挂载时该 debugger 通道才不可用。
 
@@ -301,7 +335,7 @@ v1.3.0 保持混合传输并降低默认上下文开销。`page_snapshot` 在两
 
 解析顺序：`--db <path>` 优先；否则已配置的 `--home`/`CORVUS_HOME` 选择 `<root>/data/corvus.db`；两者都没有时仍读取 `CORVUS_DB_PATH`，最后才是平台默认数据库。相对根目录按进程工作目录转为绝对路径。`corvusd serve` 创建 `data/`、`logs/`、`config/`，不创建 `bin/` 或 `extension/`。文件日志默认写入 `<root>/logs/corvusd.log.YYYY-MM-DD`，按 UTC 每日轮转；`--log-file` 覆盖路径，`--no-log-file` 关闭文件输出。服务与容器布局见 [05-deployment.zh.md](05-deployment.zh.md)。
 
-录制库为 SQLite，WAL 模式，schema 版本 1 记录在 `schema_meta`。
+录制库为通过 SeaORM 访问的 SQLite，迁移由 `sea-orm-migration` 管理，`schema_meta` 中记录 `SCHEMA_VERSION` 为 1。基线迁移创建下表，并把旧版本标记保持为 1，因此 1.3.0 数据库无需数据迁移即可打开，1.3.0 二进制也仍能读取。对于没有迁移历史且非空的既有数据库，迁移前会写入 `VACUUM INTO <db>.backup-<millis>.db`；备份失败则中止启动。连接池只持有一条连接，启用 WAL、`synchronous=NORMAL`、外键与 5 秒 busy timeout；单个录制任务消费写入队列，参数与结果在 UTF-8 边界处截断到 262144 字节。
 
 | 表 | 列 |
 |---|---|
@@ -329,6 +363,11 @@ v1.3.0 保持混合传输并降低默认上下文开销。`page_snapshot` 在两
 | CDP 端点 | `--cdp-endpoint`、`CORVUS_CDP_ENDPOINT` | 无；使用扩展 descriptor |
 | 通道 | `--channel`、`CORVUS_CHANNEL` | `auto` |
 | 关闭 CDP | `--no-cdp` | 启用 CDP |
+| 认证模式 | `--auth`、`CORVUS_AUTH` | `off`；`local` 启用 JWT 认证 |
+| 认证密钥 | `--auth-secret`、`CORVUS_AUTH_SECRET` | 无；认证为 `local` 时至少 32 字节 |
+| 启动账号 | `--auth-username`、`CORVUS_AUTH_USERNAME` | 无；认证为 `local` 时必需 |
+| 启动口令 | `--auth-password`、`CORVUS_AUTH_PASSWORD` | 无；认证为 `local` 时必需 |
+| 非回环无认证 | `--allow-no-auth`、`CORVUS_ALLOW_NO_AUTH` | `false`；显式豁免并记录警告 |
 
 录制始终开启，保留期固定 30 天。`corvus config --client <name> --transport stdio|http [--home <dir>]` 在 stdout 输出可直接粘贴的 `mcpServers` JSON，位置提示写到 stderr；stdio 形式在给出 `--home` 时把它写入参数，HTTP 形式指向 `http://127.0.0.1:7331/mcp`。
 
@@ -339,12 +378,13 @@ v1.3.0 保持混合传输并降低默认上下文开销。`page_snapshot` 在两
 - cargo workspace，edition 2021，`Cargo.toml` 与 `rust-toolchain.toml` 固定 Rust 1.90 为 MSRV。
 - CI 矩阵：windows-latest、macos-latest、ubuntu-latest，各自运行 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace`。
 - 打包任务：`scripts/package-linux.sh` 构建 x86_64 tar.gz 并校验 systemd 单元；Docker 任务构建镜像、检查版本与 `/health`，并断言工具面为 43 个。
-- 扩展：TypeScript 与 Vue 3 源码位于 `extension/src`，由 Vite 打包（`pnpm build`）；manifest key 固定，保证扩展 id 跨机器稳定。
-- 发布：平台安装包附 `SHA256SUMS`；1.3.0 不提供 macOS 安装包。
+- 扩展：TypeScript 与 Vue 3 源码位于 `extension/src`，由三次 Vite 构建输出到 `extension/build/extension`（`pnpm install && pnpm build`）；Vitest 覆盖 21 个单元、契约与组件测试，Playwright 运行隔离端到端套件；manifest key 固定，保证扩展 id 跨机器稳定。
+- REST、OpenAPI 与认证：路由器与认证测试纳入 workspace 测试；`/api-docs/openapi.json` 与 `/docs` 由 API 测试覆盖。
+- 发布：平台安装包附 `SHA256SUMS`；1.4.0 不提供 macOS 安装包。
 
 ## 12. 安全姿态
 
-刻意为之：没有权限弹窗、没有白名单、没有逐动作确认，也没有任何认证或配对密钥。信任边界是操作系统用户账号：浏览器传输与 MCP HTTP 服务只监听回环地址，根目录文件权限保护录制库。任何能访问 7330 或 7331 端口的本机进程都能驱动已连接的浏览器，因此绝不要把这两个端口暴露到回环之外。可选 CDP 客户端具有同样的边界：浏览器级调试端点可以读取 cookie、注入脚本并控制该浏览器实例中的所有 profile，它没有认证，守护进程只接受回环 `ws://` 或 `wss://` 端点。也绝不要暴露 9222、9223 或 9333。
+刻意为之：没有权限弹窗、没有白名单、没有逐动作确认。MCP 服务、扩展 WebSocket 与 CDP 客户端没有认证或配对密钥。REST `/api/v1` 面增加可选的 `local` 认证模式，使用 Argon2id 口令与 HS256 JWT。绑定非回环地址时必须启用该模式，否则启动失败，除非运维显式传入 `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` 豁免；豁免会记录警告。该守卫只覆盖 REST，`/mcp`、扩展 WebSocket、`/health`、`/metrics`、`/api-docs/openapi.json` 与 `/docs` 仍不需要认证。因此 REST 认证并不会让非回环 MCP 部署变安全；任何非回环监听都应置于可信认证代理之后。信任边界仍是操作系统用户账号：浏览器传输与 MCP HTTP 服务默认只监听回环地址，根目录文件权限保护录制库。任何能访问 7330 或 7331 端口的本机进程都能驱动已连接的浏览器，因此绝不要把这两个端口暴露到回环之外。可选 CDP 客户端具有同样的边界：浏览器级调试端点可以读取 cookie、注入脚本并控制该浏览器实例中的所有 profile，它没有认证，守护进程只接受回环 `ws://` 或 `wss://` 端点。也绝不要暴露 9222、9223 或 9333。
 
 已考虑的威胁：
 

@@ -18,17 +18,27 @@ use serde_json::{json, Map, Value};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+use corvus_api::{AppState, AuthService};
+pub use corvus_api::{AuthConfig, AuthMode};
+use corvus_application::dto::BrowserSummary;
+use corvus_application::ports::{
+    BrowserDirectory, BrowserRegistry, RecordingRepository, ToolCatalog,
+};
+use corvus_application::{CommandRequest, Router, ToolBackend};
 use corvus_cdp::{is_cdp_tool, CdpClient, CdpError};
-use corvus_mcp::{BackendFuture, McpHttpServer, McpServer, Metrics, ToolBackend, ToolCall};
+use corvus_domain::{
+    classify_target_id, route_tool, BatchPolicy, ChannelMode as DomainChannelMode, Route,
+    TargetIdKind, ToolFamily, CDP_TAB_HINT, EXTENSION_TAB_HINT,
+};
+use corvus_mcp::{BackendFuture, McpHttpServer, McpServer, Metrics, ToolCall};
 use corvus_proto::{ids, ErrorBody, ErrorCode};
 use corvus_record::{
     now_millis, Recorder, SessionContext, SessionRow, StepRecord, StepRow, StepSink, Store,
 };
-use corvus_runtime::{CommandRequest, Router};
 
 use crate::channel::{ChannelMode, ChannelState};
 
-pub use corvus_runtime::RouterConfig;
+pub use corvus_application::RouterConfig;
 use corvus_transport::{Registry, WsServer};
 
 /// Default port of the WebSocket transport.
@@ -71,6 +81,27 @@ const CONTROL_TOOLS: [&str; 10] = [
     "browser_list",
 ];
 
+/// Authentication settings, including an optional bootstrap account.
+#[derive(Debug, Clone)]
+pub struct AuthSettings {
+    /// JWT and mode configuration.
+    pub config: AuthConfig,
+    /// Bootstrap username; required when auth is enabled.
+    pub username: Option<String>,
+    /// Bootstrap password; required when auth is enabled.
+    pub password: Option<String>,
+}
+
+impl Default for AuthSettings {
+    fn default() -> Self {
+        Self {
+            config: AuthConfig::disabled(),
+            username: None,
+            password: None,
+        }
+    }
+}
+
 /// Everything needed to start a daemon.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -93,6 +124,11 @@ pub struct DaemonConfig {
     pub cdp_endpoint: Option<String>,
     /// Disable CDP entirely and stay on the extension transport.
     pub no_cdp: bool,
+    /// Allow a non-loopback bind without authentication. This is unsafe and
+    /// logs a warning; only use it behind a trusted authenticating proxy.
+    pub allow_no_auth: bool,
+    /// Optional local authentication.
+    pub auth: AuthSettings,
 }
 
 impl Default for DaemonConfig {
@@ -107,6 +143,8 @@ impl Default for DaemonConfig {
             channel: ChannelMode::Auto,
             cdp_endpoint: None,
             no_cdp: false,
+            allow_no_auth: false,
+            auth: AuthSettings::default(),
         }
     }
 }
@@ -210,6 +248,115 @@ impl ToolBackend for RouterBackend {
     }
 }
 
+/// Browser directory adapter over the transport registry.
+struct RegistryDirectory {
+    registry: Arc<Registry>,
+}
+
+#[async_trait::async_trait]
+impl BrowserDirectory for RegistryDirectory {
+    async fn list(&self) -> Vec<BrowserSummary> {
+        self.registry
+            .list()
+            .into_iter()
+            .map(|info| BrowserSummary {
+                id: info.id,
+                profile: info.profile,
+                browser_family: info.browser_family,
+                version: info.version,
+                capabilities: info.capabilities,
+                cdp_available: info.cdp.as_ref().is_some_and(|cdp| cdp.available),
+            })
+            .collect()
+    }
+
+    async fn get(&self, id: &str) -> Option<BrowserSummary> {
+        self.registry.get(id).map(|connection| {
+            let info = connection.info();
+            BrowserSummary {
+                id: info.id.clone(),
+                profile: info.profile.clone(),
+                browser_family: info.browser_family.clone(),
+                version: info.version.clone(),
+                capabilities: info.capabilities.clone(),
+                cdp_available: info.cdp.as_ref().is_some_and(|cdp| cdp.available),
+            }
+        })
+    }
+}
+
+/// Tool catalogue adapter over the MCP schema module.
+struct McpCatalog;
+
+impl ToolCatalog for McpCatalog {
+    fn definitions_for(&self, category: Option<&str>, detail: &str) -> Vec<Value> {
+        corvus_mcp::tools::definitions_for(category, detail)
+    }
+
+    fn validate(&self, name: &str, arguments: &Value) -> Result<Value, corvus_proto::ErrorBody> {
+        corvus_mcp::tools::validate(name, arguments)
+    }
+}
+
+/// Recording adapter over the SQLite store.
+struct StoreRecordings {
+    store: Arc<Store>,
+}
+
+#[async_trait::async_trait]
+impl RecordingRepository for StoreRecordings {
+    async fn list_sessions(
+        &self,
+        limit: u32,
+        since_ms: Option<i64>,
+    ) -> Result<Vec<SessionRow>, String> {
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || {
+            store
+                .list_sessions(limit, since_ms)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    async fn get_session(&self, id: &str) -> Result<Option<SessionRow>, String> {
+        let store = Arc::clone(&self.store);
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            store.get_session(&id).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    async fn get_steps(
+        &self,
+        session_id: &str,
+        from_seq: i64,
+        limit: u32,
+    ) -> Result<Vec<StepRow>, String> {
+        let store = Arc::clone(&self.store);
+        let session_id = session_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            store
+                .get_session_steps(&session_id, from_seq, limit)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    async fn record_step(&self, step: StepRecord) -> Result<(), String> {
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || {
+            store.record_step(step).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+}
+
 fn metrics_tool(
     metrics: &Arc<Metrics>,
     registry: &Arc<Registry>,
@@ -252,23 +399,18 @@ fn metrics_tool(
 /// capability boundary.
 const EXTENSION_ONLY_TOOLS: [&str; 0] = [];
 
-const EXTENSION_TAB_HINT: &str =
-    "omit tab_id to use the active tab; CDP target ids are not extension tab ids";
-const CDP_TAB_HINT: &str =
-    "omit tab_id to use the active tab; extension tab ids are not CDP target ids";
-
 /// CDP target identifiers are 32 hexadecimal characters.
 fn looks_like_cdp_target(value: &Value) -> bool {
     value
         .as_str()
-        .is_some_and(|text| text.len() == 32 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .is_some_and(|text| classify_target_id(text) == TargetIdKind::CdpTarget)
 }
 
 /// Extension tab identifiers are numbers (or numeric strings).
 fn looks_like_extension_tab(value: &Value) -> bool {
     match value {
         Value::Number(number) => number.as_u64().is_some(),
-        Value::String(text) => !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()),
+        Value::String(text) => classify_target_id(text) == TargetIdKind::ExtensionTab,
         _ => false,
     }
 }
@@ -292,40 +434,24 @@ const CDP_ONLY_TOOLS: [&str; 8] = [
     "browser_emulate",
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ToolRoute {
-    Cdp,
-    Extension,
-    Rejected,
-}
-
 /// Channel that would actually run a browser-facing tool. Daemon-local tools
 /// are not browser-facing, so they never receive tab-id namespace hints.
-fn browser_route(name: &str, mode: ChannelMode, cdp_connected: bool) -> ToolRoute {
-    if CDP_ONLY_TOOLS.contains(&name) {
-        if mode == ChannelMode::Extension {
-            return ToolRoute::Rejected;
-        }
-        if cdp_connected || mode == ChannelMode::Cdp {
-            return ToolRoute::Cdp;
-        }
-        return ToolRoute::Rejected;
-    }
-    if EXTENSION_ONLY_TOOLS.contains(&name) {
-        if mode == ChannelMode::Cdp {
-            return ToolRoute::Rejected;
-        }
-        return ToolRoute::Extension;
-    }
-    if is_cdp_tool(name) {
-        return match mode {
-            ChannelMode::Extension => ToolRoute::Extension,
-            ChannelMode::Cdp => ToolRoute::Cdp,
-            ChannelMode::Auto if cdp_connected => ToolRoute::Cdp,
-            ChannelMode::Auto => ToolRoute::Extension,
-        };
-    }
-    ToolRoute::Rejected
+fn browser_route(name: &str, mode: ChannelMode, cdp_connected: bool) -> Route {
+    let family = if CDP_ONLY_TOOLS.contains(&name) {
+        ToolFamily::CdpOnly
+    } else if EXTENSION_ONLY_TOOLS.contains(&name) {
+        ToolFamily::ExtensionOnly
+    } else if is_cdp_tool(name) {
+        ToolFamily::Shared
+    } else {
+        ToolFamily::Local
+    };
+    let mode = match mode {
+        ChannelMode::Auto => DomainChannelMode::Auto,
+        ChannelMode::Cdp => DomainChannelMode::Cdp,
+        ChannelMode::Extension => DomainChannelMode::Extension,
+    };
+    route_tool(mode, family, cdp_connected)
 }
 
 async fn run_batch(
@@ -342,6 +468,9 @@ async fn run_batch(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    if let Err(error) = BatchPolicy::validate_count(steps.len()) {
+        return Err(ErrorBody::new(ErrorCode::BadArgs, error.to_string()));
+    }
     let stop_on_error = arguments
         .get("stop_on_error")
         .and_then(Value::as_bool)
@@ -411,21 +540,21 @@ async fn dispatch_tool(
     // Namespace validation belongs to the selected browser-facing route, so it
     // must run before any tool-family early return (including CDP-only tools).
     match browser_route(name, mode, cdp.is_connected()) {
-        ToolRoute::Cdp => {
+        Route::Cdp => {
             if let Some(tab_id) = arguments.get("tab_id") {
                 if looks_like_extension_tab(tab_id) {
                     return (Err(tab_namespace_error(tab_id, CDP_TAB_HINT)), false);
                 }
             }
         }
-        ToolRoute::Extension => {
+        Route::Extension => {
             if let Some(tab_id) = arguments.get("tab_id") {
                 if looks_like_cdp_target(tab_id) {
                     return (Err(tab_namespace_error(tab_id, EXTENSION_TAB_HINT)), false);
                 }
             }
         }
-        ToolRoute::Rejected => {}
+        Route::Rejected => {}
     }
     if CDP_ONLY_TOOLS.contains(&name) {
         if mode == ChannelMode::Extension {
@@ -1010,11 +1139,40 @@ pub struct Daemon {
     tasks: Vec<JoinHandle<()>>,
 }
 
+fn bind_auth_guard(bind: IpAddr, auth_enabled: bool, allow_no_auth: bool) -> std::io::Result<bool> {
+    if bind.is_loopback() || auth_enabled {
+        return Ok(false);
+    }
+    if allow_no_auth {
+        return Ok(true);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "authentication must be enabled when binding to a non-loopback address; pass --allow-no-auth to opt out",
+    ))
+}
+
 impl Daemon {
     /// Bind the listeners, open the recording store, start the background
     /// tasks and log the addresses.
     pub async fn start(config: DaemonConfig) -> std::io::Result<Self> {
         logs::ensure_installed();
+        if bind_auth_guard(
+            config.bind,
+            config.auth.config.enabled(),
+            config.allow_no_auth,
+        )? {
+            tracing::warn!(
+                bind = %config.bind,
+                "authentication disabled on public bind"
+            );
+        }
+        if config.auth.config.enabled() && !config.auth.config.secret_is_strong() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "CORVUS_AUTH_SECRET must be at least 32 bytes",
+            ));
+        }
         let metrics = Arc::new(Metrics::new());
         let (layout, db_path) = home::resolve_database(config.db_path.clone(), config.home.clone())
             .map_err(|error| std::io::Error::other(format!("corvus home: {error}")))?;
@@ -1042,7 +1200,7 @@ impl Daemon {
             !config.no_cdp,
         ));
         let (inbound_sender, inbound_receiver) = mpsc::channel(256);
-        let router = Router::new(Arc::clone(&registry), config.router);
+        let router = Router::new(registry.clone() as Arc<dyn BrowserRegistry>, config.router);
         let _ = router.attach_step_sink(recorder.sink());
         let router_task = router.spawn(inbound_receiver);
 
@@ -1071,7 +1229,7 @@ impl Daemon {
         let health_channel = Arc::clone(&channel);
         let health_http_addr = Arc::clone(&http_addr_slot);
         let health_db_path = db_path.display().to_string();
-        let health = Arc::new(move || {
+        let health: Arc<dyn Fn() -> Value + Send + Sync> = Arc::new(move || {
             let mut document = json!({
                 "status": "ok",
                 "ws_addr": ws_addr.to_string(),
@@ -1094,16 +1252,65 @@ impl Daemon {
             });
             document
         });
+        let auth = if config.auth.config.enabled() {
+            let username = config.auth.username.clone().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "CORVUS_AUTH_USERNAME is required when authentication is enabled",
+                )
+            })?;
+            let password = config.auth.password.clone().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "CORVUS_AUTH_PASSWORD is required when authentication is enabled",
+                )
+            })?;
+            if username.trim().is_empty() || password.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "authentication bootstrap credentials must not be empty",
+                ));
+            }
+            let accounts = Arc::new(corvus_api::auth::MemoryAuthRepository::new());
+            accounts
+                .add_user(&username, &password, "admin")
+                .await
+                .map_err(|error| {
+                    std::io::Error::other(format!("auth bootstrap failed: {error}"))
+                })?;
+            Some(Arc::new(AuthService::new(
+                config.auth.config.clone(),
+                accounts,
+            )))
+        } else {
+            None
+        };
         let mcp = Arc::new(
-            McpServer::new(backend)
-                .with_store(Arc::clone(&store))
+            McpServer::new(Arc::clone(&backend))
+                .with_store(
+                    Arc::clone(&store) as Arc<dyn corvus_application::ports::SessionRecording>
+                )
                 .with_metrics(Arc::clone(&metrics))
-                .with_health(health),
+                .with_health(Arc::clone(&health)),
+        );
+        let api_state = AppState::new(
+            Arc::new(RegistryDirectory {
+                registry: Arc::clone(&registry),
+            }),
+            Arc::new(StoreRecordings {
+                store: Arc::clone(&store),
+            }),
+            Arc::clone(&backend),
+            Arc::new(McpCatalog),
+            Arc::clone(&health),
+            auth,
+            env!("CARGO_PKG_VERSION").to_string(),
         );
 
-        let http = McpHttpServer::bind(
+        let http = McpHttpServer::bind_with(
             SocketAddr::new(config.bind, config.http_port),
             Arc::clone(&mcp),
+            corvus_api::router(api_state),
         )
         .await?;
         let http_addr = http.local_addr();
@@ -1278,6 +1485,30 @@ mod channel_routing_tests {
     use super::*;
 
     #[test]
+    fn non_loopback_bind_without_auth_or_opt_out_is_refused() {
+        let error = bind_auth_guard(std::net::IpAddr::from([0, 0, 0, 0]), false, false)
+            .expect_err("a non-loopback bind must require auth");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("--allow-no-auth"));
+    }
+
+    #[test]
+    fn allow_no_auth_opts_out_and_loopback_or_auth_never_warns() {
+        assert!(
+            bind_auth_guard(std::net::IpAddr::from([0, 0, 0, 0]), false, true)
+                .expect("explicit opt-out is allowed")
+        );
+        assert!(
+            !bind_auth_guard(std::net::IpAddr::from([127, 0, 0, 1]), false, false)
+                .expect("loopback")
+        );
+        assert!(
+            !bind_auth_guard(std::net::IpAddr::from([0, 0, 0, 0]), true, false)
+                .expect("auth enabled")
+        );
+    }
+
+    #[test]
     fn auto_mode_falls_back_only_for_unsupported_cdp_tools() {
         let unsupported = CdpError::Unsupported("not on cdp".into());
         assert!(fall_back_to_extension(ChannelMode::Auto, &unsupported));
@@ -1317,7 +1548,10 @@ mod channel_routing_tests {
             Arc::clone(&registry),
             true,
         ));
-        let router = Router::new(Arc::clone(&registry), RouterConfig::default());
+        let router = Router::new(
+            registry.clone() as Arc<dyn BrowserRegistry>,
+            RouterConfig::default(),
+        );
         let (result, recorded) =
             dispatch_tool(&cdp, &channel, &router, "page_snapshot", &json!({}), None).await;
         let error = result.expect_err("forced cdp needs a connected endpoint for DOM tools");
@@ -1339,7 +1573,10 @@ mod channel_routing_tests {
             Arc::clone(&registry),
             true,
         ));
-        let router = Router::new(Arc::clone(&registry), RouterConfig::default());
+        let router = Router::new(
+            registry.clone() as Arc<dyn BrowserRegistry>,
+            RouterConfig::default(),
+        );
         let (result, recorded) = run_batch(
             &cdp,
             &channel,
@@ -1402,7 +1639,10 @@ mod channel_routing_tests {
             Arc::clone(&registry),
             true,
         ));
-        let router = Router::new(Arc::clone(&registry), RouterConfig::default());
+        let router = Router::new(
+            registry.clone() as Arc<dyn BrowserRegistry>,
+            RouterConfig::default(),
+        );
         let error = run_batch(
             &cdp,
             &channel,

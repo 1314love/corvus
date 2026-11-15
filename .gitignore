@@ -5,6 +5,10 @@ node_modules/
 *.db-shm
 blobs/
 dist/
+extension/build/
+extension/coverage/
+extension/test-results/
+extension/playwright-report/
 .env
 .DS_Store
 *.zip

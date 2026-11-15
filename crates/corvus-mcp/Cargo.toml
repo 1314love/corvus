@@ -7,8 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+corvus-application.workspace = true
+corvus-domain.workspace = true
 corvus-proto.workspace = true
-corvus-record.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 axum.workspace = true

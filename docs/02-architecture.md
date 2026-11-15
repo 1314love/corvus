@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-Status: 1.3.0 is the released surface: 43 MCP tools over hybrid CDP and extension transport, compact snapshots, batched calls, single-root packaging, Linux packages, Docker and Kubernetes deployment. The uncommitted working tree adds in-progress 1.4.0 work: the domain, application and api crates plus a TypeScript and Vue 3 extension rewrite; the same tree already wires the daemon to the new crates, but nothing is committed or released. Audience: engineers.
+Status: 1.4.0 is the current surface: a ports-and-adapters backend, the unchanged 43-tool MCP surface, a REST `/api/v1` surface with optional JWT authentication, and the TypeScript and Vue 3 extension. The workspace and extension are versioned 1.4.0, and the v1.4.0 acceptance report records a passing release matrix. Audience: engineers.
 
 ## 1. Constraints that shape the design
 
@@ -19,12 +19,14 @@ Status: 1.3.0 is the released surface: 43 MCP tools over hybrid CDP and extensio
         |  MCP over stdio or streamable-http (JSON-RPC 2.0)
         v
     +--------------------------------------------------------------+
-    | corvusd                                                      |
-    |  mcp-server  -> tool registry -> channel router -> runtime    |
+    | corvusd (composition root)                                   |
+    |  mcp-server  -> application use cases -> channel router       |
+    |  rest api    -> /api/v1, /docs, /api-docs/openapi.json        |
+    |  ports: BrowserRegistry, BrowserSession, StepRecorder,         |
+    |         ToolCatalog; adapters point inward                    |
     |  transport hub (ws / native-messaging / long-poll)            |
     |  cdp client (optional): browser-level WS, Target sessions     |
-    |  recorder (sqlite + jsonl + trace)                            |
-    |  recording (sqlite)    metrics (prometheus)   health          |
+    |  recording adapter (SeaORM SQLite)   metrics   health         |
     +--------------------------------------------------------------+
         |  framed JSON envelope over WS (primary)
         v
@@ -40,20 +42,19 @@ Processes: one corvusd per user session (a service on Windows and Linux; foregro
 | crate | role |
 |---|---|
 | corvus-proto | wire types: envelope, command, response, error taxonomy, versioning |
-| corvus-domain | domain model and ports for the 1.4.0 refactor; no I/O, no transport, no storage |
-| corvus-application | use cases plus the 32 browser-side tool specifications shared by the MCP and REST surfaces |
+| corvus-domain | domain model and ports for the 1.4.0 architecture; no I/O, no transport, no storage |
+| corvus-application | use cases, the ports `BrowserRegistry`, `BrowserSession`, `StepRecorder` and `ToolCatalog`, and the 32 original router specifications shared by MCP and REST |
 | corvus-api | REST surface on `/api/v1` with an OpenAPI schema, JWT authentication and argon2 password hashing |
 | corvus-mcp | MCP server: tool registry, JSON-RPC, stdio + streamable-http transports |
 | corvus-transport | WS server, native-messaging host, long-poll fallback, browser registry |
-| corvus-runtime | released 1.3.0 command router; the working tree folds it into corvus-application and corvusd |
 | corvus-record | session recorder, sqlite schema, step store, replay support |
 | corvus-cdp | browser-level CDP client, endpoint validation, event ring, raw and high-level CDP tools |
 | corvusd | daemon binary: wires everything, service lifecycle, config |
 | corvus | CLI: doctor, serve, attach, replay, bench, config print |
 
-The domain, application and api crates belong to the 1.4.0 refactor. In the working tree `corvusd` and `corvus-mcp` depend on them and `corvusd` mounts `corvus_api::router`; released 1.3.0 binaries still use the old wiring.
+The dependency rule points inward: `corvus-domain` has no I/O or adapter dependency, `corvus-application` depends on the domain and defines the ports, adapters implement those ports, and `corvusd` is the only composition root. `corvus-runtime` no longer exists; its routing responsibilities live in `corvus-application` and `corvusd`.
 
-Key crates: tokio, axum, serde, serde_json, rusqlite (bundled), tracing, tracing-subscriber, tracing-appender, thiserror, clap, uuid.
+Key crates: tokio, axum, serde, serde_json, sea-orm, sea-orm-migration, sqlx, tracing, tracing-subscriber, tracing-appender, thiserror, clap, uuid.
 
 ## 4. Wire protocol
 
@@ -252,13 +253,46 @@ v1.3.0 keeps the hybrid transport and reduces default context cost. `page_snapsh
 
 `browser_batch` runs up to 20 `{tool,args}` steps in one daemon-local call, stops on the first failed step by default (`stop_on_error: true`), and rejects recursion and daemon-control tools. Discovery is lean by default: brief `tools/list` is 20,452 bytes for 43 tools, `detail: "full"` is 37,067 bytes, and `tool_help` returns one full descriptor. A successful `tools/call` returns exactly one compact JSON text block and no `structuredContent`, so clients parse `content[0].text`. Forced CDP serves all 33 browser-facing tools.
 
+### 5.8 Ports-and-adapters backend and REST API (v1.4.0)
+
+v1.4.0 keeps the MCP surface unchanged: 43 tools, nine categories, the compact single-text envelope and `browser_batch` remain exactly as documented in [09-tools.md](09-tools.md). The change is structural plus a second, REST surface over the same application layer.
+
+**Module map.** `corvus-domain` holds the pure domain model, including recording and batch policy types, with no transport, storage or filesystem dependency. `corvus-application` holds use cases and the ports `BrowserRegistry`, `BrowserSession`, `StepRecorder` and `ToolCatalog`; it also keeps the 32 original router specifications. The adapters are `corvus-cdp` (browser-level CDP), `corvus-transport` (extension WebSocket, native messaging and long-poll), `corvus-record` (SeaORM SQLite), `corvus-mcp` (MCP catalogue and JSON-RPC) and `corvus-api` (Axum REST). `corvusd` constructs the adapters and injects them into the application. Dependencies point inward; the domain crate does not depend on any adapter.
+
+**REST routes.** The daemon serves the following routes on the same HTTP port as `/mcp`:
+
+| Method | Path | Result |
+|---|---|---|
+| GET | `/api/v1/health` | daemon health, version and bound addresses |
+| GET | `/api/v1/browsers` | connected browser summaries |
+| GET | `/api/v1/browsers/{id}` | one browser summary |
+| GET | `/api/v1/sessions` | recorded sessions |
+| GET | `/api/v1/sessions/{id}` | one session |
+| GET | `/api/v1/sessions/{id}/steps` | recorded steps |
+| GET | `/api/v1/tools` | brief tool definitions; `detail=full` is opt-in |
+| POST | `/api/v1/tools/call` | `{name, arguments?, browser_id?, session_id?}`; success is `{ok:true,data}` |
+| POST | `/api/v1/auth/login` | token pair |
+| POST | `/api/v1/auth/refresh` | rotated token pair |
+| POST | `/api/v1/auth/logout` | revokes the presented refresh token |
+| GET | `/api/v1/auth/me` | current user |
+
+OpenAPI JSON is served at `/api-docs/openapi.json` and Swagger UI at `/docs`. Both are mounted outside the auth middleware. REST uses the same `ToolCatalog` and `ToolBackend` as MCP, so the tool names, schemas, validation and execution path do not fork. `browser_id` is merged into the arguments before dispatch; `session_id` is accepted but is not yet used to annotate the recording. Every response carries `x-request-id`; the router adds tracing, a 120-second timeout that returns 408, gzip compression and CORS restricted to `http://localhost`, `http://127.0.0.1` and `http://[::1]`.
+
+**Authentication.** Auth has two modes. `off` is the default and is allowed only on a loopback bind. `local` enables Argon2id password verification and HS256 JWTs; binding a non-loopback address with auth `off` fails startup unless the operator passes the explicit `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` opt-out, which logs an unsafe-configuration warning. A secret shorter than 32 bytes is rejected. There is no default account: when auth is `local`, the supplied username and password bootstrap one admin account at startup. Access tokens last 900 seconds; refresh tokens last 30 days, are stored as Argon2id hashes and rotate on use. Login, refresh and health are exempt from the guard; every other REST route, including `/auth/me` and `/tools/call`, requires a bearer token when auth is enabled. The JWT issuer is `corvus` and the audience is `corvus-api`.
+
+**What authentication does not cover.** The guard is installed on the REST router only. `/mcp`, the extension WebSocket, the legacy `/health`, `/metrics`, `/api-docs/openapi.json` and `/docs` keep their no-authentication behavior. Enabling REST auth therefore does not make a non-loopback MCP deployment safe; put a trusted authenticating proxy in front of any non-loopback listener. Accounts and refresh tokens live in memory in 1.4.0: a restart invalidates every token and recreates the bootstrap account. Persistent account storage is future work.
+
+**Persistence.** The recording adapter uses SeaORM over SQLite and `sea-orm-migration`. `SCHEMA_VERSION` remains 1, and the baseline migration creates the same `sessions` and `steps` tables plus `schema_meta`, so an existing 1.3.0 database opens without a data migration and remains readable by a 1.3.0 binary. For an existing non-empty database that has no migration history, the daemon runs `VACUUM INTO <db>.backup-<millis>.db` before the migration; failure aborts startup. The pool uses one connection, WAL, `synchronous=NORMAL`, foreign keys and a 5-second busy timeout. A single recorder task drains an unbounded write queue; reads and session bookkeeping run on a dedicated record thread. Startup marks previously active sessions `abandoned`, prunes sessions older than 30 days, and truncates stored arguments and results at 262144 bytes on a UTF-8 boundary.
+
 ## 6. Extension design
 
-Three runtime contexts and two small UI surfaces, all built from `extension/src`:
+Three runtime contexts and two small UI surfaces, all built from `extension/src` by three Vite passes into `extension/build/extension`:
 
 1. **service worker**: command dispatch, tabs API, scripting, debugger attach/detach, downloads.
 2. **content script**: DOM snapshot, click/type synthesis, waits, mutation observers.
 3. **offscreen document**: WebSocket owner (SW cannot hold a socket reliably), keepalive, reconnect loop.
+
+The popup and options page are Vue 3 applications with Pinia and Naive UI; the service worker, content script and offscreen document stay framework-free TypeScript. A Pinia session store is a read-only projection of the daemon-pushed UI state, and the UI talks to the worker through typed RPC. `pnpm build` cleans the output, runs the three passes, copies the manifest last and validates the required files, version, 10 permissions, module service worker and absence of source maps.
 
 The popup is status-only: one connection dot and one status line, with no controls. The options page is optional and stores the daemon WebSocket URL (`ws://` or `wss://`, default `ws://127.0.0.1:7330`) under `corvus.daemonUrl`, plus the optional CDP endpoint under `corvus.cdpEndpoint`; neither setting is part of the command path. The `cdp` capability is advertised only when endpoint detection succeeded. The debugger capability is advertised as a base capability and attached on demand when a CDP-backed tool needs it; a refused attach is the only reason the debugger channel becomes unavailable.
 
@@ -301,7 +335,7 @@ The daemon keeps every backend file under one root selected by `--home <dir>` or
 
 Resolution order: `--db <path>` wins; otherwise a configured `--home`/`CORVUS_HOME` selects `<root>/data/corvus.db`; without either, `CORVUS_DB_PATH` is still honoured, then the platform default database. Relative roots become absolute against the process working directory. `corvusd serve` creates `data/`, `logs/` and `config/`, but not `bin/` or `extension/`. File logging is on by default at `<root>/logs/corvusd.log.YYYY-MM-DD` with UTC daily rotation; `--log-file` overrides the path and `--no-log-file` disables file output. See [05-deployment.md](05-deployment.md) for service and container layouts.
 
-The recording store is SQLite with WAL, schema version 1 in `schema_meta`.
+The recording store is SQLite accessed through SeaORM, with migrations managed by `sea-orm-migration`. `SCHEMA_VERSION` is 1 in `schema_meta`. The baseline migration creates the tables below and leaves the legacy version marker at 1, so a 1.3.0 database opens without a data migration and a 1.3.0 binary can still read it. Before migrating an existing non-empty database that has no migration history, the daemon writes `VACUUM INTO <db>.backup-<millis>.db`; a failed backup aborts startup. The pool holds one connection with WAL, `synchronous=NORMAL`, foreign keys and a 5-second busy timeout, a single recorder task drains the write queue, and stored arguments and results are truncated at 262144 bytes on a UTF-8 boundary.
 
 | table | columns |
 |---|---|
@@ -329,6 +363,11 @@ No `config.toml` is loaded in this release. Settings come from flags and environ
 | CDP endpoint | `--cdp-endpoint`, `CORVUS_CDP_ENDPOINT` | none; extension descriptor |
 | Channel | `--channel`, `CORVUS_CHANNEL` | `auto` |
 | CDP disable | `--no-cdp` | CDP enabled |
+| Auth mode | `--auth`, `CORVUS_AUTH` | `off`; `local` for JWT auth |
+| Auth secret | `--auth-secret`, `CORVUS_AUTH_SECRET` | none; at least 32 bytes when auth is `local` |
+| Bootstrap username | `--auth-username`, `CORVUS_AUTH_USERNAME` | none; required when auth is `local` |
+| Bootstrap password | `--auth-password`, `CORVUS_AUTH_PASSWORD` | none; required when auth is `local` |
+| Non-loopback without auth | `--allow-no-auth`, `CORVUS_ALLOW_NO_AUTH` | `false`; explicit opt-out, logs a warning |
 
 Recording is always on and keeps the fixed 30-day retention. `corvus config --client <name> --transport stdio|http [--home <dir>]` prints a ready `mcpServers` JSON object on stdout, with a location hint on stderr; the stdio form pins `--home` when supplied, and the HTTP form points at `http://127.0.0.1:7331/mcp`.
 
@@ -339,12 +378,13 @@ Per-tool timeout overrides: `browser_wait` gets `args.timeout_ms + 5000` ms capp
 - cargo workspace, edition 2021, Rust 1.90 as MSRV in `Cargo.toml` and `rust-toolchain.toml`.
 - CI matrix: windows-latest, macos-latest and ubuntu-latest; each runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
 - Packaging jobs: `scripts/package-linux.sh` builds the x86_64 tar.gz and verifies the systemd unit; a Docker job builds the image, checks the reported version and `/health`, and asserts the 43-tool list.
-- Extension: TypeScript and Vue 3 sources under `extension/src`, bundled by Vite (`pnpm build`); manifest key pinned so the extension id is stable across machines.
-- Release: platform packages with `SHA256SUMS`; macOS has no packaged installer in 1.3.0.
+- Extension: TypeScript and Vue 3 sources under `extension/src`, bundled by three Vite passes into `extension/build/extension` (`pnpm install && pnpm build`); Vitest covers 21 unit, contract and component tests, and Playwright runs an isolated end-to-end suite; manifest key pinned so the extension id is stable across machines.
+- REST, OpenAPI and auth: router and auth tests run in the workspace suite; `/api-docs/openapi.json` and `/docs` are covered by the API tests.
+- Release: platform packages with `SHA256SUMS`; macOS has no packaged installer in 1.4.0.
 
 ## 12. Security posture
 
-Deliberate: no permission prompts, no allow-list, no per-action confirmation, and no authentication or pairing secret. The trust boundary is the OS user account: browser transports and the MCP HTTP server bind to loopback, and home-root file permissions protect the recording database. Any local process that can reach ports 7330 or 7331 can drive the connected browser, so never expose those ports beyond loopback. The optional CDP client has the same boundary: a browser-level debugging endpoint can read cookies, inject script and control every profile in that browser instance, it has no authentication, and the daemon accepts only loopback `ws://` or `wss://` endpoints. Never expose 9222, 9223 or 9333 either.
+Deliberate: no permission prompts, no allow-list and no per-action confirmation. The MCP server, the extension WebSocket and the CDP client have no authentication or pairing secret. The REST `/api/v1` surface adds an optional `local` auth mode with Argon2id passwords and HS256 JWTs. A non-loopback bind fails startup unless that mode is enabled or the operator explicitly opts out with `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH`, which logs a warning. The guard covers REST only, so `/mcp`, the extension WebSocket, `/health`, `/metrics`, `/api-docs/openapi.json` and `/docs` remain unauthenticated. REST auth therefore does not make a non-loopback MCP deployment safe; use a trusted authenticating proxy in front of any non-loopback listener. The trust boundary remains the OS user account: browser transports and the MCP HTTP server bind to loopback by default, and home-root file permissions protect the recording database. Any local process that can reach ports 7330 or 7331 can drive the connected browser, so never expose those ports beyond loopback. The optional CDP client has the same boundary: a browser-level debugging endpoint can read cookies, inject script and control every profile in that browser instance, it has no authentication, and the daemon accepts only loopback `ws://` or `wss://` endpoints. Never expose 9222, 9223 or 9333 either.
 
 Threats considered:
 

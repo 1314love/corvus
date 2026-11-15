@@ -13,7 +13,7 @@ Corvus is one local daemon (`corvusd`), one CLI (`corvus`) and one browser exten
 | Linux package | `/opt/corvus` | `install-linux.sh` writes `/etc/systemd/system/corvus.service` |
 | Linux foreground | `$XDG_DATA_HOME/corvus` or `~/.local/share/corvus` | `corvusd serve` |
 | Docker / Kubernetes | `/data` | container entrypoint or Kubernetes manifest |
-| macOS from source | `~/Library/Application Support/Corvus` | `corvusd serve`; no packaged installer in 1.3.0 |
+| macOS from source | `~/Library/Application Support/Corvus` | `corvusd serve`; no packaged installer in 1.4.0 |
 
 One root contains every backend file:
 
@@ -104,16 +104,16 @@ A 1.0.0 install kept its files in `%USERPROFILE%\.corvus`. The installer moves t
 3. Choose Load unpacked and select `<HomeDir>\extension`.
 4. Open the extension popup. A green dot means the daemon connection is up; the card shows the browser id, extension version and capabilities.
 
-The extension has no pairing step. Its optional options page sets the daemon WebSocket URL; see [Extension options page](#extension-options-page).
+The extension has no pairing step. Its optional options page sets the daemon WebSocket URL and an optional CDP endpoint; see [Extension options page](#extension-options-page). Release packages contain a prebuilt `extension/` directory. In a source checkout, build it with `pnpm --dir extension install && pnpm --dir extension build` and load `extension/build/extension`; the build runs three Vite passes and validates the MV3 manifest.
 
 ## Install on Linux
 
 Download or copy the tarball, extract it into a directory, then verify and install:
 
 ```bash
-mkdir -p corvus-1.3.0-linux-x86_64
-tar -xzf corvus-1.3.0-linux-x86_64.tar.gz -C corvus-1.3.0-linux-x86_64
-cd corvus-1.3.0-linux-x86_64
+mkdir -p corvus-1.4.0-linux-x86_64
+tar -xzf corvus-1.4.0-linux-x86_64.tar.gz -C corvus-1.4.0-linux-x86_64
+cd corvus-1.4.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -135,7 +135,7 @@ Verify the install with `systemctl status corvus.service`, `curl -fsS http://127
 
 The extension connects to `ws://127.0.0.1:7330` by default. To use another daemon, or a `wss://` tunnel, open the extension options page (or the Change link in the popup), enter the full WebSocket URL, and save. The URL is stored under `corvus.daemonUrl`; Reset restores the default. After reloading or updating the extension, reload open tabs so their content scripts reconnect.
 
-A `wss://` endpoint must terminate TLS outside Corvus, for example at a reverse proxy. The daemon itself has no authentication, so a tunnel that exposes port 7330 or 7331 beyond loopback exposes full browser control. See [05-deployment.md](05-deployment.md#7-ports-exposure-and-the-no-authentication-boundary).
+A `wss://` endpoint must terminate TLS outside Corvus, for example at a reverse proxy. MCP and the extension WebSocket have no authentication, and the optional REST auth covers only `/api/v1`; a tunnel that exposes port 7330 or 7331 beyond loopback still exposes full browser control. See [05-deployment.md](05-deployment.md#7-ports-exposure-and-the-authentication-boundary).
 
 ### CDP endpoint (optional)
 
@@ -165,6 +165,8 @@ Get-Service Corvus | Format-Table Name, Status, StartType
 & "$env:ProgramData\Corvus\bin\corvus.exe" doctor
 Invoke-RestMethod http://127.0.0.1:7331/health
 Invoke-WebRequest http://127.0.0.1:7331/metrics | Select-Object -Expand Content
+Invoke-RestMethod http://127.0.0.1:7331/api/v1/health
+Invoke-WebRequest http://127.0.0.1:7331/api-docs/openapi.json | Select-Object -Expand Content
 ```
 
 On Linux:
@@ -174,6 +176,8 @@ systemctl status corvus.service
 /opt/corvus/bin/corvus doctor
 curl -fsS http://127.0.0.1:7331/health
 curl -fsS http://127.0.0.1:7331/metrics
+curl -fsS http://127.0.0.1:7331/api/v1/health
+curl -fsS http://127.0.0.1:7331/api-docs/openapi.json
 ```
 
 `doctor` reports the version, whether the WebSocket and MCP HTTP ports are reachable, uptime, tool-call counters, the database path, schema version, session and step counts, and one line per connected browser. `/health` returns `status: "ok"`, the bound addresses and the recording block. A reachable daemon with no browser lines means the extension is not loaded yet or points at another port. When CDP is expected, call `browser_channel` with no arguments and `cdp_status` through your MCP client; the status lists the active channel, endpoint and browser, and any `last_error` or `browser_mismatch`.
@@ -199,7 +203,37 @@ Stop-Service Corvus
 & "$env:ProgramData\Corvus\bin\corvus.exe" config --client generic --transport stdio
 ```
 
-To pin a custom root in the generated command, add `--home <dir>`; the stdio arguments become `serve --stdio --home <dir>`. Keep the service stopped while the stdio client is in use, and start it again with `Start-Service Corvus` when you return to HTTP. Do not run both transports on the default ports at the same time.
+To pin a custom root in the generated command, add `--home <dir>`; the stdio arguments become `serve --stdio --home <dir>`. Keep the service stopped while the stdio client is in use, and start it again with `Start-Service Corvus` when you return to HTTP.
+
+### REST API and optional authentication
+
+The REST API shares port 7331 with MCP. It serves `/api/v1/health`, `/api/v1/browsers`, `/api/v1/sessions`, `/api/v1/tools` and `POST /api/v1/tools/call`, with login, refresh, logout and account routes under `/api/v1/auth`. The OpenAPI document is at `/api-docs/openapi.json` and the Swagger UI at `/docs`.
+
+Authentication is off by default, which is appropriate only for a loopback bind. Enable the local mode before binding anywhere else:
+
+```bash
+export CORVUS_AUTH_SECRET="$(openssl rand -hex 32)"   # at least 32 bytes
+export CORVUS_AUTH_PASSWORD='replace-with-a-strong-password'
+corvusd serve --home /opt/corvus --bind 0.0.0.0 --auth local \
+  --auth-username admin --auth-password "$CORVUS_AUTH_PASSWORD"
+```
+
+The same values can come from `CORVUS_AUTH`, `CORVUS_AUTH_SECRET`, `CORVUS_AUTH_USERNAME` and `CORVUS_AUTH_PASSWORD`. A non-loopback bind with auth off fails at startup with "authentication must be enabled when binding to a non-loopback address", and a local-mode secret shorter than 32 bytes also fails. There are no default credentials: the bootstrap username and password must be supplied when local auth is first started, and the username and password must be non-empty.
+
+Log in, then send the access token as a bearer token:
+
+```bash
+curl -fsS http://127.0.0.1:7331/api/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"<the bootstrap password>"}'
+
+curl -fsS http://127.0.0.1:7331/api/v1/tools \
+  -H "authorization: Bearer <access_token>"
+```
+
+Access tokens last 900 seconds; refresh tokens last 30 days, are stored hashed, rotate on use and are revoked by logout. Accounts and refresh tokens are held in memory only: restarting the daemon resets sessions and any changes made through the API, though the bootstrap account is recreated from the startup flags. There is no user-management UI or persistent account store in 1.4.0.
+
+**Auth scope limitation:** the bearer guard covers `/api/v1` only. Inside it, `/api/v1/health`, `/api/v1/auth/login` and `/api/v1/auth/refresh` are exempt. `/mcp`, the legacy `/health` and `/metrics`, `/api-docs/openapi.json` and `/docs` are outside the guard and stay unauthenticated even when local auth is on, as does the extension WebSocket. Enabling REST auth does not make a non-loopback MCP endpoint safe; use a trusted proxy that protects every port.
 
 ## Five-minute walkthrough
 
@@ -229,7 +263,7 @@ systemctl status corvus.service
 /opt/corvus/bin/corvus doctor
 ```
 
-The installers stop the service, replace `bin/` and `extension/`, rewrite the service parameters, and start the service again. The database, logs and configuration are not deleted. Reload the extension and its open tabs when extension files changed. Docker and Kubernetes upgrades are covered in [05-deployment.md](05-deployment.md).
+The installers stop the service, replace `bin/` and `extension/`, rewrite the service parameters, and start the service again. The database, logs and configuration are not deleted. On 1.4.0 startup against an existing database, the recorder writes a `VACUUM INTO` backup next to the database before applying the schema version 1 baseline; a backup failure aborts startup, so keep your own copy as well. Reload the extension and its open tabs when extension files changed. Docker and Kubernetes upgrades are covered in [05-deployment.md](05-deployment.md).
 
 ## Uninstall
 
@@ -283,8 +317,9 @@ journalctl -u corvus.service -n 100 --no-pager
 | `page_text` or `page_snapshot` returns TIMEOUT after the extension was reloaded | `tab_list` still lists the tab; extension card is green | Reload the tab or open its URL again. Tabs keep the previous content script until reloaded; `tab_list` does not need one |
 | `browser_channel` reports `cdp` but disconnected | `cdp_status.connected` and `last_error` | The browser or endpoint changed. Restart the daemon with the current `webSocketDebuggerUrl`, or let the extension rediscover it |
 | CDP endpoint rejected | endpoint scheme, host and path | Use the loopback `ws://` or `wss://` browser URL from `/json/version`; HTTP discovery URLs, LAN hosts and paths are rejected |
-| Extension-only tool fails under forced `cdp` | `browser_channel` mode | Switch to `auto` or `extension`; forced CDP never falls back |
+| `/api/v1` returns 401 `MISSING_TOKEN` | `--auth` mode and the request headers | Log in and send `authorization: Bearer <access_token>`; login, refresh and `/api/v1/health` stay exempt |
+| Daemon refuses to start: authentication must be enabled | `--bind` address and `--auth`/`CORVUS_AUTH` | Bind loopback, or enable `local` auth with a secret of at least 32 bytes |
 
 ## Security notes
 
-The daemon binds to `127.0.0.1` only and has no authentication layer: any local process that can reach the ports can drive the connected browser. Do not expose ports 7330 or 7331 beyond loopback. A configured CDP endpoint has the same trust model and can read cookies, inject script and control every profile in that browser instance; keep 9222, 9223 and 9333 on loopback too. The Windows installer registers the service with the nssm default account, LocalSystem; change the service account with nssm when policy requires a dedicated identity. The root contains recorded commands, arguments and results, so treat `<root>/data/corvus.db` and the logs as sensitive data and remove them before handing the machine to someone else. The Linux installer creates a dedicated `corvus` service user and restricts `data/`, `logs/` and `config/` to it.
+The daemon binds to `127.0.0.1` by default. MCP, the extension WebSocket and CDP have no authentication: any local process that can reach the ports can drive the connected browser. REST `/api/v1` can use local auth, but its guard excludes `/api/v1/health`, `/api/v1/auth/login`, `/api/v1/auth/refresh`, and does not cover `/mcp`, `/health`, `/metrics`, `/api-docs/openapi.json`, `/docs` or the WebSocket. REST auth alone does not make a non-loopback daemon safe; put a trusted proxy in front of every port or keep them on loopback. A configured CDP endpoint has the same trust model and can read cookies, inject script and control every profile in that browser instance; keep 9222, 9223 and 9333 on loopback too. The Windows installer registers the service with the nssm default account, LocalSystem; change the service account with nssm when policy requires a dedicated identity. The root contains recorded commands, arguments and results, so treat `<root>/data/corvus.db` and the logs as sensitive data and remove them before handing the machine to someone else. The Linux installer creates a dedicated `corvus` service user and restricts `data/`, `logs/` and `config/` to it.

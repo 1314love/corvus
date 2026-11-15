@@ -15,9 +15,9 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
 
+use corvus_application::{CommandCancel, CommandRequest, DispatchFailure};
 use corvus_proto::{Envelope, ErrorBody, ErrorCode, Hello, HelloAck, Kind};
 use corvus_record::SessionContext;
-use corvus_runtime::{CommandCancel, CommandRequest, DispatchFailure};
 use corvusd::{Daemon, DaemonConfig, RouterConfig};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;

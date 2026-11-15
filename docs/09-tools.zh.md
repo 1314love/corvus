@@ -2,9 +2,9 @@
 
 [English](09-tools.md) | [中文](09-tools.zh.md)
 
-状态：1.3.0。读者：MCP 客户端作者与工具使用者。
+状态：1.4.0。读者：MCP 客户端作者、REST 客户端作者与工具使用者。
 
-Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩展或回环 CDP 直连操作浏览器；10 个工具由守护进程应答。本文中的工具名、输入 schema 与结果形状均描述 1.3.0。
+Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩展或回环 CDP 直连操作浏览器；10 个工具由守护进程应答。本文中的工具名、输入 schema 与结果形状均描述 1.4.0。MCP 面与 1.3.0 相同：1.4.0 不新增工具。同一套 43 工具目录与执行器也通过 REST 面的 `/api/v1/tools` 与 `/api/v1/tools/call` 提供；第 1 节的信封仅适用于 MCP。
 
 ## 1. MCP 结果信封
 
@@ -246,7 +246,7 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 |---|---:|---|
 | 两种通道 | 25 | page 7、input 7、tabs 4、network 4、files 3 |
 | 仅 CDP | 8 | `browser_dialog`、`browser_emulate`、`browser_cookies`、`browser_console`、`cdp_status`、`cdp_targets`、`cdp_send`、`cdp_events` |
-| 仅扩展 | 0 | 1.3.0 中没有 |
+| 仅扩展 | 0 | 1.4.0 中没有 |
 | 守护进程本地 | 10 | `browser_list`、`browser_channel`、`tool_help`、`browser_batch`、四个会话工具、`metrics`、`logs_tail` |
 
 扩展仍是零配置路径。强制 `cdp` 的进程无需扩展即可驱动所有浏览器类工具，但浏览器必须用远程调试与专用 profile 启动。端点设置、路由与安全见 [07-cdp.zh.md](07-cdp.zh.md)。
@@ -276,4 +276,4 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 
 token 数使用基准的 tokenizer 估算。默认简版 `tools/list` 为 43 个工具 20,452 字节；完整详情为 37,067 字节。以上是候选发布测量；QA 附上实机验收证据后，发布说明再记录对应数据。
 
-版本：1.3.0。本文的工具目录与 schema 已对照 1.3.0 工作区检查。
+版本：1.4.0。本文的工具目录与 schema 已对照 1.4.0 工作区检查；MCP 目录与 1.3.0 相同。

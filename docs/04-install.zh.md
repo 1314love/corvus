@@ -13,7 +13,7 @@ Corvus 由一个本地守护进程（`corvusd`）、一个命令行客户端（`
 | Linux 安装包 | `/opt/corvus` | `install-linux.sh` 写入 `/etc/systemd/system/corvus.service` |
 | Linux 前台 | `$XDG_DATA_HOME/corvus` 或 `~/.local/share/corvus` | `corvusd serve` |
 | Docker / Kubernetes | `/data` | 容器入口或 Kubernetes 清单 |
-| macOS 源码运行 | `~/Library/Application Support/Corvus` | `corvusd serve`；1.3.0 不提供安装包 |
+| macOS 源码运行 | `~/Library/Application Support/Corvus` | `corvusd serve`；1.4.0 不提供安装包 |
 
 一个根目录容纳全部后端文件：
 
@@ -104,16 +104,16 @@ corvusd.exe serve --home "<HomeDir>" --ws-port <WsPort> --http-port <HttpPort>
 3. 选择“加载已解压的扩展程序”，目录选 `<HomeDir>\extension`。
 4. 打开扩展弹窗。绿点表示已连接守护进程；弹窗显示浏览器 ID、扩展版本与能力。
 
-扩展没有配对步骤。可选的设置页只用于修改守护进程 WebSocket URL，见[扩展设置页](#扩展设置页)。
+扩展没有配对步骤。可选设置页用于修改守护进程 WebSocket URL 与可选 CDP 端点，见[扩展设置页](#扩展设置页)。发布包含有预构建的 `extension/` 目录。源码检出中请运行 `pnpm --dir extension install && pnpm --dir extension build`，然后加载 `extension/build/extension`；构建会执行三次 Vite 打包并校验 MV3 manifest。
 
 ## 在 Linux 上安装
 
 下载或复制 tar 包，解压到一个目录，然后校验并安装：
 
 ```bash
-mkdir -p corvus-1.3.0-linux-x86_64
-tar -xzf corvus-1.3.0-linux-x86_64.tar.gz -C corvus-1.3.0-linux-x86_64
-cd corvus-1.3.0-linux-x86_64
+mkdir -p corvus-1.4.0-linux-x86_64
+tar -xzf corvus-1.4.0-linux-x86_64.tar.gz -C corvus-1.4.0-linux-x86_64
+cd corvus-1.4.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -135,7 +135,7 @@ sudo CORVUS_HOME=/var/lib/corvus CORVUS_USER=corvus \
 
 扩展默认连接 `ws://127.0.0.1:7330`。使用其他守护进程或 `wss://` 隧道时，打开扩展设置页（或弹窗中的 Change 链接），填写完整 WebSocket URL 并保存。URL 保存在 `corvus.daemonUrl`；Reset 恢复默认值。扩展重新加载或升级后，请刷新已打开的标签页，让内容脚本重新连接。
 
-`wss://` 端点需要在 Corvus 之外终止 TLS，例如反向代理。守护进程本身没有认证，因此把 7330 或 7331 暴露到回环之外的隧道等同于暴露完整的浏览器控制能力。见 [05-deployment.zh.md](05-deployment.zh.md#7-端口暴露面与无认证边界)。
+`wss://` 端点需要在 Corvus 之外终止 TLS，例如反向代理。MCP 与扩展 WebSocket 没有认证，可选的 REST 认证也只覆盖 `/api/v1`；把 7330 或 7331 暴露到回环之外的隧道仍等同于暴露完整的浏览器控制能力。见 [05-deployment.zh.md](05-deployment.zh.md#7-端口暴露面与认证边界)。
 
 ### CDP 端点（可选）
 
@@ -165,6 +165,8 @@ Get-Service Corvus | Format-Table Name, Status, StartType
 & "$env:ProgramData\Corvus\bin\corvus.exe" doctor
 Invoke-RestMethod http://127.0.0.1:7331/health
 Invoke-WebRequest http://127.0.0.1:7331/metrics | Select-Object -Expand Content
+Invoke-RestMethod http://127.0.0.1:7331/api/v1/health
+Invoke-WebRequest http://127.0.0.1:7331/api-docs/openapi.json | Select-Object -Expand Content
 ```
 
 Linux：
@@ -174,6 +176,8 @@ systemctl status corvus.service
 /opt/corvus/bin/corvus doctor
 curl -fsS http://127.0.0.1:7331/health
 curl -fsS http://127.0.0.1:7331/metrics
+curl -fsS http://127.0.0.1:7331/api/v1/health
+curl -fsS http://127.0.0.1:7331/api-docs/openapi.json
 ```
 
 `doctor` 会报告版本、WebSocket 与 MCP HTTP 端口是否可达、运行时长、工具调用计数、数据库路径、schema 版本、会话与步骤数量，以及每个已连接浏览器一行。`/health` 返回 `status: "ok"`、绑定地址与录制信息。守护进程可达但没有浏览器行，说明扩展尚未加载，或指向了另一个端口。预期使用 CDP 时，请通过 MCP 客户端不带参数调用 `browser_channel` 与 `cdp_status`；状态会列出当前通道、端点与浏览器，以及 `last_error` 或 `browser_mismatch`。
@@ -199,7 +203,37 @@ Stop-Service Corvus
 & "$env:ProgramData\Corvus\bin\corvus.exe" config --client generic --transport stdio
 ```
 
-要在生成的命令中固定自定义根目录，加 `--home <dir>`；stdio 参数变为 `serve --stdio --home <dir>`。stdio 客户端使用期间保持服务停止；切回 HTTP 时运行 `Start-Service Corvus`。不要在默认端口上同时运行两种传输。
+要在生成的命令中固定自定义根目录，加 `--home <dir>`；stdio 参数变为 `serve --stdio --home <dir>`。stdio 客户端使用期间保持服务停止；切回 HTTP 时运行 `Start-Service Corvus`。
+
+### REST API 与可选认证
+
+REST API 与 MCP 共用 7331 端口，在 `/api/v1` 提供 health、browsers、sessions、tools 与 `POST /api/v1/tools/call`，并在 `/api/v1/auth` 下提供登录、刷新、登出与账户路由。OpenAPI 文档位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`。
+
+认证默认关闭，只适合绑定回环地址。绑定其他地址前必须启用本地模式：
+
+```bash
+export CORVUS_AUTH_SECRET="$(openssl rand -hex 32)"   # 至少 32 字节
+export CORVUS_AUTH_PASSWORD='replace-with-a-strong-password'
+corvusd serve --home /opt/corvus --bind 0.0.0.0 --auth local \
+  --auth-username admin --auth-password "$CORVUS_AUTH_PASSWORD"
+```
+
+同样的值也可来自 `CORVUS_AUTH`、`CORVUS_AUTH_SECRET`、`CORVUS_AUTH_USERNAME` 与 `CORVUS_AUTH_PASSWORD`。绑定非回环地址而认证关闭时，启动会以“authentication must be enabled when binding to a non-loopback address”失败；本地模式下密钥短于 32 字节同样失败。系统没有默认凭据：首次启用本地认证时必须提供引导用户名与密码，且二者都不能为空。
+
+登录后把访问令牌作为 bearer 令牌发送：
+
+```bash
+curl -fsS http://127.0.0.1:7331/api/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"<引导密码>"}'
+
+curl -fsS http://127.0.0.1:7331/api/v1/tools \
+  -H "authorization: Bearer <access_token>"
+```
+
+访问令牌有效期 900 秒；刷新令牌有效期 30 天，以哈希保存，每次使用都会轮换，登出即撤销。账号与刷新令牌只保存在内存中：重启守护进程会重置会话与所有经 API 做的修改，不过引导账号会按启动参数重新创建。1.4.0 没有用户管理界面，也没有持久化账号存储。
+
+**认证范围限制：**bearer 守卫只覆盖 `/api/v1`。在其中，`/api/v1/health`、`/api/v1/auth/login` 与 `/api/v1/auth/refresh` 豁免。`/mcp`、旧版 `/health` 与 `/metrics`、`/api-docs/openapi.json` 与 `/docs` 都在守卫之外，即使开启本地认证也保持无认证；扩展 WebSocket 同样如此。启用 REST 认证并不能让非回环的 MCP 端点变安全；必须使用保护所有端口的可信代理。
 
 ## 五分钟上手流程
 
@@ -229,7 +263,7 @@ systemctl status corvus.service
 /opt/corvus/bin/corvus doctor
 ```
 
-安装脚本会停止服务、替换 `bin/` 与 `extension/`、重写服务参数，然后重新启动服务。数据库、日志与配置不会被删除。扩展文件有变化时，重新加载扩展与已打开的标签页。Docker 与 Kubernetes 升级见 [05-deployment.zh.md](05-deployment.zh.md)。
+安装脚本会停止服务、替换 `bin/` 与 `extension/`、重写服务参数，然后重新启动服务。数据库、日志与配置不会被删除。1.4.0 首次在既有数据库上启动时，录制模块会先用 `VACUUM INTO` 在数据库旁写一份备份，再应用 schema 版本 1 基线；备份失败会中止启动，因此仍建议自行保留副本。扩展文件有变化时，重新加载扩展与已打开的标签页。Docker 与 Kubernetes 升级见 [05-deployment.zh.md](05-deployment.zh.md)。
 
 ## 卸载
 
@@ -283,8 +317,9 @@ journalctl -u corvus.service -n 100 --no-pager
 | 扩展重新加载后，`page_text` 或 `page_snapshot` 返回 TIMEOUT | `tab_list` 仍能列出标签页；扩展卡片为绿点 | 重新加载标签页或重新打开其 URL。标签页会继续运行旧内容脚本，而 `tab_list` 不需要内容脚本 |
 | `browser_channel` 显示 `cdp` 但未连接 | `cdp_status.connected` 与 `last_error` | 浏览器或端点已变化。用当前 `webSocketDebuggerUrl` 重启守护进程，或让扩展重新发现端点 |
 | CDP 端点被拒绝 | 端点 scheme、主机与路径 | 使用 `/json/version` 返回的回环 `ws://` 或 `wss://` 浏览器地址；HTTP 发现地址、局域网主机与路径都会被拒绝 |
-| 强制 `cdp` 下仅扩展工具失败 | `browser_channel` 模式 | 切换到 `auto` 或 `extension`；强制 CDP 从不回退 |
+| `/api/v1` 返回 401 `MISSING_TOKEN` | `--auth` 模式与请求头 | 登录后发送 `authorization: Bearer <access_token>`；登录、刷新与 `/api/v1/health` 保持豁免 |
+| 守护进程拒绝启动并提示必须启用认证 | `--bind` 地址与 `--auth`/`CORVUS_AUTH` | 绑定回环，或启用 `local` 认证并提供至少 32 字节的密钥 |
 
 ## 安全说明
 
-守护进程只绑定 `127.0.0.1`，没有认证层：任何能访问这些端口的本地进程都可以驱动已连接的浏览器。不要把 7330 或 7331 暴露到回环地址之外。配置的 CDP 端点具有同样的信任模型，可读取 cookie、注入脚本并控制该浏览器实例中的所有 profile；9222、9223 与 9333 也必须留在回环。Windows 安装脚本按 nssm 默认账户 LocalSystem 注册服务；安全策略要求专用身份时，请用 nssm 修改服务账户。根目录包含录制的命令、参数与结果，应把 `<root>/data/corvus.db` 与日志视为敏感数据，把机器交给他人前先删除。Linux 安装脚本创建专用 `corvus` 服务用户，并把 `data/`、`logs/`、`config/` 限制给该用户。
+守护进程默认绑定 `127.0.0.1`。MCP、扩展 WebSocket 与 CDP 都没有认证：任何能访问这些端口的本地进程都可以驱动已连接的浏览器。REST `/api/v1` 可启用本地认证，但守卫不包含 `/api/v1/health`、`/api/v1/auth/login`、`/api/v1/auth/refresh`，也不覆盖 `/mcp`、`/health`、`/metrics`、`/api-docs/openapi.json`、`/docs` 与 WebSocket。仅靠 REST 认证不能让非回环守护进程变安全；必须在所有端口前放置可信代理，或把它们留在回环。配置的 CDP 端点具有同样的信任模型，可读取 cookie、注入脚本并控制该浏览器实例中的所有 profile；9222、9223 与 9333 也必须留在回环。Windows 安装脚本按 nssm 默认账户 LocalSystem 注册服务；安全策略要求专用身份时，请用 nssm 修改服务账户。根目录包含录制的命令、参数与结果，应把 `<root>/data/corvus.db` 与日志视为敏感数据，把机器交给他人前先删除。Linux 安装脚本创建专用 `corvus` 服务用户，并把 `data/`、`logs/`、`config/` 限制给该用户。

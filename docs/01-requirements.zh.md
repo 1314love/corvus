@@ -216,6 +216,17 @@ v1.3.0 新增 `browser_batch`，工具面达到 43 个、覆盖九个分类，�
 - **CDP 对等** —— 强制 CDP 可执行全部 33 个浏览器类工具，包括此前仅扩展的八个工具；仅扩展工具已不再单独成组。跨通道引用返回类型化 `BAD_ARGS`。
 - **NFR-3（未完成）** —— 1.3.0 不能宣称通过 72 小时压测；此前在约八小时停止后，72 小时运行仍未完成。**NFR-6（未变化）** —— Firefox 仍不受支持；受支持浏览器为 Edge 120+、Chrome 120+ 与最新 Brave。
 
+### 4.8 v1.4.0 结构与 REST 需求覆盖
+
+v1.4.0 不新增 MCP 工具：1.3.0 的 43 个工具、九个类别、紧凑单文本信封与 `browser_batch` 均保持不变。本版本重构后端，并新增独立的 REST 面。
+
+- **端口与适配器。** `corvus-domain` 承载无 I/O 的纯领域模型。`corvus-application` 承载用例与 `BrowserRegistry`、`BrowserSession`、`StepRecorder`、`ToolCatalog` 四个端口，以及原有 32 条路由器规格。`corvus-cdp`、`corvus-transport`、`corvus-record`、`corvus-mcp` 与 `corvus-api` 是适配器；`corvusd` 是装配根。`corvus-runtime` 已删除，其路由职责并入 application crate 与 `corvusd`。依赖只向内：domain 不依赖任何适配器。
+- **REST API。** 守护进程提供 `/api/v1/health`、`/api/v1/browsers`、`/api/v1/browsers/{id}`、`/api/v1/sessions`、`/api/v1/sessions/{id}`、`/api/v1/sessions/{id}/steps`、`/api/v1/tools` 与 `/api/v1/tools/call`，以及认证路由。OpenAPI 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`。REST 与 MCP 共用同一套 43 工具 `ToolCatalog` 与 `ToolBackend`。每个请求带 `x-request-id`、链路追踪、120 秒超时并返回 408、gzip 压缩，CORS 仅允许回环来源；错误为类型化结构。
+- **认证。** 回环地址上认证默认关闭。绑定非回环地址且未启用认证时启动失败，除非运维显式传入 `--allow-no-auth` / `CORVUS_ALLOW_NO_AUTH` 豁免；豁免会记录一条不安全配置警告，且不存在默认账号。`--auth local` 启用 Argon2id 口令校验与 HS256 JWT：访问令牌有效期 900 秒，刷新令牌 30 天并在使用时轮换。`/api/v1/auth/login`、`/refresh`、`/logout` 与 `/me` 实现该流程；`/api/v1/health`、login 与 refresh 不需要令牌。REST 认证中间件只包裹 `/api/v1`，不覆盖既有 `/mcp` 端点、扩展 WebSocket、旧版 `/health`、`/metrics`、`/api-docs/openapi.json` 与 `/docs`；这些端点保持 1.3.0 的无认证行为。1.4.0 的账号与刷新令牌保存在内存中，重启后不保留；持久化认证存储属于后续工作。
+- **持久化。** `corvus-record` 使用 SeaORM 与 `sea-orm-migration`，`schema_version` 为 1。1.3.0 数据库无需数据迁移即可打开；在既有文件上执行基线迁移前，守护进程先写 `VACUUM INTO` 备份，备份失败则中止启动。存储保持 WAL、单写入连接、5 秒 busy timeout、30 天会话保留与 262144 字节载荷截断。
+- **扩展。** 扩展由 TypeScript 与 Vue 3 源码经三次 Vite 构建，产出可加载的 `extension/build/extension` 目录。弹窗与设置页使用 Vue 3、Pinia 与 Naive UI；Service Worker、内容脚本与 offscreen 文档保持无框架 TypeScript，并使用类型化 RPC。MV3 manifest 声明十项权限与 ESM Service Worker，构建会检查预期文件与 manifest 结构。
+- **NFR-3（未完成）与 NFR-6（未变化）。** 1.4.0 不能宣称通过 72 小时压测；此前在约八小时停止后，计划中的运行仍未完成。Firefox 仍不受支持；受支持浏览器为 Edge 120+、Chrome 120+ 与最新 Brave。
+
 ## 5. 非功能需求
 
 | 编号 | 类别 | 要求 |
@@ -228,7 +239,7 @@ v1.3.0 新增 `browser_batch`，工具面达到 43 个、覆盖九个分类，�
 | NFR-6 | 浏览器 | Edge 120+、Chrome 120+、Brave 最新、Firefox 121+ |
 | NFR-7 | 可维护 | Rust workspace 分 crate，clippy 零警告，CI 三平台 |
 | NFR-8 | 可观测 | 结构化 JSON 日志、可调级别、默认不打印用户页面正文 |
-| NFR-9 | 安全姿态 | 无审批、无白名单、无沙箱；以操作系统用户身份运行，端点只监听回环地址 |
+| NFR-9 | 安全姿态 | 无审批、无白名单、无沙箱；以操作系统用户身份运行；MCP、扩展 WebSocket 与 CDP 只监听回环地址；REST 仅在启用本地认证或显式传入不安全豁免时才可绑定非回环地址 |
 | NFR-10 | 兼容 | MCP 2025-06-18 规范，工具注解完整（readOnly / destructive / idempotent） |
 
 ## 6. 验收任务（真实场景，全部通过才算 M2 完成）

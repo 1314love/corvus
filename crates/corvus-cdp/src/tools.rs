@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use serde_json::{json, Map, Value};
 
+use corvus_domain::SnapshotPolicy;
+
 use crate::client::EVENT_CAPACITY;
 use crate::snapshot::{self, Format, Mode, Options, PageInfo, Viewport};
 use crate::{CdpClient, CdpError};
@@ -428,6 +430,7 @@ impl CdpClient {
             .and_then(Value::as_str)
             .ok_or_else(|| CdpError::Protocol("createTarget returned no targetId".into()))?
             .to_string();
+        self.remember_page_target(&target_id, &url);
         if active {
             let _ = self
                 .send(
@@ -438,6 +441,7 @@ impl CdpClient {
                     Some(10_000),
                 )
                 .await;
+            let _ = self.set_active_target(&target_id);
         }
         Ok(json!({
             "tab_id": target_id,
@@ -449,6 +453,9 @@ impl CdpClient {
 
     async fn tab_close_tool(&self, args: &Value) -> Result<Value, CdpError> {
         let target_id = required_string(args, "tab_id")?;
+        if !self.is_page_target(&target_id) {
+            return Err(CdpError::TargetNotFound(target_id));
+        }
         self.send(
             "Target.closeTarget",
             json!({ "targetId": target_id }),
@@ -457,11 +464,13 @@ impl CdpClient {
             Some(15_000),
         )
         .await?;
-        let next = self
-            .targets()
-            .into_iter()
-            .find(|target| target.target_id != target_id)
-            .map(|target| target.target_id);
+        self.forget_target(&target_id);
+        let next = self.default_target_id().or_else(|| {
+            self.targets()
+                .into_iter()
+                .next()
+                .map(|target| target.target_id)
+        });
         Ok(json!({
             "closed": true,
             "tab_id": target_id,
@@ -471,6 +480,11 @@ impl CdpClient {
 
     async fn tab_switch_tool(&self, args: &Value) -> Result<Value, CdpError> {
         let target_id = required_string(args, "tab_id")?;
+        let target = self
+            .targets()
+            .into_iter()
+            .find(|target| target.target_id == target_id)
+            .ok_or_else(|| CdpError::TargetNotFound(target_id.clone()))?;
         self.send(
             "Target.activateTarget",
             json!({ "targetId": target_id }),
@@ -479,11 +493,9 @@ impl CdpClient {
             Some(10_000),
         )
         .await?;
-        let target = self
-            .targets()
-            .into_iter()
-            .find(|target| target.target_id == target_id)
-            .ok_or_else(|| CdpError::TargetNotFound(target_id.clone()))?;
+        if !self.set_active_target(&target_id) {
+            return Err(CdpError::TargetNotFound(target_id));
+        }
         Ok(json!({
             "tab_id": target.target_id,
             "url": target.url,
@@ -1314,7 +1326,13 @@ impl CdpClient {
         let options = Options {
             mode,
             format,
-            max_nodes: integer(args, "max_nodes", 300, 40, 3000) as usize,
+            max_nodes: integer(
+                args,
+                "max_nodes",
+                SnapshotPolicy::DEFAULT_MAX_NODES as u64,
+                SnapshotPolicy::MIN_MAX_NODES as u64,
+                SnapshotPolicy::MAX_MAX_NODES as u64,
+            ) as usize,
             viewport_only: args
                 .get("viewport_only")
                 .and_then(Value::as_bool)
@@ -1961,10 +1979,18 @@ impl CdpClient {
         if !self.is_connected() {
             return Err(CdpError::NotConnected);
         }
-        let target = optional_string(args, "tab_id")
-            .or_else(|| optional_string(args, "target_id"))
-            .or_else(|| self.default_target_id())
-            .ok_or_else(|| CdpError::Unsupported("no page target is available".into()))?;
+        let target =
+            match optional_string(args, "tab_id").or_else(|| optional_string(args, "target_id")) {
+                Some(target) => {
+                    if !self.is_page_target(&target) {
+                        return Err(CdpError::TargetNotFound(target));
+                    }
+                    target
+                }
+                None => self.default_target_id().ok_or_else(|| {
+                    CdpError::TargetNotFound("no page target is available".into())
+                })?,
+            };
         let session = self
             .attach(&target, Some(timeout))
             .await?

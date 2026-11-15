@@ -8,8 +8,9 @@ use std::time::Instant;
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
+use corvus_application::ports::SessionRecording;
+use corvus_application::{now_millis, SessionContext, StepRecord};
 use corvus_proto::{ErrorBody, ErrorCode};
-use corvus_record::{now_millis, SessionContext, StepRecord, Store};
 
 use crate::backend::{ToolBackend, ToolCall};
 use crate::metrics::{ChannelMetrics, Metrics};
@@ -86,7 +87,7 @@ pub struct McpServer {
     version: String,
     instructions: String,
     health: Arc<dyn Fn() -> Value + Send + Sync>,
-    store: Option<Arc<Store>>,
+    store: Option<Arc<dyn SessionRecording>>,
     metrics: Arc<Metrics>,
     cancels: Mutex<HashMap<String, RequestCancel>>,
 }
@@ -161,7 +162,7 @@ impl McpServer {
     }
 
     /// Attach the recording store used for session bookkeeping.
-    pub fn with_store(mut self, store: Arc<Store>) -> Self {
+    pub fn with_store(mut self, store: Arc<dyn SessionRecording>) -> Self {
         self.store = Some(store);
         self
     }

@@ -5,55 +5,42 @@
 //! shared connection behind a mutex; steps are funnelled through one writer
 //! task so a tool call never waits for the disk.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use sea_orm::{
+    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, QueryResult, Statement,
+    TransactionTrait, Value as DbValue,
+};
+use sea_orm_migration::MigratorTrait;
 use serde_json::Value;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
-/// Largest JSON payload kept verbatim in the database.
-pub const MAX_PAYLOAD_BYTES: usize = 262_144;
-/// Sessions older than this are pruned on startup.
-pub const RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
+mod migrations;
+
+pub use corvus_domain::recording::{
+    now_millis, SessionContext, SessionRow, StepRecord, StepRow, MAX_PAYLOAD_BYTES, RETENTION_MS,
+};
 
 /// Current schema version.
 pub const SCHEMA_VERSION: i64 = 1;
 
-/// The MCP session that produced a tool call.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionContext {
-    /// Session identifier.
-    pub session_id: String,
-    /// Transport that carries the session, for example "http" or "stdio".
-    pub transport: String,
-    /// Agent that opened the session, when the client named one.
-    pub agent: Option<String>,
-}
-
-impl SessionContext {
-    /// Build a context.
-    pub fn new(
-        session_id: impl Into<String>,
-        transport: impl Into<String>,
-        agent: Option<String>,
-    ) -> Self {
-        Self {
-            session_id: session_id.into(),
-            transport: transport.into(),
-            agent,
-        }
-    }
-}
-
 /// Why a recording operation failed.
 #[derive(Debug, Error)]
 pub enum RecordError {
-    /// SQLite reported an error.
+    /// SQLite reported an error through SeaORM.
     #[error("recording database error: {0}")]
-    Database(#[from] rusqlite::Error),
+    Database(#[from] DbErr),
+    /// The database pool could not be opened.
+    #[error("recording database connection error: {0}")]
+    Connection(#[from] sqlx::Error),
     /// The database directory could not be created.
     #[error("could not create the recording directory: {0}")]
     Io(#[from] std::io::Error),
@@ -63,89 +50,19 @@ pub enum RecordError {
         /// Version found in the file.
         found: i64,
     },
-}
-
-/// One recorded session row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionRow {
-    /// Session identifier.
-    pub id: String,
-    /// Start time in milliseconds since the Unix epoch.
-    pub started_at: i64,
-    /// End time in milliseconds since the Unix epoch.
-    pub ended_at: Option<i64>,
-    /// Browser id that served the session.
-    pub browser: Option<String>,
-    /// Browser profile label.
-    pub profile: Option<String>,
-    /// Agent that opened the session.
-    pub agent: Option<String>,
-    /// Transport name, for example "http" or "stdio".
-    pub transport: String,
-    /// Lifecycle state.
-    pub status: String,
-    /// Number of recorded steps.
-    pub steps: i64,
-    /// Number of failed steps.
-    pub errors: i64,
-}
-
-/// One recorded step row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StepRow {
-    /// Row id.
-    pub id: i64,
-    /// Session that owns the step.
-    pub session_id: String,
-    /// Monotonic position inside the session.
-    pub seq: i64,
-    /// Time the step finished, in milliseconds since the Unix epoch.
-    pub ts: i64,
-    /// Tool name.
-    pub tool: String,
-    /// Stored arguments JSON, possibly truncated.
-    pub args_json: Option<String>,
-    /// Stored result JSON, possibly truncated.
-    pub result_json: Option<String>,
-    /// Error code when the step failed.
-    pub error_code: Option<String>,
-    /// Duration in milliseconds.
-    pub duration_ms: i64,
-    /// Browser that served the call.
-    pub browser_id: Option<String>,
-    /// Tab named by the call.
-    pub tab_id: Option<String>,
-    /// Whether the call succeeded.
-    pub ok: bool,
-    /// Whether the arguments were truncated before storage.
-    pub args_truncated: bool,
-    /// Whether the result was truncated before storage.
-    pub result_truncated: bool,
-}
-
-/// A step waiting to be written.
-#[derive(Debug, Clone)]
-pub struct StepRecord {
-    /// Session the step belongs to.
-    pub session_id: String,
-    /// Time the call finished, in milliseconds since the Unix epoch.
-    pub ts: i64,
-    /// Tool name.
-    pub tool: String,
-    /// Arguments passed to the tool.
-    pub args: Value,
-    /// Tool result, absent for failures.
-    pub result: Option<Value>,
-    /// Error code for a failed call.
-    pub error_code: Option<String>,
-    /// Duration in milliseconds.
-    pub duration_ms: i64,
-    /// Browser resolved by routing.
-    pub browser_id: Option<String>,
-    /// Tab named by the call.
-    pub tab_id: Option<String>,
-    /// Whether the call succeeded.
-    pub ok: bool,
+    /// The background writer has stopped.
+    #[error("recording writer is no longer running")]
+    WriterClosed,
+    /// An existing database could not be backed up before a migration.
+    #[error("could not back up the existing database at {path:?} to {backup:?}: {message}")]
+    Backup {
+        /// Existing database path.
+        path: PathBuf,
+        /// Destination backup path.
+        backup: PathBuf,
+        /// Underlying SQLite error.
+        message: String,
+    },
 }
 
 /// What lives on the recording writer channel.
@@ -171,6 +88,40 @@ impl StepSink {
         {
             tracing::warn!(reason = "writer gone", "tool step dropped");
         }
+    }
+}
+
+impl corvus_application::ports::StepRecorder for StepSink {
+    fn record(&self, step: StepRecord) {
+        StepSink::record(self, step);
+    }
+}
+
+impl corvus_application::ports::SessionRecording for Store {
+    fn start_session(
+        &self,
+        id: &str,
+        transport: &str,
+        agent: Option<&str>,
+        browser: Option<&str>,
+    ) -> Result<(), String> {
+        Store::start_session(self, id, transport, agent, browser).map_err(|error| error.to_string())
+    }
+
+    fn session_exists(&self, id: &str) -> Result<bool, String> {
+        Store::session_exists(self, id).map_err(|error| error.to_string())
+    }
+
+    fn finish_session(&self, id: &str, status: &str) -> Result<(), String> {
+        Store::finish_session(self, id, status).map_err(|error| error.to_string())
+    }
+
+    fn list_sessions(&self, limit: u32, since_ms: Option<i64>) -> Result<Vec<SessionRow>, String> {
+        Store::list_sessions(self, limit, since_ms).map_err(|error| error.to_string())
+    }
+
+    fn record_step(&self, step: StepRecord) -> Result<(), String> {
+        Store::record_step(self, step).map_err(|error| error.to_string())
     }
 }
 
@@ -245,7 +196,19 @@ impl Recorder {
 /// The SQLite recording store.
 pub struct Store {
     path: PathBuf,
-    connection: Mutex<Connection>,
+    sender: Mutex<Option<std_mpsc::Sender<BoxedJob>>>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+type BoxedJob = Box<
+    dyn FnOnce(DatabaseConnection) -> Pin<Box<dyn Future<Output = DatabaseConnection> + Send>>
+        + Send,
+>;
+
+enum Target {
+    File(PathBuf),
+    Memory,
+    ReadOnly(PathBuf),
 }
 
 impl Store {
@@ -257,112 +220,114 @@ impl Store {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        let connection = Connection::open(&path)?;
-        Self::prepare(connection, path)
+        Self::spawn(path.clone(), Target::File(path))
     }
 
     /// Open a private in-memory store, used by tests.
     pub fn open_in_memory() -> Result<Self, RecordError> {
-        let connection = Connection::open_in_memory()?;
-        Self::prepare(connection, PathBuf::from(":memory:"))
+        Self::spawn(PathBuf::from(":memory:"), Target::Memory)
     }
 
     /// Open an existing store without creating or migrating it.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, RecordError> {
         let path = path.as_ref().to_path_buf();
-        let connection = Connection::open_with_flags(
-            &path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_URI
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        let version: Option<String> = connection
-            .query_row(
-                "SELECT value FROM schema_meta WHERE key = 'schema_version'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let found = version
-            .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(0);
-        if found != SCHEMA_VERSION {
-            return Err(RecordError::UnsupportedSchema { found });
-        }
-        Ok(Self {
-            path,
-            connection: Mutex::new(connection),
-        })
+        Self::spawn(path.clone(), Target::ReadOnly(path))
     }
 
-    fn prepare(connection: Connection, path: PathBuf) -> Result<Self, RecordError> {
-        connection.busy_timeout(Duration::from_secs(5))?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.pragma_update(None, "synchronous", "NORMAL")?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_meta (
-                 key TEXT PRIMARY KEY,
-                 value TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS sessions (
-                 id TEXT PRIMARY KEY,
-                 started_at INTEGER NOT NULL,
-                 ended_at INTEGER,
-                 browser TEXT,
-                 profile TEXT,
-                 agent TEXT,
-                 transport TEXT NOT NULL,
-                 status TEXT NOT NULL,
-                 steps INTEGER NOT NULL DEFAULT 0,
-                 errors INTEGER NOT NULL DEFAULT 0
-             );
-             CREATE TABLE IF NOT EXISTS steps (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 session_id TEXT NOT NULL,
-                 seq INTEGER NOT NULL,
-                 ts INTEGER NOT NULL,
-                 tool TEXT NOT NULL,
-                 args_json TEXT,
-                 result_json TEXT,
-                 error_code TEXT,
-                 duration_ms INTEGER NOT NULL,
-                 browser_id TEXT,
-                 tab_id TEXT,
-                 ok INTEGER NOT NULL,
-                 args_truncated INTEGER NOT NULL DEFAULT 0,
-                 result_truncated INTEGER NOT NULL DEFAULT 0,
-                 UNIQUE(session_id, seq)
-             );
-             CREATE INDEX IF NOT EXISTS steps_session_seq ON steps(session_id, seq);",
-        )?;
-        let existing: Option<String> = connection
-            .query_row(
-                "SELECT value FROM schema_meta WHERE key = 'schema_version'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match existing {
-            Some(value) => {
-                let found = value.parse::<i64>().unwrap_or(0);
-                if found != SCHEMA_VERSION {
-                    return Err(RecordError::UnsupportedSchema { found });
-                }
+    fn spawn(path: PathBuf, target: Target) -> Result<Self, RecordError> {
+        let (ready_sender, ready_receiver) = std_mpsc::channel();
+        let (sender, receiver) = std_mpsc::channel::<BoxedJob>();
+        let worker = std::thread::Builder::new()
+            .name("corvus-record".to_string())
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = ready_sender.send(Err(RecordError::Io(error)));
+                        return;
+                    }
+                };
+                runtime.block_on(async move {
+                    let mut connection = match open_connection(&target).await {
+                        Ok(connection) => connection,
+                        Err(error) => {
+                            let _ = ready_sender.send(Err(error));
+                            return;
+                        }
+                    };
+                    let _ = ready_sender.send(Ok(()));
+                    while let Ok(job) = receiver.recv() {
+                        connection = job(connection).await;
+                    }
+                });
+            })
+            .map_err(RecordError::Io)?;
+        match ready_receiver.recv() {
+            Ok(Ok(())) => Ok(Self {
+                path,
+                sender: Mutex::new(Some(sender)),
+                worker: Mutex::new(Some(worker)),
+            }),
+            Ok(Err(error)) => {
+                let _ = worker.join();
+                Err(error)
             }
-            None => {
-                connection.execute(
-                    "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?1)",
-                    params![SCHEMA_VERSION.to_string()],
-                )?;
+            Err(_) => {
+                let _ = worker.join();
+                Err(RecordError::WriterClosed)
             }
         }
-        let store = Self {
-            path,
-            connection: Mutex::new(connection),
+    }
+
+    fn run<T, F>(&self, work: F) -> Result<T, RecordError>
+    where
+        T: Send + 'static,
+        F: FnOnce(
+                DatabaseConnection,
+            )
+                -> Pin<Box<dyn Future<Output = (DatabaseConnection, Result<T, DbErr>)> + Send>>
+            + Send
+            + 'static,
+    {
+        let (reply, wait) = std_mpsc::channel();
+        let job: BoxedJob = Box::new(move |connection| {
+            Box::pin(async move {
+                let (connection, result) = work(connection).await;
+                let _ = reply.send(result);
+                connection
+            })
+        });
+        let sender = lock(&self.sender);
+        let Some(sender) = sender.as_ref() else {
+            return Err(RecordError::WriterClosed);
         };
-        store.startup_maintenance()?;
-        Ok(store)
+        sender.send(job).map_err(|_| RecordError::WriterClosed)?;
+        wait.recv()
+            .map_err(|_| RecordError::WriterClosed)?
+            .map_err(RecordError::from)
+    }
+
+    #[cfg(test)]
+    fn test_execute(&self, sql: &'static str, value: i64) -> Result<(), RecordError> {
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    connection
+                        .execute(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            sql,
+                            vec![DbValue::from(value)],
+                        ))
+                        .await?;
+                    Ok(())
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Path of the database file.
@@ -377,24 +342,12 @@ impl Store {
 
     /// Mark leftover sessions abandoned and prune old sessions.
     pub fn startup_maintenance(&self) -> Result<(), RecordError> {
-        let now = now_millis();
-        let cutoff = now.saturating_sub(RETENTION_MS);
-        let mut connection = lock(&self.connection);
-        let transaction = connection.transaction()?;
-        transaction.execute(
-            "UPDATE sessions SET ended_at = ?1, status = 'abandoned' WHERE ended_at IS NULL",
-            params![now],
-        )?;
-        transaction.execute(
-            "DELETE FROM steps WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?1)",
-            params![cutoff],
-        )?;
-        transaction.execute(
-            "DELETE FROM sessions WHERE started_at < ?1",
-            params![cutoff],
-        )?;
-        transaction.commit()?;
-        Ok(())
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = maintenance(&connection).await;
+                (connection, result)
+            })
+        })
     }
 
     /// Create a session or refresh its descriptive fields.
@@ -405,73 +358,139 @@ impl Store {
         agent: Option<&str>,
         browser: Option<&str>,
     ) -> Result<(), RecordError> {
-        let connection = lock(&self.connection);
-        connection.execute(
-            "INSERT INTO sessions (id, started_at, browser, agent, transport, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'active')
-             ON CONFLICT(id) DO UPDATE SET
-                 browser = excluded.browser,
-                 agent = excluded.agent,
-                 transport = excluded.transport",
-            params![id, now_millis(), browser, agent, transport],
-        )?;
-        Ok(())
+        let id = id.to_string();
+        let transport = transport.to_string();
+        let agent = agent.map(str::to_string);
+        let browser = browser.map(str::to_string);
+        let now = now_millis();
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    connection
+                        .execute(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "INSERT INTO sessions (id, started_at, browser, agent, transport, status)
+                             VALUES (?1, ?2, ?3, ?4, ?5, 'active')
+                             ON CONFLICT(id) DO UPDATE SET
+                                 browser = excluded.browser,
+                                 agent = excluded.agent,
+                                 transport = excluded.transport",
+                            vec![
+                                DbValue::from(id),
+                                DbValue::from(now),
+                                DbValue::from(browser),
+                                DbValue::from(agent),
+                                DbValue::from(transport),
+                            ],
+                        ))
+                        .await?;
+                    Ok(())
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Close a session.
     pub fn finish_session(&self, id: &str, status: &str) -> Result<(), RecordError> {
-        let connection = lock(&self.connection);
-        connection.execute(
-            "UPDATE sessions SET ended_at = COALESCE(ended_at, ?2), status = ?3 WHERE id = ?1",
-            params![id, now_millis(), status],
-        )?;
-        Ok(())
+        let id = id.to_string();
+        let status = status.to_string();
+        let now = now_millis();
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    connection
+                        .execute(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "UPDATE sessions SET ended_at = COALESCE(ended_at, ?2), status = ?3 WHERE id = ?1",
+                            vec![DbValue::from(id), DbValue::from(now), DbValue::from(status)],
+                        ))
+                        .await?;
+                    Ok(())
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Insert one step and update the session counters.
     pub fn record_step(&self, step: StepRecord) -> Result<(), RecordError> {
-        let (args_json, args_truncated) = encode_payload(&step.args);
-        let (result_json, result_truncated) = match &step.result {
+        let StepRecord {
+            session_id,
+            ts,
+            tool,
+            args,
+            result,
+            error_code,
+            duration_ms,
+            browser_id,
+            tab_id,
+            ok,
+        } = step;
+        let (args_json, args_truncated) = encode_payload(&args);
+        let (result_json, result_truncated) = match &result {
             Some(result) => {
                 let (text, truncated) = encode_payload(result);
                 (Some(text), truncated)
             }
             None => (None, false),
         };
-        let mut connection = lock(&self.connection);
-        let transaction = connection.transaction()?;
-        let seq: i64 = transaction.query_row(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM steps WHERE session_id = ?1",
-            params![step.session_id],
-            |row| row.get(0),
-        )?;
-        transaction.execute(
-            "INSERT INTO steps (session_id, seq, ts, tool, args_json, result_json,
-                                error_code, duration_ms, browser_id, tab_id, ok,
-                                args_truncated, result_truncated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                step.session_id,
-                seq,
-                step.ts,
-                step.tool,
-                args_json,
-                result_json,
-                step.error_code,
-                step.duration_ms,
-                step.browser_id,
-                step.tab_id,
-                if step.ok { 1 } else { 0 },
-                if args_truncated { 1 } else { 0 },
-                if result_truncated { 1 } else { 0 },
-            ],
-        )?;
-        transaction.execute(
-            "UPDATE sessions SET steps = steps + 1, errors = errors + ?2 WHERE id = ?1",
-            params![step.session_id, if step.ok { 0 } else { 1 }],
-        )?;
-        transaction.commit()?;
-        Ok(())
+        let failure = if ok { 0 } else { 1 };
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    let transaction = connection.begin().await?;
+                    let sequence = transaction
+                        .query_one(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "SELECT COALESCE(MAX(seq), 0) + 1 FROM steps WHERE session_id = ?1",
+                            vec![DbValue::from(session_id.clone())],
+                        ))
+                        .await?;
+                    let seq = sequence
+                        .map(|row| row.try_get_by_index::<i64>(0))
+                        .transpose()?
+                        .unwrap_or(0);
+                    transaction
+                        .execute(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "INSERT INTO steps (session_id, seq, ts, tool, args_json, result_json,
+                                                error_code, duration_ms, browser_id, tab_id, ok,
+                                                args_truncated, result_truncated)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                            vec![
+                                DbValue::from(session_id.clone()),
+                                DbValue::from(seq),
+                                DbValue::from(ts),
+                                DbValue::from(tool),
+                                DbValue::from(args_json),
+                                DbValue::from(result_json),
+                                DbValue::from(error_code),
+                                DbValue::from(duration_ms),
+                                DbValue::from(browser_id),
+                                DbValue::from(tab_id),
+                                DbValue::from(if ok { 1_i64 } else { 0_i64 }),
+                                DbValue::from(if args_truncated { 1_i64 } else { 0_i64 }),
+                                DbValue::from(if result_truncated { 1_i64 } else { 0_i64 }),
+                            ],
+                        ))
+                        .await?;
+                    transaction
+                        .execute(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "UPDATE sessions SET steps = steps + 1, errors = errors + ?2 WHERE id = ?1",
+                            vec![DbValue::from(session_id), DbValue::from(failure)],
+                        ))
+                        .await?;
+                    transaction.commit().await?;
+                    Ok(())
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Newest sessions first.
@@ -480,54 +499,97 @@ impl Store {
         limit: u32,
         since_ms: Option<i64>,
     ) -> Result<Vec<SessionRow>, RecordError> {
-        let connection = lock(&self.connection);
-        let mut statement = connection.prepare(
-            "SELECT id, started_at, ended_at, browser, profile, agent, transport,
-                    status, steps, errors
-             FROM sessions
-             WHERE (?1 IS NULL OR started_at >= ?1)
-             ORDER BY started_at DESC, id DESC
-             LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![since_ms, i64::from(limit)], map_session)?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    let rows = connection
+                        .query_all(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "SELECT id, started_at, ended_at, browser, profile, agent, transport,
+                                    status, steps, errors
+                             FROM sessions
+                             WHERE (?1 IS NULL OR started_at >= ?1)
+                             ORDER BY started_at DESC, id DESC
+                             LIMIT ?2",
+                            vec![DbValue::from(since_ms), DbValue::from(i64::from(limit))],
+                        ))
+                        .await?;
+                    rows.iter().map(map_session).collect()
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Number of sessions, optionally restricted by start time.
     pub fn count_sessions(&self, since_ms: Option<i64>) -> Result<i64, RecordError> {
-        let connection = lock(&self.connection);
-        let count = connection.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE (?1 IS NULL OR started_at >= ?1)",
-            params![since_ms],
-            |row| row.get(0),
-        )?;
-        Ok(count)
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    let row = connection
+                        .query_one(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "SELECT COUNT(*) FROM sessions WHERE (?1 IS NULL OR started_at >= ?1)",
+                            vec![DbValue::from(since_ms)],
+                        ))
+                        .await?;
+                    row.map(|row| row.try_get_by_index::<i64>(0))
+                        .transpose()
+                        .map(|count| count.unwrap_or(0))
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Whether a session exists.
     pub fn session_exists(&self, id: &str) -> Result<bool, RecordError> {
-        let connection = lock(&self.connection);
-        let count: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
+        let id = id.to_string();
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    let row = connection
+                        .query_one(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+                            vec![DbValue::from(id)],
+                        ))
+                        .await?;
+                    let count = row
+                        .map(|row| row.try_get_by_index::<i64>(0))
+                        .transpose()?
+                        .unwrap_or(0);
+                    Ok(count > 0)
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// One session by id.
     pub fn get_session(&self, id: &str) -> Result<Option<SessionRow>, RecordError> {
-        let connection = lock(&self.connection);
-        let row = connection
-            .query_row(
-                "SELECT id, started_at, ended_at, browser, profile, agent, transport,
-                        status, steps, errors
-                 FROM sessions WHERE id = ?1",
-                params![id],
-                map_session,
-            )
-            .optional()?;
-        Ok(row)
+        let id = id.to_string();
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    let row = connection
+                        .query_one(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "SELECT id, started_at, ended_at, browser, profile, agent, transport,
+                                    status, steps, errors
+                             FROM sessions WHERE id = ?1",
+                            vec![DbValue::from(id)],
+                        ))
+                        .await?;
+                    row.as_ref().map(map_session).transpose()
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Steps of a session in ascending sequence order.
@@ -537,29 +599,55 @@ impl Store {
         from_seq: i64,
         limit: u32,
     ) -> Result<Vec<StepRow>, RecordError> {
-        let connection = lock(&self.connection);
-        let mut statement = connection.prepare(
-            "SELECT id, session_id, seq, ts, tool, args_json, result_json, error_code,
-                    duration_ms, browser_id, tab_id, ok, args_truncated, result_truncated
-             FROM steps
-             WHERE session_id = ?1 AND seq >= ?2
-             ORDER BY seq ASC
-             LIMIT ?3",
-        )?;
-        let rows =
-            statement.query_map(params![session_id, from_seq, i64::from(limit)], map_step)?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let session_id = session_id.to_string();
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    let rows = connection
+                        .query_all(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "SELECT id, session_id, seq, ts, tool, args_json, result_json, error_code,
+                                    duration_ms, browser_id, tab_id, ok, args_truncated, result_truncated
+                             FROM steps
+                             WHERE session_id = ?1 AND seq >= ?2
+                             ORDER BY seq ASC
+                             LIMIT ?3",
+                            vec![
+                                DbValue::from(session_id),
+                                DbValue::from(from_seq),
+                                DbValue::from(i64::from(limit)),
+                            ],
+                        ))
+                        .await?;
+                    rows.iter().map(map_step).collect()
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Number of steps recorded in a session.
     pub fn count_steps(&self, session_id: &str) -> Result<i64, RecordError> {
-        let connection = lock(&self.connection);
-        let count = connection.query_row(
-            "SELECT COUNT(*) FROM steps WHERE session_id = ?1",
-            params![session_id],
-            |row| row.get(0),
-        )?;
-        Ok(count)
+        let session_id = session_id.to_string();
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    let row = connection
+                        .query_one(Statement::from_sql_and_values(
+                            DbBackend::Sqlite,
+                            "SELECT COUNT(*) FROM steps WHERE session_id = ?1",
+                            vec![DbValue::from(session_id)],
+                        ))
+                        .await?;
+                    row.map(|row| row.try_get_by_index::<i64>(0))
+                        .transpose()
+                        .map(|count| count.unwrap_or(0))
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Total number of sessions in the store.
@@ -569,20 +657,44 @@ impl Store {
 
     /// Number of sessions that are still active.
     pub fn sessions_active(&self) -> Result<i64, RecordError> {
-        let connection = lock(&self.connection);
-        let count = connection.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count)
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    let row = connection
+                        .query_one(Statement::from_string(
+                            DbBackend::Sqlite,
+                            "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL".to_string(),
+                        ))
+                        .await?;
+                    row.map(|row| row.try_get_by_index::<i64>(0))
+                        .transpose()
+                        .map(|count| count.unwrap_or(0))
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// Total number of recorded steps.
     pub fn steps_total(&self) -> Result<i64, RecordError> {
-        let connection = lock(&self.connection);
-        let count = connection.query_row("SELECT COUNT(*) FROM steps", [], |row| row.get(0))?;
-        Ok(count)
+        self.run(move |connection| {
+            Box::pin(async move {
+                let result = async {
+                    let row = connection
+                        .query_one(Statement::from_string(
+                            DbBackend::Sqlite,
+                            "SELECT COUNT(*) FROM steps".to_string(),
+                        ))
+                        .await?;
+                    row.map(|row| row.try_get_by_index::<i64>(0))
+                        .transpose()
+                        .map(|count| count.unwrap_or(0))
+                }
+                .await;
+                (connection, result)
+            })
+        })
     }
 
     /// All rows of a session, in export order.
@@ -598,37 +710,217 @@ impl Store {
     }
 }
 
-fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
+impl Drop for Store {
+    fn drop(&mut self) {
+        let sender = lock(&self.sender).take();
+        drop(sender);
+        if let Some(worker) = lock(&self.worker).take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+async fn open_connection(target: &Target) -> Result<DatabaseConnection, RecordError> {
+    let existed_before = match target {
+        Target::File(path) => std::fs::metadata(path)
+            .map(|metadata| metadata.len() > 0)
+            .unwrap_or(false),
+        Target::Memory | Target::ReadOnly(_) => false,
+    };
+    let (options, writable) = match target {
+        Target::File(path) => (
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal),
+            true,
+        ),
+        Target::Memory => (
+            SqliteConnectOptions::new()
+                .in_memory(true)
+                .journal_mode(SqliteJournalMode::Wal),
+            true,
+        ),
+        Target::ReadOnly(path) => (
+            SqliteConnectOptions::new()
+                .filename(path)
+                .read_only(true)
+                .create_if_missing(false),
+            false,
+        ),
+    };
+    let options = options
+        .synchronous(SqliteSynchronous::Normal)
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let connection = DatabaseConnection::from(pool);
+    if writable {
+        if let Target::File(path) = target {
+            if existed_before && !migration_recorded(&connection).await? {
+                let backup = backup_database(&connection, path).await?;
+                tracing::info!(
+                    database = %path.display(),
+                    backup = %backup.display(),
+                    "backed up recording database before migration"
+                );
+            }
+        }
+        migrations::Migrator::up(&connection, None).await?;
+    }
+    let found = read_schema_version(&connection).await?;
+    if found != SCHEMA_VERSION {
+        return Err(RecordError::UnsupportedSchema { found });
+    }
+    if writable {
+        maintenance(&connection).await?;
+    }
+    Ok(connection)
+}
+
+async fn migration_recorded(connection: &DatabaseConnection) -> Result<bool, RecordError> {
+    let table = connection
+        .query_one(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'seaql_migrations'"
+                .to_string(),
+        ))
+        .await?;
+    if table.is_none() {
+        return Ok(false);
+    }
+    let row = connection
+        .query_one(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT COUNT(*) FROM seaql_migrations".to_string(),
+        ))
+        .await?;
+    Ok(row
+        .map(|row| row.try_get_by_index::<i64>(0))
+        .transpose()?
+        .unwrap_or(0)
+        > 0)
+}
+
+async fn backup_database(
+    connection: &DatabaseConnection,
+    path: &Path,
+) -> Result<PathBuf, RecordError> {
+    let backup = backup_destination(path);
+    if let Err(error) = connection
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "VACUUM INTO ?1",
+            vec![DbValue::from(backup.to_string_lossy().to_string())],
+        ))
+        .await
+    {
+        return Err(RecordError::Backup {
+            path: path.to_path_buf(),
+            backup,
+            message: error.to_string(),
+        });
+    }
+    Ok(backup)
+}
+
+fn backup_destination(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("corvus.db");
+    let stamp = now_millis();
+    for attempt in 0..100 {
+        let suffix = if attempt == 0 {
+            format!(".backup-{stamp}.db")
+        } else {
+            format!(".backup-{stamp}-{attempt}.db")
+        };
+        let candidate = path.with_file_name(format!("{name}{suffix}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    path.with_file_name(format!("{name}.backup-{stamp}-fallback.db"))
+}
+
+async fn read_schema_version(connection: &DatabaseConnection) -> Result<i64, RecordError> {
+    let row = connection
+        .query_one(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'".to_string(),
+        ))
+        .await?;
+    Ok(row
+        .map(|row| row.try_get_by_index::<String>(0))
+        .transpose()?
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0))
+}
+
+async fn maintenance(connection: &DatabaseConnection) -> Result<(), DbErr> {
+    let now = now_millis();
+    let cutoff = now.saturating_sub(RETENTION_MS);
+    let transaction = connection.begin().await?;
+    transaction
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE sessions SET ended_at = ?1, status = 'abandoned' WHERE ended_at IS NULL",
+            vec![DbValue::from(now)],
+        ))
+        .await?;
+    transaction
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "DELETE FROM steps WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?1)",
+            vec![DbValue::from(cutoff)],
+        ))
+        .await?;
+    transaction
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "DELETE FROM sessions WHERE started_at < ?1",
+            vec![DbValue::from(cutoff)],
+        ))
+        .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+fn map_session(row: &QueryResult) -> Result<SessionRow, DbErr> {
     Ok(SessionRow {
-        id: row.get(0)?,
-        started_at: row.get(1)?,
-        ended_at: row.get(2)?,
-        browser: row.get(3)?,
-        profile: row.get(4)?,
-        agent: row.get(5)?,
-        transport: row.get(6)?,
-        status: row.get(7)?,
-        steps: row.get(8)?,
-        errors: row.get(9)?,
+        id: row.try_get_by_index(0)?,
+        started_at: row.try_get_by_index(1)?,
+        ended_at: row.try_get_by_index(2)?,
+        browser: row.try_get_by_index(3)?,
+        profile: row.try_get_by_index(4)?,
+        agent: row.try_get_by_index(5)?,
+        transport: row.try_get_by_index(6)?,
+        status: row.try_get_by_index(7)?,
+        steps: row.try_get_by_index(8)?,
+        errors: row.try_get_by_index(9)?,
     })
 }
 
-fn map_step(row: &rusqlite::Row<'_>) -> rusqlite::Result<StepRow> {
+fn map_step(row: &QueryResult) -> Result<StepRow, DbErr> {
     Ok(StepRow {
-        id: row.get(0)?,
-        session_id: row.get(1)?,
-        seq: row.get(2)?,
-        ts: row.get(3)?,
-        tool: row.get(4)?,
-        args_json: row.get(5)?,
-        result_json: row.get(6)?,
-        error_code: row.get(7)?,
-        duration_ms: row.get(8)?,
-        browser_id: row.get(9)?,
-        tab_id: row.get(10)?,
-        ok: row.get::<_, i64>(11)? != 0,
-        args_truncated: row.get::<_, i64>(12)? != 0,
-        result_truncated: row.get::<_, i64>(13)? != 0,
+        id: row.try_get_by_index(0)?,
+        session_id: row.try_get_by_index(1)?,
+        seq: row.try_get_by_index(2)?,
+        ts: row.try_get_by_index(3)?,
+        tool: row.try_get_by_index(4)?,
+        args_json: row.try_get_by_index(5)?,
+        result_json: row.try_get_by_index(6)?,
+        error_code: row.try_get_by_index(7)?,
+        duration_ms: row.try_get_by_index(8)?,
+        browser_id: row.try_get_by_index(9)?,
+        tab_id: row.try_get_by_index(10)?,
+        ok: row.try_get_by_index::<i64>(11)? != 0,
+        args_truncated: row.try_get_by_index::<i64>(12)? != 0,
+        result_truncated: row.try_get_by_index::<i64>(13)? != 0,
     })
 }
 
@@ -646,14 +938,6 @@ fn encode_payload(value: &Value) -> (String, bool) {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
-}
-
-/// Milliseconds since the Unix epoch.
-pub fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Resolve the database path: an explicit path, then CORVUS_HOME, then
@@ -721,6 +1005,7 @@ fn non_empty_var(name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
         let unique = format!(
@@ -765,6 +1050,117 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    fn seed_legacy_database(path: &Path) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    SqliteConnectOptions::new()
+                        .filename(path)
+                        .create_if_missing(true),
+                )
+                .await
+                .expect("seed connection");
+            let schema = [
+                "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER, browser TEXT, profile TEXT, agent TEXT, transport TEXT NOT NULL, status TEXT NOT NULL, steps INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0)",
+                "CREATE TABLE steps (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, tool TEXT NOT NULL, args_json TEXT, result_json TEXT, error_code TEXT, duration_ms INTEGER NOT NULL, browser_id TEXT, tab_id TEXT, ok INTEGER NOT NULL, args_truncated INTEGER NOT NULL DEFAULT 0, result_truncated INTEGER NOT NULL DEFAULT 0, UNIQUE(session_id, seq))",
+                "CREATE INDEX steps_session_seq ON steps(session_id, seq)",
+            ];
+            for statement in schema {
+                sqlx::query(statement)
+                    .execute(&pool)
+                    .await
+                    .expect("legacy schema");
+            }
+            sqlx::query(
+                "INSERT INTO schema_meta (key, value) VALUES ('schema_version', '1')",
+            )
+            .execute(&pool)
+            .await
+            .expect("schema marker");
+            sqlx::query(
+                "INSERT INTO sessions (id, started_at, ended_at, transport, status, steps, errors) VALUES ('s-legacy', ?1, ?2, 'http', 'closed', 1, 0)",
+            )
+            .bind(now_millis() - 1_000)
+            .bind(now_millis())
+            .execute(&pool)
+            .await
+            .expect("legacy session");
+            sqlx::query(
+                "INSERT INTO steps (session_id, seq, ts, tool, args_json, result_json, duration_ms, ok) VALUES ('s-legacy', 1, ?1, 'browser_click', '{\"target\":\"@e1\"}', '{\"clicked\":true}', 5, 1)",
+            )
+            .bind(now_millis())
+            .execute(&pool)
+            .await
+            .expect("legacy step");
+            pool.close().await;
+        });
+    }
+
+    fn backup_files(path: &Path) -> Vec<PathBuf> {
+        let parent = path.parent().expect("parent");
+        let prefix = format!(
+            "{}.backup-",
+            path.file_name().expect("file name").to_string_lossy()
+        );
+        let mut files: Vec<PathBuf> = std::fs::read_dir(parent)
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .map(|name| name.to_string_lossy().starts_with(&prefix))
+                    .unwrap_or(false)
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn existing_v13_database_is_backed_up_before_migration() {
+        let path = temp_path("backup");
+        seed_legacy_database(&path);
+        assert!(backup_files(&path).is_empty());
+        {
+            let store = Store::open(&path).expect("upgrade");
+            let session = store
+                .get_session("s-legacy")
+                .expect("read")
+                .expect("legacy session");
+            assert_eq!(session.steps, 1);
+            assert_eq!(store.schema_version(), 1);
+        }
+        let backups = backup_files(&path);
+        assert_eq!(backups.len(), 1, "one pre-migration backup");
+        let backup = Store::open_read_only(&backups[0]).expect("read backup");
+        let session = backup
+            .get_session("s-legacy")
+            .expect("read")
+            .expect("legacy session in backup");
+        assert_eq!(session.steps, 1);
+        assert_eq!(
+            backup
+                .get_session_steps("s-legacy", 0, 10)
+                .expect("steps")
+                .len(),
+            1
+        );
+        drop(backup);
+        let _ = std::fs::remove_file(&path);
+        for file in backups {
+            let _ = std::fs::remove_file(file);
+        }
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
     #[test]
     fn startup_marks_active_sessions_abandoned_and_prunes_old_ones() {
         let path = temp_path("maintenance");
@@ -773,12 +1169,11 @@ mod tests {
             store
                 .start_session("s-live", "http", None, None)
                 .expect("session");
-            let connection = lock(&store.connection);
-            connection
-                .execute(
+            store
+                .test_execute(
                     "INSERT INTO sessions (id, started_at, transport, status)
                      VALUES ('s-old', ?1, 'http', 'closed')",
-                    params![now_millis() - RETENTION_MS - 1],
+                    now_millis() - RETENTION_MS - 1,
                 )
                 .expect("old session");
         }

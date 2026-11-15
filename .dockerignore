@@ -3,10 +3,14 @@
 target
 dist
 docs
-tests
 deploy
 scripts
 *.md
 *.log
 *.zip
 *.tar.gz
+extension/node_modules
+extension/build
+extension/coverage
+extension/test-results
+extension/playwright-report

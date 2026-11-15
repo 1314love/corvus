@@ -31,6 +31,15 @@ pub struct McpHttpServer {
 impl McpHttpServer {
     /// Bind the listener. Use port 0 to let the operating system choose.
     pub async fn bind(addr: SocketAddr, server: Arc<McpServer>) -> std::io::Result<Self> {
+        Self::bind_with(addr, server, Router::new()).await
+    }
+
+    /// Bind the listener and merge an extra router, so REST and MCP share one port.
+    pub async fn bind_with(
+        addr: SocketAddr,
+        server: Arc<McpServer>,
+        extra: Router,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
         let state = Arc::new(HttpState { server });
@@ -44,7 +53,8 @@ impl McpHttpServer {
             .route("/health", get(health))
             .route("/metrics", get(metrics))
             .route("/", get(banner))
-            .with_state(state);
+            .with_state(state)
+            .merge(extra);
         Ok(Self {
             listener,
             local_addr,

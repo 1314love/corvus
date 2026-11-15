@@ -51,8 +51,9 @@ for name in corvusd corvus; do
     fi
 done
 
-if [ ! -f "$repo_root/extension/manifest.json" ]; then
-    echo "error: extension/manifest.json is missing" >&2
+extension_source="$repo_root/extension/build/extension"
+if [ ! -f "$extension_source/manifest.json" ]; then
+    echo "error: extension/build/extension/manifest.json is missing; run pnpm build in extension/" >&2
     exit 1
 fi
 
@@ -62,7 +63,7 @@ if [ ! -f "$repo_root/packaging/windows/nssm.exe" ]; then
 fi
 
 rm -rf "$dist_dir/extension"
-cp -R "$repo_root/extension" "$dist_dir/extension"
+cp -R "$extension_source" "$dist_dir/extension"
 cp "$repo_root/packaging/windows/nssm.exe" "$dist_dir/nssm.exe"
 
 if [ ! -f "$repo_root/scripts/install-windows.ps1" ] || [ ! -f "$repo_root/scripts/uninstall-windows.ps1" ]; then
