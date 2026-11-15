@@ -157,13 +157,13 @@ jobs:
           wc -c release-body.md
 
       - name: Download Linux artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: corvus-linux
           path: artifacts/linux
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: corvus-windows
           path: artifacts/windows
