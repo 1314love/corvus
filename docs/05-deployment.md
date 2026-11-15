@@ -71,7 +71,7 @@ The unit runs as the unprivileged service user with a read-only system view, `Pr
 
 ## 3. Linux upgrade and uninstall
 
-Upgrade by extracting a newer archive and running the same installer. It stops the service, replaces the binaries and extension, rewrites the unit and restarts it; `data/corvus.db` and `logs/` are preserved. The database schema is version 1, so a 1.0.0 database opens in place; when 1.5.0 first opens an existing database, it writes a `VACUUM INTO` backup beside it before applying the schema baseline, and aborts startup if that backup fails.
+Upgrade by extracting a newer archive and running the same installer. It stops the service, replaces the binaries and extension, rewrites the unit and restarts it; `data/corvus.db` and `logs/` are preserved. The database schema is version 1, so a 1.0.0 database opens in place; when the daemon first opens an existing database (since 1.4.0), it writes a `VACUUM INTO` backup beside it before applying the schema baseline, and aborts startup if that backup fails.
 
 Uninstall keeps data and logs by default:
 
@@ -183,7 +183,7 @@ CDP is host-loopback only. The daemon accepts a browser-level endpoint whose hos
 
 ## 8. Backup, restore and retention
 
-The recording database is SQLite in WAL mode behind SeaORM, with schema version 1 and a single writer connection. For a consistent copy, stop the daemon or use SQLite's online backup, then copy `data/corvus.db` (and any `-wal`/`-shm` files when stopped). On the first 1.5.0 start against an existing database, the recorder writes `data/corvus.db.backup-<millis>.db` with `VACUUM INTO` before applying the baseline migration; if that backup cannot be written, startup aborts. Logs are not required for restore.
+The recording database is SQLite in WAL mode behind SeaORM, with schema version 1 and a single writer connection. For a consistent copy, stop the daemon or use SQLite's online backup, then copy `data/corvus.db` (and any `-wal`/`-shm` files when stopped). On the first start against an existing database (since 1.4.0), the recorder writes `data/corvus.db.backup-<millis>.db` with `VACUUM INTO` before applying the baseline migration; if that backup cannot be written, startup aborts. Logs are not required for restore.
 
 The daemon marks previously active sessions `abandoned` at startup and prunes sessions older than 30 days. Treat the database as sensitive: it contains tool arguments and results, including page text. Kubernetes users can snapshot the PVC; Docker users can back up the named volume.
 

@@ -71,7 +71,7 @@ sudo CORVUS_HOME=/var/lib/corvus CORVUS_USER=corvus \
 
 ## 3. Linux 升级与卸载
 
-升级时解压新包并运行同一个安装器。它会停止服务、替换二进制与扩展、重写单元并重启；`data/corvus.db` 与 `logs/` 保留。数据库 schema 为版本 1，1.0.0 的数据库可原地打开；1.5.0 首次打开既有数据库时，会先用 `VACUUM INTO` 在旁边写一份备份，再应用 schema 基线，备份失败则中止启动。
+升级时解压新包并运行同一个安装器。它会停止服务、替换二进制与扩展、重写单元并重启；`data/corvus.db` 与 `logs/` 保留。数据库 schema 为版本 1，1.0.0 的数据库可原地打开；自 1.4.0 起，首次打开既有数据库时，会先用 `VACUUM INTO` 在旁边写一份备份，再应用 schema 基线，备份失败则中止启动。
 
 卸载默认保留数据与日志：
 
@@ -183,7 +183,7 @@ CDP 仅限宿主机回环。守护进程只接受主机为 `127.0.0.1`、`localh
 
 ## 8. 备份、恢复与保留期
 
-录制库是 SeaORM 之下、schema 版本 1 的 WAL 模式 SQLite，写入使用单连接。要获得一致副本，请停止守护进程或使用 SQLite 在线备份，然后复制 `data/corvus.db`（停止时连同 `-wal`/`-shm`）。1.5.0 首次在既有数据库上启动时，录制模块会先用 `VACUUM INTO` 写出 `data/corvus.db.backup-<millis>.db`，再应用基线迁移；无法写入备份则中止启动。日志不是恢复所需。
+录制库是 SeaORM 之下、schema 版本 1 的 WAL 模式 SQLite，写入使用单连接。要获得一致副本，请停止守护进程或使用 SQLite 在线备份，然后复制 `data/corvus.db`（停止时连同 `-wal`/`-shm`）。自 1.4.0 起，首次在既有数据库上启动时，录制模块会先用 `VACUUM INTO` 写出 `data/corvus.db.backup-<millis>.db`，再应用基线迁移；无法写入备份则中止启动。日志不是恢复所需。
 
 守护进程启动时把上一进程遗留的活动会话标记为 `abandoned`，并清理早于 30 天的会话。数据库包含工具参数与结果（包括页面文本），应视为敏感数据。Kubernetes 用户可对 PVC 做快照；Docker 用户可备份命名卷。
 
