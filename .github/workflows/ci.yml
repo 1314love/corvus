@@ -107,6 +107,22 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: extension/pnpm-lock.yaml
+
+      - name: Build browser extension
+        working-directory: extension
+        run: pnpm install --frozen-lockfile && pnpm build
+
       - name: Build Linux package
         run: bash scripts/package-linux.sh
 
