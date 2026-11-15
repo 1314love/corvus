@@ -45,9 +45,9 @@ Corvus 由一个本地守护进程、一个命令行和一个浏览器扩展组�
 Linux 发布包仅面向 x86_64。先解压到一个目录，再安装：
 
 ```bash
-mkdir -p corvus-1.5.0-linux-x86_64
-tar -xzf corvus-1.5.0-linux-x86_64.tar.gz -C corvus-1.5.0-linux-x86_64
-cd corvus-1.5.0-linux-x86_64
+mkdir -p corvus-1.6.0-linux-x86_64
+tar -xzf corvus-1.6.0-linux-x86_64.tar.gz -C corvus-1.6.0-linux-x86_64
+cd corvus-1.6.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -98,7 +98,7 @@ Windows 发布包是 ZIP，包含 `corvusd.exe`、`corvus.exe`、`nssm.exe`、�
 在仓库根目录构建镜像：
 
 ```bash
-docker build -t corvus:1.5.0 .
+docker build -t corvus:1.6.0 .
 ```
 
 镜像以 UID/GID 10001 运行 `corvusd serve --bind 0.0.0.0 --home /data`，运行数据存放在 `/data` 卷，暴露 7330（WebSocket）与 7331（MCP HTTP 与 REST）。未打包扩展位于 `/opt/corvus/extension`，不在 `/data`；请用 `docker cp` 复制出来，或在宿主机上使用发布 ZIP 中的扩展。
@@ -109,7 +109,7 @@ docker build -t corvus:1.5.0 .
 docker volume create corvus-data
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
-  -v corvus-data:/data corvus:1.5.0
+  -v corvus-data:/data corvus:1.6.0
 curl -fsS http://127.0.0.1:7331/health
 ```
 
@@ -127,7 +127,7 @@ chmod 600 corvus-auth.env
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
   --env-file corvus-auth.env \
-  -v corvus-data:/data corvus:1.5.0
+  -v corvus-data:/data corvus:1.6.0
 ```
 
 启用本地认证后，REST `/api/v1` 需要来自 `/api/v1/auth/login` 的 bearer 令牌；`/mcp`、WebSocket、`/health`、`/metrics`、`/api-docs/openapi.json` 与 `/docs` 仍无认证。已启用本地认证时，豁免标志不会削弱守护进程。覆盖镜像入口的部署必须自行传入 `--allow-no-auth` 或本地认证；仓库内的 Kubernetes Deployment 覆盖了 command 与 args 并传入了 `--allow-no-auth`，因此可以启动，但明确没有认证。这是不安全默认配置，不是开箱即用的安全部署；请使用可信认证代理。
@@ -146,8 +146,8 @@ docker compose down
 `deploy/k8s/` 中的清单创建 `corvus` 命名空间、1 GiB ReadWriteOnce PVC、一个守护进程副本、ClusterIP Service 与默认拒绝的 NetworkPolicy。部署使用只读根文件系统、无 capability、RuntimeDefault seccomp，并通过 init 容器把镜像内的扩展播种到卷。
 
 ```bash
-docker build -t corvus:1.5.0 .
-kind load docker-image corvus:1.5.0   # 或推送到你的镜像仓库
+docker build -t corvus:1.6.0 .
+kind load docker-image corvus:1.6.0   # 或推送到你的镜像仓库
 kubectl apply -k deploy/k8s
 kubectl -n corvus rollout status deployment/corvus
 kubectl -n corvus port-forward svc/corvus 7330:7330 7331:7331

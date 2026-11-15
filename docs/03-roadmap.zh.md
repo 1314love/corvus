@@ -68,7 +68,7 @@ v1.4.0 把后端拆成端口与适配器 crate，在 MCP 之外增加 REST 面�
 | 版本对齐 | 发布打标签前，cargo 工作区、扩展 package 与 manifest 统一为 1.4.0。 |
 | 发布 | 1.4.0 二进制、变更日志与双语发布说明。QA 验收记录在 `tests/acceptance/v1.4.0.md`；最终 CI 运行 43690906863 与已发布资产哈希已记录在发布说明中；NFR-3 与 Firefox 偏差仍未关闭。 |
 
-现状：1.4.0 已交付，1.5.0 已于 2026-11-15 交付。1.4.0 发布时 cargo 工作区与扩展均为 1.4.0，[v1.4.0.md](../tests/acceptance/v1.4.0.md) 记录了 199 个 workspace 测试（25 个套件）、135 项一致性检查与扩展门禁的 PASS。NFR-3 仍未通过，不宣称已有 1.4.0 实机部署，最终 CI 运行 43690906863 与已发布资产哈希已记录在发布说明中。当前版本为 1.5.0。
+现状：1.4.0 已交付，1.5.0 于 2026-11-15 交付，1.6.0 于 2026-11-15 发布。1.4.0 发布时 cargo 工作区与扩展均为 1.4.0，[v1.4.0.md](../tests/acceptance/v1.4.0.md) 记录了 199 个 workspace 测试（25 个套件）、135 项一致性检查与扩展门禁的 PASS。NFR-3 仍未通过，不宣称已有 1.4.0 实机部署，最终 CI 运行 43690906863 与已发布资产哈希已记录在发布说明中。当前版本为 1.6.0。
 
 ## v1.5.0 已交付（2026-11-15）
 
@@ -86,19 +86,20 @@ v1.4.0 把后端拆成端口与适配器 crate，在 MCP 之外增加 REST 面�
 
 发布实测：25 条结果行上 220 个 workspace 测试通过、136 项一致性检查通过、扩展构建 14 个文件、8 个文件中的 41 个 Vitest 测试、隔离 Playwright 1/1；Windows 安装包验收在独立的本地 ZIP 上 98 项检查与观察、0 失败（18,516,546 B，SHA-256 `2a36e28e42385d473edf058e8ed047a20ebf3cc4638f48fd3b469f80c29e5f5f`）。已发布产物是 CI 重建产物：Windows 18,534,237 B SHA-256 `e91e2ebce31d99d8753004849777e37277a93acd493cd320edfbda3987baabad`，Linux 19,849,047 B SHA-256 `c1a62be75c2895cd9eef27848b4a304551e2177bd66b9e1730d6150b9657c136`，合并 `SHA256SUMS` 194 B SHA-256 `845aae4ee442020a34de4d90661c8cb2e6f83377f226d7a9e6263bdb354f9fbf`。QA 与安装包验收在发布提交前、冻结树上测得。NFR-3 仍未通过，不宣称任何 1.5.0 实机部署，也不宣称任何 Docker 镜像仓库发布或 Kubernetes 运行时测试。
 
-## v1.6.0 已进入工作树（QA PASS；未发布）
+## v1.6.0 已发布（2026-11-15）
 
-1.6.0 在 `crates/corvusd/src/guardrails.rs` 新增可选守护策略：只读模式、工具允许与拒绝清单、主机与私有网络导航门禁、cookie 脱敏以及不可信内容边界。执行发生在派发前：`RouterBackend::call`、每个 `browser_batch` 步骤与 `session_replay`。拒绝使用 `POLICY_DENIED`，REST 返回 403。43 工具面与九个类别保持不变。HEAD `61ca85f` 的工作树已取得正式 QA 验收 PASS：25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试与 Playwright 1/1；记录一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium 发现。1.6.0 尚无标签、CI 运行、已发布安装包或 GitHub 发布。独立的本地安装包 ZIP 已通过本地验收：84 项检查与观察、0 失败（18,801,258 B，SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`）；它不是已发布产物。
+1.6.0 于 2026-11-15 由附注标签 `v1.6.0` 发布；标签对象 `c5daf98eb03b0fac310e53c3a59edfa77874f919` 指向 `b420c3787a8f240c60514ac8c745e67474f1c1fd`。它在 `crates/corvusd/src/guardrails.rs` 新增可选守护策略：只读模式、工具允许与拒绝清单、主机与私有网络导航门禁、cookie 脱敏以及不可信内容边界。执行发生在派发前：`RouterBackend::call`、每个 `browser_batch` 步骤与 `session_replay`。拒绝使用 `POLICY_DENIED`，REST 返回 403。43 工具面与九个类别保持不变。HEAD `61ca85f` 的工作树已取得正式 QA 验收 PASS：25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试与 Playwright 1/1；记录一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium 发现。主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了产物。独立的本地安装包 ZIP 已通过本地验收：84 项检查与观察、0 失败（18,801,258 B，SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`）；它不是已发布产物。
 
-| 项目 | 已进入工作树 | 证据 |
+| 项目 | 已交付 | 证据 |
 |---|---|---|
 | 守护策略 | 严格 version 1 JSON、65,536 字节上限、CLI `--guardrails` 与 `CORVUS_GUARDRAILS`；非法策略中止启动。 | `crates/corvusd/src/guardrails.rs` 及其单元测试；QA PASS。 |
 | 执行 | 派发前检查工具与 URL；批次与回放受同一策略约束；`POLICY_DENIED` 为第 11 个错误码，REST 返回 403。 | `crates/corvusd/src/lib.rs`；237 个 workspace 测试、0 失败。 |
 | 脱敏与边界 | cookie 值脱敏；紧凑快照、页面文本与 HTML 用不可信内容标记包裹；密码输入掩码。 | `corvusd` 与 `corvus-cdp` 中的代码；QA PASS，一项 `browser_type` Low 发现。 |
 | 扩展体验 | 本地化的 `POLICY_DENIED` 消息，带脱敏原因。 | 扩展代码与单元测试；10 个文件中的 55 个 Vitest 测试、14 个构建文件、Playwright 1/1。 |
-| 表面与版本 | 43 个 MCP 工具、九个类别；源码元数据报告 1.6.0。 | 目录未变；源码元数据为 1.6.0；发布元数据待补。 |
+| 表面与版本 | 43 个 MCP 工具、九个类别；源码元数据与发布元数据均报告 1.6.0。 | 目录未变；已作为标签 `v1.6.0` 发布。 |
+| 发布 | 附注标签 `v1.6.0` 对象 `c5daf98eb03b0fac310e53c3a59edfa77874f919` 指向 `b420c3787a8f240c60514ac8c745e67474f1c1fd`；主 CI `43716832915` 通过八个任务；发布工作流 `43717236667`；GitHub 发布 `446071476`。 | 已发布产物已验证：Windows ZIP 18,822,522 B SHA-256 `bdec40f2f26012f2aeb5f977d6eef4fe80c18a662683c4fa9004ea99f59451db`；Linux tar 包 20,124,260 B SHA-256 `e7a21d3996e52f8a0c5725d959987aa8c96eacfb044a928341575af19d4ce738`；合并 `SHA256SUMS` 194 B SHA-256 `4ee452ce947c4b47cbe9cca4eabc64d8eac1345177f27ea3e2b0acca2e49f5bf`。 |
 
-QA 证据：[v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md) 记录 25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个文件/490,393 B 的扩展构建与 Playwright 1/1 通过；报告记录一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium 发现。发布证据仍为 Pending：不存在 1.6.0 标签、CI 运行、已发布安装包、已发布的 Windows 或 Linux 产物、合并校验和或 GitHub 发布。独立的本地安装包 ZIP 已通过本地验收：84 项检查与观察、0 失败（18,801,258 B，SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`）；它不是已发布产物。NFR-3 仍未通过，不宣称任何 1.6.0 实机部署。
+QA 证据：[v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md) 记录 25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个文件/490,393 B 的扩展构建与 Playwright 1/1 通过；报告记录一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium 发现。发布证据已发布：主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了 Windows ZIP 18,822,522 B SHA-256 `bdec40f2f26012f2aeb5f977d6eef4fe80c18a662683c4fa9004ea99f59451db`、Linux tar 包 20,124,260 B SHA-256 `e7a21d3996e52f8a0c5725d959987aa8c96eacfb044a928341575af19d4ce738` 与合并 `SHA256SUMS` 194 B SHA-256 `4ee452ce947c4b47cbe9cca4eabc64d8eac1345177f27ea3e2b0acca2e49f5bf`。CoT 与语言门禁通过 10 个用例的自检，扫描 313 个跟踪文件、0 发现，最近五个提交 0 发现，CI language 门禁通过。独立的本地安装包 ZIP 已通过本地验收：84 项检查与观察、0 失败（18,801,258 B，SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`）；它不是已发布产物。NFR-3 仍未通过，不宣称任何 1.6.0 实机部署。
 
 **v1.7.0 下一步（尚未定义范围）。** 未设定范围或日期。
 

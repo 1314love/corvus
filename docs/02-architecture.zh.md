@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：1.5.0 是当前已发布版本，于 2026-11-15 由标签 `v1.5.0` 发布；1.4.0 为上一版本。1.5.0 发布延续端口与适配器后端与保持不变的 43 工具 MCP 面，并新增快照感知 v2、紧凑快照差异与扩展国际化。v1.6.0 守护策略实现已进入工作树，并在 HEAD `61ca85f` 的工作树上通过正式 QA；其标签、CI、已发布安装包与发布证据均为 Pending。1.5.0 的 QA PASS 记录于 [v1.5.0.zh.md](../tests/acceptance/v1.5.0.zh.md)，主 CI 运行 43702442120 通过，GitHub 发布 445967405 发布了产物。读者：工程实现者。
+状态：1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。1.6.0 发布延续端口与适配器后端与保持不变的 43 工具 MCP 面，并新增可选守护进程策略。标签对象 `c5daf98eb03b0fac310e53c3a59edfa77874f919` 指向 `b420c3787a8f240c60514ac8c745e67474f1c1fd`；主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了产物。1.6.0 的 QA PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，基于 HEAD `61ca85f` 的工作树。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
@@ -298,7 +298,7 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 
 ### 5.10 守护策略（v1.6.0）
 
-v1.6.0 工作树在 `crates/corvusd/src/guardrails.rs` 新增可选守护策略。严格的 version 1 JSON 文档可以强制只读、允许或拒绝工具、把 `browser_navigate` 与 `tab_new` 限制到允许主机并复查 `browser_navigate`、`tab_new` 与 `browser_history` 的结果 URL、阻止字面私有网络主机、脱敏 cookie 值，并把 `page_text`、`page_html` 与紧凑 `page_snapshot` 文本包裹在不可信内容标记中。非法策略会中止启动。`RouterBackend::call` 在派发前检查策略；`browser_batch` 逐步骤检查，`session_replay` 跳过被拒绝步骤。拒绝使用 `POLICY_DENIED`，REST 返回 403。这不是网络沙箱：不解析 DNS，被允许的页面仍可请求其他源。正式 QA PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，基于 HEAD `61ca85f` 工作树：237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个构建文件（490,393 B）与 Playwright 1/1；一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium。见 [11-guardrails.zh.md](11-guardrails.zh.md)。
+1.6.0 发布在 `crates/corvusd/src/guardrails.rs` 新增可选守护策略。严格的 version 1 JSON 文档可以强制只读、允许或拒绝工具、把 `browser_navigate` 与 `tab_new` 限制到允许主机并复查 `browser_navigate`、`tab_new` 与 `browser_history` 的结果 URL、阻止字面私有网络主机、脱敏 cookie 值，并把 `page_text`、`page_html` 与紧凑 `page_snapshot` 文本包裹在不可信内容标记中。非法策略会中止启动。`RouterBackend::call` 在派发前检查策略；`browser_batch` 逐步骤检查，`session_replay` 跳过被拒绝步骤。拒绝使用 `POLICY_DENIED`，REST 返回 403。这不是网络沙箱：不解析 DNS，被允许的页面仍可请求其他源。正式 QA PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，基于 HEAD `61ca85f` 工作树：237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个构建文件（490,393 B）与 Playwright 1/1；一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium。见 [11-guardrails.zh.md](11-guardrails.zh.md)。
 
 ## 6. 扩展设计
 

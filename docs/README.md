@@ -19,9 +19,9 @@ commit. 每份文档在同一目录下维护英文与中文两版，同一提交
 | Logging convention / 日志规范 | [08-logging.md](08-logging.md) | [08-logging.zh.md](08-logging.zh.md) | done |
 | Tool reference / 工具参考 | [09-tools.md](09-tools.md) | [09-tools.zh.md](09-tools.zh.md) | done |
 | Project state / 项目现状 | [10-project-state.md](10-project-state.md) | [10-project-state.zh.md](10-project-state.zh.md) | done |
-| Guardrails policy / 守护策略 | [11-guardrails.md](11-guardrails.md) | [11-guardrails.zh.md](11-guardrails.zh.md) | done; v1.6.0 tree work, QA PASS |
-| Release notes 1.6.0 / 发布说明 1.6.0 | [release-notes/v1.6.0.md](release-notes/v1.6.0.md) | [release-notes/v1.6.0.zh.md](release-notes/v1.6.0.zh.md) | draft; QA and local installer PASS; CI/published package/release Pending |
-| Release notes 1.5.0 / 发布说明 1.5.0 | [release-notes/v1.5.0.md](release-notes/v1.5.0.md) | [release-notes/v1.5.0.zh.md](release-notes/v1.5.0.zh.md) | done; CI and published assets recorded |
+| Guardrails policy / 守护策略 | [11-guardrails.md](11-guardrails.md) | [11-guardrails.zh.md](11-guardrails.zh.md) | done; v1.6.0 released, QA PASS |
+| Release notes 1.6.0 / 发布说明 1.6.0 | [release-notes/v1.6.0.md](release-notes/v1.6.0.md) | [release-notes/v1.6.0.zh.md](release-notes/v1.6.0.zh.md) | done; CI and published assets recorded |
+| Release notes 1.5.0 / 发布说明 1.5.0 | [release-notes/v1.5.0.md](release-notes/v1.5.0.md) | [release-notes/v1.5.0.zh.md](release-notes/v1.5.0.zh.md) | done; previous release |
 | Release notes 1.4.0 / 发布说明 1.4.0 | [release-notes/v1.4.0.md](release-notes/v1.4.0.md) | [release-notes/v1.4.0.zh.md](release-notes/v1.4.0.zh.md) | done; CI and published assets recorded |
 | Release notes 1.3.0 / 发布说明 1.3.0 | [release-notes/v1.3.0.md](release-notes/v1.3.0.md) | [release-notes/v1.3.0.zh.md](release-notes/v1.3.0.zh.md) | done |
 | Release notes 1.2.0 / 发布说明 1.2.0 | [release-notes/v1.2.0.md](release-notes/v1.2.0.md) | [release-notes/v1.2.0.zh.md](release-notes/v1.2.0.zh.md) | done |
@@ -32,7 +32,7 @@ commit. 每份文档在同一目录下维护英文与中文两版，同一提交
 
 Reading order: charter -> requirements -> architecture -> roadmap. 阅读顺序：立项书 → 需求规格 → 架构 → 路线图。
 
-Current release: 1.5.0. Acceptance evidence: [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md); CI run 43702442120 and published-asset values are recorded in the release notes. 1.4.0 is the previous release. The v1.6.0 guardrails implementation is in the tree and passed formal QA on the working tree at HEAD `61ca85f`; its tag, CI, published package and release evidence is Pending. 当前版本：1.5.0。验收证据见 [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md)；CI 运行 43702442120 与发布产物数值已记录在发布说明中。1.4.0 为上一版本。v1.6.0 守护策略已进入工作树，并在 HEAD `61ca85f` 的工作树上通过正式 QA；其标签、CI、已发布安装包与发布证据仍为 Pending。
+Current release: 1.6.0. Acceptance evidence: [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md); release workflow 43717236667, CI run 43716832915 and published-asset values are recorded in the release notes. 1.5.0 is the previous release. 当前版本：1.6.0。验收证据见 [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md)；发布工作流 43717236667、CI 运行 43716832915 与发布产物数值已记录在发布说明中。1.5.0 为上一版本。
 
 Superseded playbooks and reports live in [../tests/archive/](../tests/archive/README.md); they are kept for traceability and are not reading material. 已被取代的手册与报告放在 [../tests/archive/](../tests/archive/README.md)，只作追溯，不属于阅读材料。
 

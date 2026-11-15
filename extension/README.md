@@ -5,7 +5,7 @@ The shipped extension is built from TypeScript and Vue 3 sources. There is no
 remote code and no inline script. Content scripts stay framework-free, and
 `build/extension` is the directory to load or package.
 
-Status: this document describes the 1.5.0 release. The extension package and manifest are versioned 1.6.0 for the current tree work, while 1.5.0 is the current published release; 1.4.0 is previous. QA acceptance PASS is recorded in [tests/acceptance/v1.5.0.md](../tests/acceptance/v1.5.0.md), and the release is published as GitHub Release 445967405. The v1.6.0 guardrails work passed formal QA on the working tree at HEAD `61ca85f`: 55 Vitest tests in ten files, a 14-file/490,393-byte build and Playwright 1/1. No v1.6.0 tag, CI run, published package or published asset exists; 1.5.0 remains the current published release.
+Status: this document describes the 1.6.0 release. The extension package and manifest are versioned 1.6.0; 1.5.0 is the previous release. QA acceptance PASS is recorded in [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md): 55 Vitest tests in ten files, a 14-file/490,393-byte build and isolated Playwright 1/1. Main CI run 43716832915 passed eight jobs, release workflow 43717236667 succeeded, and GitHub Release 446071476 published the assets; the release adds the guardrails policy-denial presentation but no permission or handler.
 
 The visible surfaces are one read-only popup status card and a small options page.
 The popup shows the connection dot and state, browser id, extension version,

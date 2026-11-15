@@ -2,9 +2,9 @@
 
 [English](07-cdp.md) | [中文](07-cdp.zh.md)
 
-Status: 1.5.0 is the current published release, released on 2026-11-15; 1.4.0 is previous. Page snapshots traverse open shadow DOM and same-origin child frames, and compact diffs are computed by the daemon. QA PASS is recorded in [v1.5.0.md](../tests/acceptance/v1.5.0.md). Audience: operators and developers who want browser-level CDP control in addition to the extension transport.
+Status: 1.6.0 is the current published release, released on 2026-11-15; 1.5.0 is previous. Page snapshots traverse open shadow DOM and same-origin child frames, and compact diffs are computed by the daemon. The 1.6.0 release adds daemon guardrails that run before CDP dispatch. QA PASS is recorded in [v1.6.0.md](../tests/acceptance/v1.6.0.md). Audience: operators and developers who want browser-level CDP control in addition to the extension transport.
 
-Corvus 1.5.0 can drive a Chromium browser through the Chrome DevTools Protocol (CDP) directly from the Rust daemon, or through the Manifest V3 extension as before. The extension remains the zero-setup path and the default for user browsers. CDP is an opt-in path for a browser that is already listening on a loopback debugging port; in 1.5.0 it covers all 33 browser-facing tools, including compact snapshots and `@c` element references.
+Corvus 1.6.0 can drive a Chromium browser through the Chrome DevTools Protocol (CDP) directly from the Rust daemon, or through the Manifest V3 extension as before. The extension remains the zero-setup path and the default for user browsers. CDP is an opt-in path for a browser that is already listening on a loopback debugging port; in 1.6.0 it covers all 33 browser-facing tools, including compact snapshots and `@c` element references.
 
 ## 1. Two channels, one tool surface
 

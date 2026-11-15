@@ -45,9 +45,9 @@ File logging is on by default under `logs/`. `--log-file <PATH>` overrides it, `
 The Linux release archive is built for x86_64 only. Extract it into a directory, then install:
 
 ```bash
-mkdir -p corvus-1.5.0-linux-x86_64
-tar -xzf corvus-1.5.0-linux-x86_64.tar.gz -C corvus-1.5.0-linux-x86_64
-cd corvus-1.5.0-linux-x86_64
+mkdir -p corvus-1.6.0-linux-x86_64
+tar -xzf corvus-1.6.0-linux-x86_64.tar.gz -C corvus-1.6.0-linux-x86_64
+cd corvus-1.6.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -98,7 +98,7 @@ The Windows bundle is a ZIP containing `corvusd.exe`, `corvus.exe`, `nssm.exe`, 
 Build the image from the repository root:
 
 ```bash
-docker build -t corvus:1.5.0 .
+docker build -t corvus:1.6.0 .
 ```
 
 The image runs `corvusd serve --bind 0.0.0.0 --home /data` as UID/GID 10001, stores runtime data under the `/data` volume, and exposes 7330 (WebSocket) and 7331 (MCP HTTP and REST). The unpacked extension is carried at `/opt/corvus/extension`, not `/data`; copy it out with `docker cp` or load the extension from the release ZIP on the host.
@@ -109,7 +109,7 @@ Because the image binds a non-loopback address, its entrypoint passes `--allow-n
 docker volume create corvus-data
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
-  -v corvus-data:/data corvus:1.5.0
+  -v corvus-data:/data corvus:1.6.0
 curl -fsS http://127.0.0.1:7331/health
 ```
 
@@ -127,7 +127,7 @@ chmod 600 corvus-auth.env
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
   --env-file corvus-auth.env \
-  -v corvus-data:/data corvus:1.5.0
+  -v corvus-data:/data corvus:1.6.0
 ```
 
 With local auth on, REST `/api/v1` requires a bearer token from `/api/v1/auth/login`; `/mcp`, the WebSocket, `/health`, `/metrics`, `/api-docs/openapi.json` and `/docs` remain unauthenticated. The opt-out flag does not weaken a daemon that has local auth enabled. A deployment that overrides the image entrypoint must pass `--allow-no-auth` or local auth itself; the checked-in Kubernetes Deployment overrides the command and args and passes `--allow-no-auth`, so it starts but is explicitly unauthenticated. That is an unsafe default, not a turnkey secure deployment; use a trusted authenticating proxy.
@@ -146,8 +146,8 @@ docker compose down
 The manifests in `deploy/k8s/` create a `corvus` namespace, a 1 GiB ReadWriteOnce PVC, one daemon replica, a ClusterIP Service, and a default-deny NetworkPolicy. The deployment runs with a read-only root filesystem, no capabilities, a RuntimeDefault seccomp profile and an init container that seeds the extension from the image into the volume.
 
 ```bash
-docker build -t corvus:1.5.0 .
-kind load docker-image corvus:1.5.0   # or push to your registry
+docker build -t corvus:1.6.0 .
+kind load docker-image corvus:1.6.0   # or push to your registry
 kubectl apply -k deploy/k8s
 kubectl -n corvus rollout status deployment/corvus
 kubectl -n corvus port-forward svc/corvus 7330:7330 7331:7331

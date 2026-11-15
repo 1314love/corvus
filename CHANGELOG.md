@@ -6,9 +6,9 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
-## 1.6.0 - Unreleased
+## 1.6.0 - 2026-11-15
 
-1.6.0 is in the tree with a formal QA acceptance PASS on the working tree at HEAD `61ca85f`: 237 workspace tests on 25 result lines, 137 conformance checks, 55 Vitest tests in ten files, a 14-file/490,393-byte extension build and Playwright 1/1. No tag, CI run, published package or GitHub release exists yet. It adds optional daemon guardrails but no MCP tool; the surface remains 43 tools in nine categories. Release evidence remains Pending.
+1.6.0 was released on 2026-11-15 from annotated tag `v1.6.0` and is the current release; 1.5.0 is the previous release. Formal QA acceptance passed on the working tree at HEAD `61ca85f`: 237 workspace tests on 25 result lines, 137 conformance checks, 55 Vitest tests in ten files, a 14-file/490,393-byte extension build and Playwright 1/1. It adds optional daemon guardrails but no MCP tool; the surface remains 43 tools in nine categories. Main CI run 43716832915 passed eight jobs, release workflow 43717236667 succeeded and GitHub Release 446071476 published the assets.
 
 ### Added
 
@@ -21,6 +21,7 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 - The extension shows a localized `POLICY_DENIED` message with a sanitized reason and never exposes the policy path.
 - The 43-tool MCP catalogue, nine categories, compact envelope and `browser_batch` surface are unchanged.
 - Local Windows installer acceptance passed 84 checks and observations with 0 failures on the distinct local ZIP, 18,801,258 B, SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`; it is not the CI rebuild or a published artifact.
+- Release evidence: annotated tag `v1.6.0` (object `c5daf98eb03b0fac310e53c3a59edfa77874f919`) targets `b420c3787a8f240c60514ac8c745e67474f1c1fd`; main CI `43716832915` passed eight jobs; release workflow `43717236667` succeeded; GitHub Release `446071476` published Windows 18,822,522 B (SHA-256 `bdec40f2f26012f2aeb5f977d6eef4fe80c18a662683c4fa9004ea99f59451db`), Linux 20,124,260 B (SHA-256 `e7a21d3996e52f8a0c5725d959987aa8c96eacfb044a928341575af19d4ce738`) and combined `SHA256SUMS` 194 B (SHA-256 `4ee452ce947c4b47cbe9cca4eabc64d8eac1345177f27ea3e2b0acca2e49f5bf`). The CoT/language gate passed a 10-case self-test, 313 tracked files with 0 findings, the last five commits with 0 findings, and the CI language gate.
 
 ## 1.5.0 - 2026-11-15
 
@@ -225,9 +226,9 @@ First public release.
 
 ## 中文
 
-## 1.6.0 - 未发布
+## 1.6.0 - 2026-11-15
 
-1.6.0 已进入工作树，并在 HEAD `61ca85f` 的工作树上取得正式 QA 验收 PASS：25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个文件/490,393 B 的扩展构建与 Playwright 1/1。尚无标签、CI 运行、已发布安装包或 GitHub 发布。它新增可选守护进程策略，但不新增 MCP 工具；工具面仍为九个类别中的 43 个工具。发布证据仍为 Pending。
+1.6.0 于 2026-11-15 由附注标签 `v1.6.0` 发布，为当前版本；1.5.0 为上一版本。正式 QA 验收在 HEAD `61ca85f` 的工作树上通过：25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个文件/490,393 B 的扩展构建与 Playwright 1/1。它新增可选守护进程策略，但不新增 MCP 工具；工具面仍为九个类别中的 43 个工具。主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了产物。
 
 ### 新增
 
@@ -240,6 +241,7 @@ First public release.
 - 扩展显示本地化的 `POLICY_DENIED` 消息与脱敏原因，绝不暴露策略路径。
 - 43 工具 MCP 目录、九个类别、紧凑信封与 `browser_batch` 面保持不变。
 - 本地 Windows 安装包验收在独立的本地 ZIP 上通过：84 项检查与观察、0 失败；18,801,258 B，SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`；它不是 CI 重建产物或已发布产物。
+- 发布证据：附注标签 `v1.6.0`（对象 `c5daf98eb03b0fac310e53c3a59edfa77874f919`）指向 `b420c3787a8f240c60514ac8c745e67474f1c1fd`；主 CI `43716832915` 通过八个任务；发布工作流 `43717236667` 成功；GitHub 发布 `446071476` 发布了 Windows 18,822,522 B（SHA-256 `bdec40f2f26012f2aeb5f977d6eef4fe80c18a662683c4fa9004ea99f59451db`）、Linux 20,124,260 B（SHA-256 `e7a21d3996e52f8a0c5725d959987aa8c96eacfb044a928341575af19d4ce738`）与合并 `SHA256SUMS` 194 B（SHA-256 `4ee452ce947c4b47cbe9cca4eabc64d8eac1345177f27ea3e2b0acca2e49f5bf`）。CoT 与语言门禁通过 10 个用例的自检，扫描 313 个跟踪文件、0 发现，最近五个提交 0 发现，CI language 门禁通过。
 
 ## 1.5.0 - 2026-11-15
 

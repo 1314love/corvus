@@ -2,7 +2,7 @@
 
 [English](11-guardrails.md) | [中文](11-guardrails.zh.md)
 
-Status: the v1.6.0 guardrails implementation is present in the tree and passed formal QA on the working tree at HEAD `61ca85f` (237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files and Playwright 1/1; one Low `browser_type` channel finding, no High or Medium). No v1.6.0 tag, CI, published package or published asset exists; 1.5.0 remains the current published release. Audience: operators and MCP/REST client authors.
+Status: v1.6.0 is the current published release, released on 2026-11-15 from tag `v1.6.0`; 1.5.0 is the previous release. The guardrails implementation passed formal QA on the working tree at HEAD `61ca85f` (237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files and Playwright 1/1; one Low `browser_type` channel finding, no High or Medium). Main CI run `43716832915` passed eight jobs, release workflow `43717236667` succeeded, and GitHub Release `446071476` published the assets. Audience: operators and MCP/REST client authors.
 
 ## 1. Overview
 
@@ -175,4 +175,4 @@ When no policy is configured, `enabled` is false and the three list-count fields
 - [09-tools.md](09-tools.md) for tool inputs, results and error codes.
 - [02-architecture.md](02-architecture.md) for the enforcement point and daemon structure.
 - [05-deployment.md](05-deployment.md) for service configuration and health checks.
-- [release-notes/v1.6.0.md](release-notes/v1.6.0.md) for the pending release evidence.
+- [release-notes/v1.6.0.md](release-notes/v1.6.0.md) for the release evidence.

@@ -2,7 +2,7 @@
 
 [English](11-guardrails.md) | [中文](11-guardrails.zh.md)
 
-状态：v1.6.0 守护策略实现已存在于工作树中，并在 HEAD `61ca85f` 的工作树上通过正式 QA（237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试与 Playwright 1/1；一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium）。不存在 v1.6.0 标签、CI、已发布安装包或已发布产物；1.5.0 仍是当前已发布版本。读者：运维人员与 MCP/REST 客户端作者。
+状态：v1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。守护策略实现在 HEAD `61ca85f` 的工作树上通过正式 QA（237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试与 Playwright 1/1；一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium）。主 CI 运行 `43716832915` 通过八个任务，发布工作流 `43717236667` 成功，GitHub 发布 `446071476` 发布了产物。读者：运维人员与 MCP/REST 客户端作者。
 
 ## 1. 概览
 
@@ -175,4 +175,4 @@ Cookie 脱敏刻意保持狭窄：只处理 `browser_cookies`，只检查顶层 
 - [09-tools.zh.md](09-tools.zh.md)：工具输入、结果与错误码。
 - [02-architecture.zh.md](02-architecture.zh.md)：执行点与守护进程结构。
 - [05-deployment.zh.md](05-deployment.zh.md)：服务配置与健康检查。
-- [release-notes/v1.6.0.zh.md](release-notes/v1.6.0.zh.md)：待补的发布证据。
+- [release-notes/v1.6.0.zh.md](release-notes/v1.6.0.zh.md)：发布证据。
