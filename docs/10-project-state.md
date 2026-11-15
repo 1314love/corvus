@@ -59,7 +59,7 @@ The MCP surface is unchanged: 43 tools, nine categories, the compact single-text
 
 ## 5. Superseded material
 
-The M1 to M4 acceptance playbooks, the report templates and the release reports for 0.1.0 through 1.2.0 describe the JavaScript extension and tool surfaces of 18 to 26 tools, so they are not current. They moved to `tests/archive/`. Current verification uses [v1.2.0.md](../tests/acceptance/v1.2.0.md), [v1.3.0.md](../tests/acceptance/v1.3.0.md), [v1.4.0.md](../tests/acceptance/v1.4.0.md), `tests/conformance/run.sh` and `tests/perf/`; 1.4.0 acceptance is complete.
+The M1 to M4 acceptance playbooks and the report templates describe the JavaScript extension and tool surfaces of 18 to 26 tools, so they are not current. They moved to `tests/archive/`. The per-release verification reports for 0.1.0 through 1.4.0 remain in `tests/report/` and `tests/acceptance/`; the 1.4.0 ones are current evidence and earlier ones are history. Current verification uses [v1.4.0.md](../tests/acceptance/v1.4.0.md), `tests/conformance/run.sh` and `tests/perf/`; 1.4.0 acceptance is complete.
 
 ## 6. Re-check a claim
 

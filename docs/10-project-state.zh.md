@@ -59,7 +59,7 @@ MCP 面保持不变：43 个工具、九个类别、紧凑单文本信封与 `br
 
 ## 5. 已被取代的材料
 
-M1 至 M4 的验收手册、报告模板，以及 0.1.0 到 1.2.0 的发布报告，描述的是 JavaScript 扩展与 18 至 26 个工具的旧表面，不再代表现状，已移入 `tests/archive/`。当前验证使用 [v1.2.0.md](../tests/acceptance/v1.2.0.md)、[v1.3.0.md](../tests/acceptance/v1.3.0.md)、[v1.4.0.md](../tests/acceptance/v1.4.0.md)、`tests/conformance/run.sh` 与 `tests/perf/`；1.4.0 验收已完成。
+M1 至 M4 的验收手册与报告模板描述的是 JavaScript 扩展与 18 至 26 个工具的旧表面，不再代表现状，已移入 `tests/archive/`。0.1.0 到 1.4.0 的逐版本验证报告仍在 `tests/report/` 与 `tests/acceptance/`；1.4.0 的报告是当前证据，更早的仅作历史。当前验证使用 [v1.4.0.md](../tests/acceptance/v1.4.0.md)、`tests/conformance/run.sh` 与 `tests/perf/`；1.4.0 验收已完成。
 
 ## 6. 复核方式
 
