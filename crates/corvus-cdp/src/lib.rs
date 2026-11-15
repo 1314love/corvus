@@ -8,6 +8,7 @@
 pub mod client;
 pub mod endpoint;
 pub mod error;
+pub mod snapshot;
 pub mod tools;
 pub mod types;
 

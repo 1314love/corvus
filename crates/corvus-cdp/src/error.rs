@@ -34,6 +34,9 @@ pub enum CdpError {
     /// No JavaScript dialog is currently showing.
     #[error("no dialog is showing")]
     DialogNotFound,
+    /// The element exists but cannot receive the requested interaction.
+    #[error("element is not interactable: {0}")]
+    NotInteractable(String),
     /// A tool argument was missing or malformed.
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
@@ -54,6 +57,7 @@ impl CdpError {
             Self::Remote { .. } => "CDP_ERROR",
             Self::TargetNotFound(_) => "NOT_FOUND",
             Self::DialogNotFound => "NOT_FOUND",
+            Self::NotInteractable(_) => "NOT_INTERACTABLE",
             Self::InvalidArgument(_) => "BAD_ARGS",
             Self::Unsupported(_) => "CAPABILITY_UNAVAILABLE",
         }

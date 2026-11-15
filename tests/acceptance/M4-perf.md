@@ -157,7 +157,7 @@ node tests/perf/bench.mjs latency \
 
 Every client call is a JSON-RPC `tools/call` over MCP streamable HTTP. The
 benchmark records elapsed wall time around the HTTP POST and the response parse.
-It uses `structuredContent` when present and falls back to the text JSON part.
+It parses the JSON object from `content[0].text`; v1.3 results do not include `structuredContent`.
 A call is successful only when the HTTP status is 200, there is no JSON-RPC
 error, and `isError` is false.
 

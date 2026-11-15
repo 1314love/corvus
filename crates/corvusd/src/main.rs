@@ -125,12 +125,6 @@ async fn main() -> Result<()> {
                 ..DaemonConfig::default()
             })
             .await?;
-            tracing::info!(
-                ws = %daemon.ws_addr(),
-                mcp = %format!("http://{}/mcp", daemon.http_addr()),
-                db = %daemon.db_path().display(),
-                "corvusd ready"
-            );
             if stdio {
                 tokio::select! {
                     result = corvus_mcp::serve_stdio(std::sync::Arc::clone(daemon.mcp())) => {

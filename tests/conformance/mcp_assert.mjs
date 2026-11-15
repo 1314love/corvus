@@ -69,6 +69,7 @@ const TOOLS = (
     "browser_cookies",
     "browser_dialog",
     "browser_emulate",
+    "browser_batch",
     "cdp_events",
     "cdp_send",
     "cdp_status",
@@ -195,6 +196,9 @@ function structuredToolText(source, label) {
   const result = source.result;
   if (!result || typeof result !== "object") fail(label + " result missing");
   if (result.isError === true) fail(label + " reported isError: " + JSON.stringify(result).slice(0, 400));
+  if (result.structuredContent !== undefined) {
+    fail(label + " must not include structuredContent in v1.3");
+  }
   if (!Array.isArray(result.content) || result.content.length === 0) {
     fail(label + " result has no content array");
   }
@@ -589,7 +593,7 @@ if (mode === "tools") {
       )
       .join(" "),
   );
-  ok("input schemas match the frozen 42-tool argument shapes and declare browser_id");
+  ok("input schemas match the frozen 43-tool argument shapes and declare browser_id");
   process.exit(0);
 }
 
@@ -599,6 +603,7 @@ if (mode === "call") {
     const result = message.result;
     if (!result || typeof result !== "object") fail("tools/call result missing");
     if (result.isError === true) fail("tools/call reported isError: " + JSON.stringify(result).slice(0, 400));
+    if (result.structuredContent !== undefined) fail("tools/call must not include structuredContent in v1.3");
     if (!Array.isArray(result.content)) fail("result.content is not an array (MCP requires a content array)");
     if (result.content.length === 0) fail("result.content is empty");
     const serialized = JSON.stringify(result);
@@ -698,6 +703,7 @@ if (mode === "error-detail") {
   if (!result || result.isError !== true) {
     fail("tool call did not report isError: " + JSON.stringify(result).slice(0, 300));
   }
+  if (result.structuredContent !== undefined) fail("isError result must not include structuredContent in v1.3");
   if (!Array.isArray(result.content) || result.content.length === 0) {
     fail("isError result has no content array");
   }

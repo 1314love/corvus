@@ -183,7 +183,7 @@ Hello and hello_ack:
 ~~~json
 { "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello",
   "browser": "edge:7f3a91c0d2b4e6f8",
-  "args": { "profile": "7f3a91c0d2b4e6f8", "version": "1.2.0",
+  "args": { "profile": "7f3a91c0d2b4e6f8", "version": "1.3.0",
             "capabilities": ["dom", "scripting", "debugger", "cdp"],
             "cdpEndpoint": "auto" } }
 ~~~
@@ -191,7 +191,7 @@ Hello and hello_ack:
 ~~~json
 { "v": 1, "id": "01J8Z9K3V7Q2M4N6P8R0T2W4X6", "kind": "hello_ack",
   "browser": "edge:default",
-  "args": { "daemon": "corvus", "version": "1.2.0", "protocol": 1,
+  "args": { "daemon": "corvus", "version": "1.3.0", "protocol": 1,
             "capabilities": ["dom", "scripting", "debugger", "cdp"],
             "limits": { "max_timeout_ms": 125000, "default_timeout_ms": 60000,
                         "max_inflight": 64, "max_snapshot_nodes": 20000 } } }
@@ -207,12 +207,23 @@ chrome.storage.local. Extension APIs cannot read the real profile name.
 
 ## Tool contract
 
-There are forty-two MCP tool names in the current surface. This extension handles
-the twenty-five original browser-facing names: seventeen are shared with CDP and
-eight are extension-only. The eight CDP-only names and the nine daemon-local
-names (browser_list, browser_channel, tool_help, session_list, session_steps,
-session_replay, session_export, metrics and logs_tail) never reach the extension.
-The service worker rejects any other name with BAD_ARGS.
+There are forty-three MCP tool names in the current surface. This extension
+handles the twenty-five browser-facing names it has always served; in 1.3.0 all
+of them are also available over CDP, so the extension-only set is empty. The
+eight CDP-only names (browser_dialog, browser_emulate, browser_cookies,
+browser_console, cdp_status, cdp_targets, cdp_send and cdp_events) and the ten
+daemon-local names (browser_batch, browser_list, browser_channel, tool_help,
+session_list, session_steps, session_replay, session_export, metrics and
+logs_tail) never reach the extension. The service worker rejects any other name
+with BAD_ARGS.
+
+Under forced `cdp` the daemon serves all thirty-three browser-facing names
+itself, including the twenty-five listed below; under `auto` it prefers CDP when
+connected and falls back to this extension only for an Unsupported route. The
+compact `page_snapshot` format is implemented on both channels with the same
+envelope shape, while `@eN` references stay extension-only and `@c<backendNodeId>`
+references stay CDP-only. `browser_batch` is daemon-local and executes its
+allowlisted steps through whichever channel each step uses.
 
 Common rules:
 
@@ -247,7 +258,7 @@ Common rules:
 | Tool | Arguments | Success result |
 | --- | --- | --- |
 | browser_navigate | { "url": string, "tab_id"?: string } | { navigated, loaded, url, previous, same_document, started_at } |
-| page_snapshot | { "tab_id"?: string, "mode"?: "interactive" \| "full", "max_nodes"?: 40..3000 } | { url, title, viewport, mode, node_cap, node_count, element_count, text_count, ref_count, truncated, nodes } |
+| page_snapshot | { "tab_id"?: string, "mode"?: "interactive" \| "full", "format"?: "compact" \| "json", "max_nodes"?: 40..3000, "viewport_only"?: boolean, "include_bbox"?: boolean } | compact: { format: "compact", tab_id, url, title, viewport, mode, node_count, truncated, text }; json: { format: "json", tab_id, url, title, viewport, mode, node_cap, node_count, element_count, text_count, ref_count, truncated, nodes } |
 | page_text | { "tab_id"?: string, "max_chars"?: 1..200000 } | { url, title, text, truncated } |
 | page_html | { "tab_id"?: string, "target"?: string, "max_chars"?: 1..500000 } | { url, html, truncated } |
 | page_find | { "query": string, "tab_id"?: string, "role"?: string, "limit"?: 1..100, "regex"?: boolean } | { url, count, matches: [{ ref, tag, role, text }] } |
@@ -273,8 +284,9 @@ Common rules:
 | tab_switch | { "tab_id": string } | { tab_id, url, title, active: true } |
 | browser_list | {} | { browsers: [{ browser_id, profile, version, capabilities, connected_at_ms }] } |
 
-Defaults: page_snapshot mode is "interactive" and max_nodes is 700 (clamped to
-40 through 3000); browser_type clear is true and blur is false; page_text
+Defaults: page_snapshot format is "compact", mode is "interactive" and
+max_nodes is 300 (clamped to 40 through 3000), and viewport_only/include_bbox
+are false; browser_type clear is true and blur is false; page_text
 max_chars is 100000; page_html max_chars is 200000; page_find limit is 20 and
 regex is false; browser_press keys is one chord when a string is given;
 browser_scroll pages is 1; browser_eval world is "isolated"; browser_wait
@@ -314,23 +326,47 @@ wait. The URL must be http, https or file.
 page_snapshot
 
 ~~~json
-{ "mode": "interactive", "max_nodes": 700 }
+{ "format": "compact", "mode": "interactive", "max_nodes": 300 }
 ~~~
 
-Result: url, title, viewport {width, height, scrollX, scrollY}, mode, node_cap,
-node_count, element_count, text_count, ref_count, truncated, and nodes. Each
-element node is
+The service worker adds tab_id (a string) to every result. format "compact" (the
+default) returns
+{format:"compact", tab_id, url, title, viewport {width,height,scrollX,scrollY},
+mode, node_count, truncated, text}. text holds one line per node, in DOM order:
+
+~~~text
+# "Surrounding text"
+@e12 button "Submit" [disabled,checked] value="..." bbox=10,20,80,30
+~~~
+
+Element lines start with the ref, then the lowercase role (or tag when no role
+is known), then the name in quotes, optional states, optional value and optional
+bbox. Backslash and double quote are escaped, whitespace is collapsed, name is
+limited to 120 characters and value to 80. states appear only when active and in
+this fixed order: disabled, checked, mixed, focused, required, expanded,
+selected. bbox appears only when include_bbox is true. Text lines use
+`# "text"` with the text limited to 240 characters; in "full" mode they preserve
+the visible text around elements.
+
+format "json" returns the former shape: url, title, viewport, mode, node_cap,
+node_count, element_count, text_count, ref_count, truncated and nodes, plus
+format:"json". Each element node is
 {kind:"element", ref:"@e12", tag:"button", role:"button", name:"Submit",
-bbox:{x,y,w,h}, depth, states, attributes?}. Each text node is
+bbox:{x,y,w,h}, depth, states, attributes?}; each text node is
 {kind:"text", depth, text}.
 
 mode "interactive" (the default) keeps actionable elements: buttons, links,
 form controls, and elements with an interactive role, tabindex or
 contenteditable. Text nodes that surround those elements are kept as context;
 the visible text of the actionable element itself is folded into its name.
-mode "full" returns the complete compact tree. The node budget is clamped to
-40 through 3000 nodes; the walk stops at the cap and sets truncated:true.
+mode "full" returns the complete tree. max_nodes is clamped to 40 through 3000
+nodes and defaults to 300; the walk stops at the cap and sets truncated:true.
 Hidden subtrees are skipped.
+
+viewport_only true keeps only nodes whose box intersects window.visualViewport,
+including the visualViewport offset, so offscreen elements and text are dropped.
+include_bbox true adds the rounded border box to each compact element line.
+Neither option changes the JSON node objects.
 
 The refs come from a per-document element map and are stable while the document
 lives: two snapshots in a row return the same @eN for the same element. A ref
@@ -640,8 +676,8 @@ registry to resolve browser_id for the other tools.
 A full probe loads this directory unpacked, connects to a running daemon and
 sends command envelopes through the daemon's MCP surface. A minimal check:
 
-1. Navigate to a test page and call page_snapshot. The result must have nodes
-   and refs such as @e1; a second snapshot must keep the same refs.
+1. Navigate to a test page and call page_snapshot. The compact result must have
+   text lines and refs such as @e1; a second snapshot must keep the same refs.
 2. Call net_capture with action start and the returned tab_id. Reload the page
    with browser_history, then call net_log with include_headers true. The
    entries must include the document and its subresources, seq must increase, and

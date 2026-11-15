@@ -97,13 +97,21 @@ async function callTool(url, session, id, name, args) {
   const text = Array.isArray(result.content)
     ? result.content.map((item) => item.text ?? "").join(" ")
     : "";
+  let parsed = null;
+  if (result.isError !== true && typeof text === "string" && text.length > 0) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+  }
   return {
     id,
     status: response.status,
     elapsed_ms: elapsed,
     is_error: result.isError === true,
     text,
-    structured: result.structuredContent ?? null,
+    parsed,
     result,
   };
 }
@@ -300,9 +308,9 @@ async function schemaCheck([toolsPath, snapshotPath]) {
   const body = parseRpc(readFileSync(toolsPath, "utf8"));
   const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
   const currentTools = body?.result?.tools ?? body?.tools;
-  if (snapshot.length !== 42) fail("snapshot has " + snapshot.length + " tools, expected 42");
-  if (!Array.isArray(currentTools) || currentTools.length !== 42) {
-    fail("tools/list has " + (Array.isArray(currentTools) ? currentTools.length : 0) + " tools, expected 42");
+  if (snapshot.length !== 43) fail("snapshot has " + snapshot.length + " tools, expected 43");
+  if (!Array.isArray(currentTools) || currentTools.length !== 43) {
+    fail("tools/list has " + (Array.isArray(currentTools) ? currentTools.length : 0) + " tools, expected 43");
   }
   const byName = new Map(currentTools.map((tool) => [tool.name, tool]));
   const diffs = [];
@@ -317,7 +325,7 @@ async function schemaCheck([toolsPath, snapshotPath]) {
     }
   }
   if (diffs.length) fail("schema drift: " + diffs.join("; "));
-  console.log("schema snapshot matches 42 tools");
+  console.log("schema snapshot matches 43 tools");
 }
 
 const [, , mode, ...args] = process.argv;

@@ -38,11 +38,12 @@ pub fn init(log_file: Option<PathBuf>, home_root: &Path) -> LoggingGuard {
             }
         }
         Err(error) => {
-            eprintln!(
-                "corvus: file logging disabled for {}: {error}; continuing on stderr",
-                path.display()
-            );
             install(None);
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "file logging disabled"
+            );
             LoggingGuard { _worker: None }
         }
     }

@@ -13,7 +13,7 @@ Corvus is one local daemon (`corvusd`), one CLI (`corvus`) and one browser exten
 | Linux package | `/opt/corvus` | `install-linux.sh` writes `/etc/systemd/system/corvus.service` |
 | Linux foreground | `$XDG_DATA_HOME/corvus` or `~/.local/share/corvus` | `corvusd serve` |
 | Docker / Kubernetes | `/data` | container entrypoint or Kubernetes manifest |
-| macOS from source | `~/Library/Application Support/Corvus` | `corvusd serve`; no packaged installer in 1.2.0 |
+| macOS from source | `~/Library/Application Support/Corvus` | `corvusd serve`; no packaged installer in 1.3.0 |
 
 One root contains every backend file:
 
@@ -111,9 +111,9 @@ The extension has no pairing step. Its optional options page sets the daemon Web
 Download or copy the tarball, extract it into a directory, then verify and install:
 
 ```bash
-mkdir -p corvus-1.2.0-linux-x86_64
-tar -xzf corvus-1.2.0-linux-x86_64.tar.gz -C corvus-1.2.0-linux-x86_64
-cd corvus-1.2.0-linux-x86_64
+mkdir -p corvus-1.3.0-linux-x86_64
+tar -xzf corvus-1.3.0-linux-x86_64.tar.gz -C corvus-1.3.0-linux-x86_64
+cd corvus-1.3.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```

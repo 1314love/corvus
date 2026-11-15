@@ -114,7 +114,7 @@ node tests/perf/bench.mjs latency \
   --samples 60 --out /tmp/latency.json
 ```
 
-所有客户端调用都是 MCP streamable HTTP 上的 JSON-RPC `tools/call`。基准记录 HTTP POST 到响应解析完成的墙钟。优先使用 `structuredContent`，否则回退到 text JSON 部分。只有 HTTP 状态 200、无 JSON-RPC error 且 `isError` 为 false 才算成功。
+所有客户端调用都是 MCP streamable HTTP 上的 JSON-RPC `tools/call`。基准记录 HTTP POST 到响应解析完成的墙钟。解析 `content[0].text` 中的 JSON；v1.3 结果不包含 `structuredContent`。只有 HTTP 状态 200、无 JSON-RPC error 且 `isError` 为 false 才算成功。
 
 ## 7. 延迟测量方法
 

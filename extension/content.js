@@ -14,13 +14,15 @@
   if (window.__corvusContentLoaded === true) return;
   window.__corvusContentLoaded = true;
 
-  const CONTENT_VERSION = '1.2.0';
-  const MAX_NODES_DEFAULT = 700;
+  const CONTENT_VERSION = '1.3.0';
+  const MAX_NODES_DEFAULT = 300;
   const MAX_NODES_LIMIT = 3000;
   const MIN_NODES_LIMIT = 40;
   const MAX_DEPTH = 80;
   const MAX_NAME = 200;
   const MAX_TEXT = 240;
+  const COMPACT_NAME_LIMIT = 120;
+  const COMPACT_VALUE_LIMIT = 80;
   const MAX_SELECTOR = 512;
   const MAX_INPUT = 10000;
   const MAX_REFS = 5000;
@@ -201,6 +203,14 @@
       throw badArgs(label + ' must be an integer from ' + min + ' to ' + max, { value: value });
     }
     return numeric;
+  }
+
+  function readBooleanFlag(value, fallback, label) {
+    if (value === undefined || value === null) return fallback;
+    if (typeof value !== 'boolean') {
+      throw badArgs(label + ' must be a boolean', { value: value });
+    }
+    return value;
   }
 
   function visibleBodyText() {
@@ -486,8 +496,8 @@
     return false;
   }
 
-  function buildNode(element, depth) {
-    const rect = element.getBoundingClientRect();
+  function buildNode(element, depth, rect) {
+    const box = rect || element.getBoundingClientRect();
     const tag = element.tagName.toLowerCase();
     const node = {
       kind: 'element',
@@ -496,10 +506,10 @@
       role: roleOf(element) || null,
       name: truncate(accessibleName(element), MAX_NAME),
       bbox: {
-        x: Math.round(rect.left),
-        y: Math.round(rect.top),
-        w: Math.round(rect.width),
-        h: Math.round(rect.height),
+        x: Math.round(box.left),
+        y: Math.round(box.top),
+        w: Math.round(box.width),
+        h: Math.round(box.height),
       },
       depth: depth,
       states: statesOf(element),
@@ -525,8 +535,101 @@
     return node;
   }
 
+  function compactEscaped(value, limit) {
+    const normalized = String(value === undefined || value === null ? '' : value)
+      .replace(/\r\n?/g, '\n')
+      .replace(/[\n\r\t\f\v]+/g, ' ')
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"');
+    if (normalized.length <= limit) return normalized;
+    let cut = normalized.slice(0, limit - 1);
+    if (cut.charAt(cut.length - 1) === '\\') cut = cut.slice(0, -1);
+    return cut + '\u2026';
+  }
+
+  function compactStates(states) {
+    const active = states || {};
+    const tokens = [];
+    if (active.disabled === true) tokens.push('disabled');
+    if (active.checked === true) tokens.push('checked');
+    if (active.checked === 'mixed' || active.mixed === true) tokens.push('mixed');
+    if (active.focused === true) tokens.push('focused');
+    if (active.required === true) tokens.push('required');
+    if (active.expanded === true) tokens.push('expanded');
+    if (active.selected === true) tokens.push('selected');
+    return tokens;
+  }
+
+  function compactValue(node) {
+    const attrs = node.attributes;
+    if (!attrs || !Object.prototype.hasOwnProperty.call(attrs, 'value')) return '';
+    const value = attrs.value;
+    if (typeof value !== 'string' || value.length === 0) return '';
+    return compactEscaped(value, COMPACT_VALUE_LIMIT);
+  }
+
+  function compactLineForNode(node, includeBbox) {
+    if (node.kind === 'text') {
+      return '# "' + compactEscaped(node.text, MAX_TEXT) + '"';
+    }
+    const role = String(node.role || node.tag || '').toLowerCase();
+    let line = node.ref + ' ' + role + ' "' + compactEscaped(node.name, COMPACT_NAME_LIMIT) + '"';
+    const states = compactStates(node.states);
+    if (states.length > 0) line += ' [' + states.join(',') + ']';
+    const value = compactValue(node);
+    if (value) line += ' value="' + value + '"';
+    if (includeBbox) {
+      const bbox = node.bbox || { x: 0, y: 0, w: 0, h: 0 };
+      line += ' bbox=' + bbox.x + ',' + bbox.y + ',' + bbox.w + ',' + bbox.h;
+    }
+    return line;
+  }
+
+  function visualViewportBounds() {
+    const view = window.visualViewport;
+    if (view && Number.isFinite(view.width) && Number.isFinite(view.height) && view.width > 0 && view.height > 0) {
+      const left = Number.isFinite(view.offsetLeft) ? view.offsetLeft : 0;
+      const top = Number.isFinite(view.offsetTop) ? view.offsetTop : 0;
+      return { left: left, top: top, right: left + view.width, bottom: top + view.height };
+    }
+    return {
+      left: 0,
+      top: 0,
+      right: Math.max(0, Number(window.innerWidth) || 0),
+      bottom: Math.max(0, Number(window.innerHeight) || 0),
+    };
+  }
+
+  function rectIntersectsBounds(rect, bounds) {
+    if (!rect || !bounds) return false;
+    return rect.right > bounds.left && rect.left < bounds.right && rect.bottom > bounds.top && rect.top < bounds.bottom;
+  }
+
+  function textBoundingRect(node) {
+    if (!node || !node.parentNode || typeof document.createRange !== 'function') return null;
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const rect = range.getBoundingClientRect();
+      if (!rect || (rect.width === 0 && rect.height === 0)) return null;
+      return rect;
+    } catch (error) {
+      return null;
+    }
+  }
+
   function snapshot(args) {
     const cap = clampNodes(args.max_nodes);
+    let format = 'compact';
+    if (args.format !== undefined && args.format !== null) {
+      const requested = String(args.format).trim().toLowerCase();
+      if (requested !== 'compact' && requested !== 'json') {
+        throw badArgs('args.format must be "compact" or "json"', { format: truncate(String(args.format), 40) });
+      }
+      format = requested;
+    }
+    const viewportOnly = readBooleanFlag(args.viewport_only, false, 'args.viewport_only');
+    const includeBbox = readBooleanFlag(args.include_bbox, false, 'args.include_bbox');
     let mode = 'interactive';
     if (args.mode !== undefined && args.mode !== null) {
       const requested = String(args.mode).trim().toLowerCase();
@@ -536,7 +639,9 @@
       mode = requested;
     }
     const interesting = mode === 'interactive' ? isActionable : isInteresting;
+    const bounds = viewportOnly ? visualViewportBounds() : null;
     const nodes = [];
+    const seenRefs = new Set();
     let elementCount = 0;
     let textCount = 0;
     let truncated = false;
@@ -549,10 +654,15 @@
       return true;
     }
 
+    function inViewport(rect) {
+      return !viewportOnly || rectIntersectsBounds(rect, bounds);
+    }
+
     function emitText(node, depth) {
       if (!budgetLeft()) return;
       const text = collapse(node.nodeValue);
       if (!text) return;
+      if (viewportOnly && !inViewport(textBoundingRect(node))) return;
       nodes.push({ kind: 'text', depth: depth, text: truncate(text, MAX_TEXT) });
       textCount += 1;
     }
@@ -569,8 +679,15 @@
       if (!isRendered(element)) return;
 
       if (interesting(element)) {
-        nodes.push(buildNode(element, depth));
-        elementCount += 1;
+        const rect = element.getBoundingClientRect();
+        if (inViewport(rect)) {
+          const node = buildNode(element, depth, rect);
+          if (!seenRefs.has(node.ref)) {
+            nodes.push(node);
+            seenRefs.add(node.ref);
+            elementCount += 1;
+          }
+        }
         const children = element.children;
         for (let i = 0; i < children.length; i += 1) {
           if (!budgetLeft()) return;
@@ -593,15 +710,34 @@
 
     walk(document.documentElement, 0);
 
+    const viewport = {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scrollX: Math.round(window.scrollX),
+      scrollY: Math.round(window.scrollY),
+    };
+    if (format === 'compact') {
+      const lines = [];
+      for (let i = 0; i < nodes.length; i += 1) {
+        lines.push(compactLineForNode(nodes[i], includeBbox));
+      }
+      return {
+        format: 'compact',
+        url: location.href,
+        title: truncate(document.title, 300),
+        viewport: viewport,
+        mode: mode,
+        node_count: lines.length,
+        truncated: truncated,
+        text: lines.join('\n'),
+      };
+    }
+
     return {
+      format: 'json',
       url: location.href,
       title: truncate(document.title, 300),
-      viewport: {
-        width: window.innerWidth,
-        height: window.innerHeight,
-        scrollX: Math.round(window.scrollX),
-        scrollY: Math.round(window.scrollY),
-      },
+      viewport: viewport,
       mode: mode,
       node_cap: cap,
       node_count: nodes.length,

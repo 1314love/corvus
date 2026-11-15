@@ -6,6 +6,42 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
+## 1.3.0 - 2026-11-15
+
+Token-efficiency release. The MCP surface grows from 42 to 43 tools; the original 32 result shapes remain. Default snapshot and discovery output is leaner, and forced CDP now serves every browser-facing tool.
+
+### Added
+
+- `browser_batch`: up to 20 allowlisted browser steps in one call, with `stop_on_error` default true and a per-step result array; the tool itself is daemon-local.
+- `page_snapshot` compact text on both extension and CDP, with `format: "compact"` as the default, `format: "json"` for node objects, `viewport_only`, `include_bbox`, and `@eN` or `@c<backendNodeId>` references.
+- Lean `tools/list`: brief is the default and strips titles plus schema property descriptions; `detail: "full"` restores them. `tool_help` returns one full descriptor or a category index.
+- Full CDP parity for all 33 browser-facing tools, including the eight former extension-only tools and `@c` references.
+- Nine tool categories, 43 tools in total, and `_meta["corvus.category"]` on every definition.
+
+### Changed
+
+- A successful `tools/call` returns one compact JSON text block and no `structuredContent`; clients parse `content[0].text`.
+- Brief `tools/list` is 20,452 bytes for 43 tools; full detail is 37,067 bytes. The original 32 result shapes remain available.
+- Documentation, README, extension metadata and release assertions now state 1.3.0 and 43 tools.
+- Logging events follow one schema: lowercase event messages, `snake_case` fields, identifiers suffixed with `_id`, and no `message` field that displaces the event text.
+- A failed MCP tool call is logged at `warn` instead of `info`; the startup summary is one `corvusd listening` event and the duplicate `corvusd ready` line is gone.
+
+### Fixed
+
+- Removed stale 1.2.0 and 42-tool claims from the v1.3 documentation, roadmap and README while keeping the v1.2.0 release notes as historical records.
+
+### Limitations
+
+- NFR-3 is not passed: the clean 72-hour soak was stopped at the client's request after about eight hours. 1.3.0 is not 72-hour soak certified.
+- Firefox remains unsupported (NFR-6 deviation unchanged). Supported browsers are Edge, Chrome and Brave (Chromium 120+).
+- CDP is loopback-only and unauthenticated; a browser-level endpoint can control every profile in that browser instance. Never expose 9222, 9223 or 9333.
+- The shipped Docker image and Kubernetes manifests contain no browser and cannot reach browser loopback on the host. The sidecar browser path is not supported out of the box; use the extension channel or `--no-cdp`.
+- Forced `cdp` has no automatic fallback; if the endpoint is unavailable, browser-facing calls fail instead of moving to the extension.
+- macOS has no packaged installer; Linux packaging is x86_64 only.
+- Extension tab ids and CDP target ids remain separate namespaces in 1.3.0. `@c` and `@eN` references are channel-specific and cross-channel use returns typed `BAD_ARGS`; a full bridge is deferred.
+- A configured extension CDP endpoint changed while the daemon is connected may need a daemon restart; auto-discovered endpoint changes are re-polled every 500 ms and reconnect automatically.
+- The compact-versus-JSON benchmark records candidate means; individual pages vary.
+
 ## 1.2.0 - 2026-11-15
 
 Hybrid transport release. The MCP surface grows from 32 to 42 tools. The original 32 keep their arguments and result shapes. A browser launched with remote debugging can now be driven over a loopback browser-level CDP connection, while the extension remains the zero-setup default.
@@ -120,6 +156,42 @@ First public release.
 ---
 
 ## 中文
+
+## 1.3.0 - 2026-11-15
+
+Token 效率版本。MCP 工具面从 42 个增至 43 个，原有 32 个结果形状保持不变。默认快照与工具发现输出更精简，强制 CDP 现在覆盖全部浏览器类工具。
+
+### 新增
+
+- `browser_batch`：一次调用最多顺序执行 20 个允许列表内的浏览器步骤，`stop_on_error` 默认 true，返回逐步结果数组；该工具由守护进程本地处理。
+- `page_snapshot` 在扩展与 CDP 两个通道上都支持紧凑文本，默认 `format: "compact"`，`format: "json"` 返回节点对象，支持 `viewport_only`、`include_bbox`，引用为 `@eN` 或 `@c<backendNodeId>`。
+- 精简 `tools/list`：默认简版，移除标题与 schema 属性描述；`detail: "full"` 恢复它们。`tool_help` 返回单个完整条目或类别索引。
+- CDP 完整对等：全部 33 个浏览器类工具，包括此前仅扩展的八个工具与 `@c` 引用。
+- 九个工具类别、共 43 个工具，每个定义带 `_meta["corvus.category"]`。
+
+### 变更
+
+- 成功的 `tools/call` 只返回一个紧凑 JSON 文本块，不返回 `structuredContent`；客户端解析 `content[0].text`。
+- 43 个工具的简版 `tools/list` 为 20,452 字节，完整详细为 37,067 字节。原有 32 个结果形状仍可用。
+- 文档、README、扩展元数据与发布断言改为 1.3.0 / 43 个工具。
+- 日志事件统一结构：小写事件消息、`snake_case` 字段、标识符以 `_id` 结尾，不再有挤占事件文本的 `message` 字段。
+- 失败的 MCP 工具调用记为 `warn`，不再用 `info`；启动摘要只保留一条 `corvusd listening` 事件，重复的 `corvusd ready` 已删除。
+
+### 修复
+
+- 从 v1.3 文档、路线图与 README 中移除了旧的 1.2.0 / 42 工具表述，同时保留 v1.2.0 发布说明作为历史记录。
+
+### 限制
+
+- NFR-3 未通过：干净的 72 小时压测在客户要求下于约八小时后停止，1.3.0 不能宣称通过 72 小时压测。
+- Firefox 仍不支持（NFR-6 偏差不变）。支持浏览器为 Edge、Chrome 与 Brave（Chromium 120+）。
+- CDP 仅限回环且没有认证；浏览器级端点可控制该浏览器实例中的所有 profile。绝不要暴露 9222、9223 或 9333。
+- 发布 Docker 镜像与 Kubernetes 清单不含浏览器，也无法访问宿主机浏览器回环。sidecar 浏览器不是开箱即用路径；请使用扩展通道或 `--no-cdp`。
+- 强制 `cdp` 不会自动回退；端点不可用时浏览器类调用直接失败，不会改走扩展。
+- macOS 没有打包安装器；Linux 打包仅支持 x86_64。
+- 1.3.0 中扩展标签 id 与 CDP 目标 id 仍属于不同命名空间。`@c` 与 `@eN` 引用按通道区分，跨通道使用返回类型化 `BAD_ARGS`；完整桥接延后。
+- 守护进程已连接时修改显式配置的扩展 CDP 端点，可能需要重启守护进程才能生效；自动发现的端点每 500 毫秒重新轮询并自动重连。
+- 紧凑与 JSON 基准记录的是候选均值；具体页面会有差异。
 
 ## 1.2.0 - 2026-11-15
 

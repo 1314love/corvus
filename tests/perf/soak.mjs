@@ -160,8 +160,8 @@ async function callTool(session, tool, args) {
       if (part && part.type === "text" && typeof part.text === "string") text += part.text;
     }
   }
-  let parsed = result && result.structuredContent ? result.structuredContent : null;
-  if (parsed === null && text) {
+  let parsed = null;
+  if (result && result.isError !== true && text) {
     try {
       parsed = JSON.parse(text);
     } catch {

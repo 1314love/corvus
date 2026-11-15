@@ -13,7 +13,7 @@ Corvus 由一个本地守护进程（`corvusd`）、一个命令行客户端（`
 | Linux 安装包 | `/opt/corvus` | `install-linux.sh` 写入 `/etc/systemd/system/corvus.service` |
 | Linux 前台 | `$XDG_DATA_HOME/corvus` 或 `~/.local/share/corvus` | `corvusd serve` |
 | Docker / Kubernetes | `/data` | 容器入口或 Kubernetes 清单 |
-| macOS 源码运行 | `~/Library/Application Support/Corvus` | `corvusd serve`；1.2.0 不提供安装包 |
+| macOS 源码运行 | `~/Library/Application Support/Corvus` | `corvusd serve`；1.3.0 不提供安装包 |
 
 一个根目录容纳全部后端文件：
 
@@ -111,9 +111,9 @@ corvusd.exe serve --home "<HomeDir>" --ws-port <WsPort> --http-port <HttpPort>
 下载或复制 tar 包，解压到一个目录，然后校验并安装：
 
 ```bash
-mkdir -p corvus-1.2.0-linux-x86_64
-tar -xzf corvus-1.2.0-linux-x86_64.tar.gz -C corvus-1.2.0-linux-x86_64
-cd corvus-1.2.0-linux-x86_64
+mkdir -p corvus-1.3.0-linux-x86_64
+tar -xzf corvus-1.3.0-linux-x86_64.tar.gz -C corvus-1.3.0-linux-x86_64
+cd corvus-1.3.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```

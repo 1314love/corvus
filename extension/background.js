@@ -637,7 +637,7 @@ function handleDaemonEvent(frame) {
 
 const HANDLERS = {
   browser_navigate: (args, frame, signal) => navigateTool(args, frame, signal),
-  page_snapshot: (args, frame) => runInTab('page_snapshot', args, frame),
+  page_snapshot: (args, frame) => runInTab('page_snapshot', args, frame, { withTabId: true }),
   browser_click: (args, frame) => runInTab('browser_click', args, frame),
   browser_type: (args, frame) => runInTab('browser_type', args, frame),
   page_text: (args, frame) => runInTab('page_text', args, frame),
@@ -964,7 +964,7 @@ function classifyContentFailure(error, tab) {
   return new ToolError('INTERNAL', 'content script reply failed: ' + message);
 }
 
-async function runInTab(tool, args, frame) {
+async function runInTab(tool, args, frame, options) {
   const tab = await resolveTab(args);
   if (!tab || typeof tab.id !== 'number') {
     throw new ToolError('NOT_FOUND', 'no active tab is available');
@@ -994,6 +994,9 @@ async function runInTab(tool, args, frame) {
     throw new ToolError('INTERNAL', 'content script returned an empty reply');
   }
   if (reply.ok === false) throw fromContentError(reply.error);
+  if (options && options.withTabId === true && reply.result && typeof reply.result === 'object' && !Array.isArray(reply.result)) {
+    return Object.assign({ tab_id: tabIdString(tab.id) }, reply.result);
+  }
   return reply.result;
 }
 

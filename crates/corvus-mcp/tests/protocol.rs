@@ -137,7 +137,7 @@ async fn tools_list_exposes_every_fully_annotated_tool() {
         .and_then(|result| result.get("tools"))
         .and_then(Value::as_array)
         .expect("tools array");
-    assert_eq!(tools.len(), 42);
+    assert_eq!(tools.len(), 43);
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
@@ -186,6 +186,7 @@ async fn tools_list_exposes_every_fully_annotated_tool() {
             "browser_cookies",
             "browser_dialog",
             "browser_emulate",
+            "browser_batch",
             "tool_help"
         ]
     );
@@ -221,6 +222,10 @@ async fn a_successful_tool_call_returns_content_and_no_error() {
     .await;
     let result = answer.get("result").expect("result");
     assert_eq!(result.get("isError").and_then(Value::as_bool), Some(false));
+    assert!(
+        result.get("structuredContent").is_none(),
+        "the payload must not be duplicated in structuredContent"
+    );
     let text = result
         .get("content")
         .and_then(Value::as_array)
@@ -228,7 +233,12 @@ async fn a_successful_tool_call_returns_content_and_no_error() {
         .and_then(|item| item.get("text"))
         .and_then(Value::as_str)
         .expect("text content");
-    assert!(text.contains("clicked"));
+    assert!(!text.contains('\n'), "the text block must be compact JSON");
+    assert_eq!(text, "{\"clicked\":true}");
+    assert_eq!(
+        serde_json::from_str::<Value>(text).expect("parse text content"),
+        json!({ "clicked": true })
+    );
 }
 
 #[tokio::test]
@@ -258,6 +268,7 @@ async fn backend_failures_become_tool_results_with_the_error_code() {
         text.contains("{\"waited_ms\":4321}"),
         "the details must reach the text: {text}"
     );
+    assert!(result.get("structuredContent").is_none());
 }
 
 #[tokio::test]

@@ -44,8 +44,9 @@ const STEP_VALUE_CAP: usize = 65_536;
 const EXPORT_CAP: usize = 2_097_152;
 
 /// Tools answered inside the daemon instead of being forwarded to a browser.
-const LOCAL_TOOLS: [&str; 9] = [
+const LOCAL_TOOLS: [&str; 10] = [
     "browser_list",
+    "browser_batch",
     "browser_channel",
     "tool_help",
     "session_list",
@@ -57,8 +58,9 @@ const LOCAL_TOOLS: [&str; 9] = [
 ];
 
 /// Tools that describe or control the recording layer and must not be replayed.
-const CONTROL_TOOLS: [&str; 9] = [
+const CONTROL_TOOLS: [&str; 10] = [
     "browser_channel",
+    "browser_batch",
     "tool_help",
     "session_list",
     "session_steps",
@@ -164,6 +166,18 @@ impl ToolBackend for RouterBackend {
             let local = LOCAL_TOOLS.contains(&name.as_str());
             let (result, recorded_here) = match name.as_str() {
                 "browser_list" => (Ok(browser_list(&registry, &channel)), true),
+                "browser_batch" => (
+                    run_batch(
+                        &cdp,
+                        &channel,
+                        &registry,
+                        &router,
+                        &arguments,
+                        session.as_ref(),
+                    )
+                    .await,
+                    true,
+                ),
                 "browser_channel" => (channel.tool(&arguments), true),
                 "tool_help" => (corvus_mcp::tools::help_document(&arguments), true),
                 "session_list" => (session_list(&store, &arguments), true),
@@ -181,10 +195,10 @@ impl ToolBackend for RouterBackend {
                 }
             };
             if let Err(error) = &result {
-                tracing::info!(
+                tracing::warn!(
                     tool = %name,
                     code = %error.code,
-                    message = %error.message,
+                    error = %error.message,
                     "tool call failed"
                 );
             }
@@ -233,17 +247,10 @@ fn metrics_tool(
     Ok(document)
 }
 
-/// Tools that only the extension implements.
-const EXTENSION_ONLY_TOOLS: [&str; 8] = [
-    "page_snapshot",
-    "page_find",
-    "browser_click",
-    "browser_type",
-    "browser_hover",
-    "browser_press",
-    "browser_scroll",
-    "browser_select",
-];
+/// Tools that only the extension implements. Every browser-facing tool now
+/// has a CDP handler, so the extension remains a fallback rather than a
+/// capability boundary.
+const EXTENSION_ONLY_TOOLS: [&str; 0] = [];
 
 const EXTENSION_TAB_HINT: &str =
     "omit tab_id to use the active tab; CDP target ids are not extension tab ids";
@@ -319,6 +326,77 @@ fn browser_route(name: &str, mode: ChannelMode, cdp_connected: bool) -> ToolRout
         };
     }
     ToolRoute::Rejected
+}
+
+async fn run_batch(
+    cdp: &Arc<CdpClient>,
+    channel: &Arc<ChannelState>,
+    registry: &Arc<Registry>,
+    router: &Arc<Router>,
+    arguments: &Value,
+    session: Option<&SessionContext>,
+) -> Result<Value, ErrorBody> {
+    let arguments = corvus_mcp::tools::validate("browser_batch", arguments)?;
+    let steps = arguments
+        .get("steps")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let stop_on_error = arguments
+        .get("stop_on_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let mut results = Vec::with_capacity(steps.len());
+    let mut stopped = false;
+    for (index, step) in steps.iter().enumerate() {
+        let number = index + 1;
+        let tool = step
+            .get("tool")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let raw_args = step.get("args").cloned().unwrap_or_else(|| json!({}));
+        let outcome = match corvus_mcp::tools::validate(&tool, &raw_args) {
+            Ok(_args) if tool == "browser_list" => Ok(browser_list(registry, channel)),
+            Ok(args) => {
+                dispatch_tool(cdp, channel, router, &tool, &args, session)
+                    .await
+                    .0
+            }
+            Err(error) => Err(error),
+        };
+        match outcome {
+            Ok(data) => {
+                results.push(json!({
+                    "step": number,
+                    "tool": tool,
+                    "ok": true,
+                    "data": data,
+                }));
+            }
+            Err(error) => {
+                results.push(json!({
+                    "step": number,
+                    "tool": tool,
+                    "ok": false,
+                    "error": error,
+                }));
+                if stop_on_error {
+                    stopped = true;
+                    break;
+                }
+            }
+        }
+    }
+    let ok = results
+        .iter()
+        .all(|result| result.get("ok").and_then(Value::as_bool) == Some(true));
+    Ok(json!({
+        "ok": ok,
+        "count": results.len(),
+        "stopped": stopped,
+        "results": results,
+    }))
 }
 
 async fn dispatch_tool(
@@ -434,6 +512,7 @@ fn cdp_error_body(error: CdpError) -> ErrorBody {
         CdpError::Timeout(_) => ErrorCode::Timeout,
         CdpError::NotConnected | CdpError::Transport(_) => ErrorCode::BrowserGone,
         CdpError::TargetNotFound(_) | CdpError::DialogNotFound => ErrorCode::NotFound,
+        CdpError::NotInteractable(_) => ErrorCode::NotInteractable,
         CdpError::Unsupported(_) => ErrorCode::CapabilityUnavailable,
         CdpError::Protocol(_) | CdpError::Remote { .. } => ErrorCode::Internal,
     };
@@ -952,7 +1031,7 @@ impl Daemon {
         if !config.no_cdp {
             if let Some(endpoint) = config.cdp_endpoint.as_deref() {
                 if let Err(error) = cdp.connect(endpoint) {
-                    tracing::warn!(endpoint = %endpoint, %error, "cdp endpoint rejected");
+                    tracing::warn!(endpoint = %endpoint, error = %error, "cdp endpoint rejected");
                 }
             }
         }
@@ -1065,7 +1144,7 @@ impl Daemon {
                             match cdp.connect(&endpoint) {
                                 Ok(()) => attempted = Some(endpoint),
                                 Err(error) => {
-                                    tracing::warn!(endpoint = %endpoint, %error, "cdp endpoint rejected");
+                                    tracing::warn!(endpoint = %endpoint, error = %error, "cdp endpoint rejected");
                                     retry_after = Some(Instant::now() + Duration::from_secs(2));
                                 }
                             }
@@ -1080,10 +1159,10 @@ impl Daemon {
         tracing::info!(
             version = env!("CARGO_PKG_VERSION"),
             protocol = corvus_proto::PROTOCOL_VERSION,
-            ws = %ws_addr,
-            mcp = %format!("http://{http_addr}/mcp"),
-            db = %db_path.display(),
-            "corvusd serving"
+            ws_addr = %ws_addr,
+            mcp_url = %format!("http://{http_addr}/mcp"),
+            db_path = %db_path.display(),
+            "corvusd listening"
         );
 
         Ok(Self {
@@ -1186,7 +1265,7 @@ impl Daemon {
                 .await
                 .is_err()
             {
-                tracing::debug!("a background task did not stop within the grace period");
+                tracing::debug!("background task shutdown timed out");
             }
         }
         mcp.close_all_sessions("closed");
@@ -1219,7 +1298,7 @@ mod channel_routing_tests {
     }
 
     #[tokio::test]
-    async fn forced_cdp_rejects_extension_only_tools_even_with_an_extension_attached() {
+    async fn forced_cdp_requires_a_connection_for_dom_tools() {
         let registry = Arc::new(Registry::new());
         let (outbound, _receiver) = mpsc::unbounded_channel();
         registry.register(Arc::new(corvus_transport::BrowserConnection::new(
@@ -1241,12 +1320,101 @@ mod channel_routing_tests {
         let router = Router::new(Arc::clone(&registry), RouterConfig::default());
         let (result, recorded) =
             dispatch_tool(&cdp, &channel, &router, "page_snapshot", &json!({}), None).await;
-        let error = result.expect_err("forced cdp must reject extension-only tools");
+        let error = result.expect_err("forced cdp needs a connected endpoint for DOM tools");
         assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
+        assert_eq!(error.message, "no CDP endpoint is connected");
         let details = error.details.expect("details");
-        assert_eq!(details["transport"], "extension");
+        assert_eq!(details["transport"], "cdp");
         assert_eq!(details["channel"], "cdp");
         assert!(!recorded);
+    }
+
+    #[tokio::test]
+    async fn browser_batch_runs_allowed_steps_and_honours_stop_on_error() {
+        let registry = Arc::new(Registry::new());
+        let cdp = Arc::new(CdpClient::new());
+        let channel = Arc::new(ChannelState::new(
+            ChannelMode::Auto,
+            Arc::clone(&cdp),
+            Arc::clone(&registry),
+            true,
+        ));
+        let router = Router::new(Arc::clone(&registry), RouterConfig::default());
+        let (result, recorded) = run_batch(
+            &cdp,
+            &channel,
+            &registry,
+            &router,
+            &json!({
+                "steps": [
+                    { "tool": "browser_list" },
+                    { "tool": "browser_navigate", "args": { "url": "https://example.test/" } },
+                    { "tool": "browser_list" }
+                ],
+                "stop_on_error": false
+            }),
+            None,
+        )
+        .await
+        .map(|value| (value, true))
+        .expect("a batch always returns a result envelope");
+        assert!(recorded);
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["count"], 3);
+        assert_eq!(result["stopped"], false);
+        let results = result["results"].as_array().expect("step results");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0]["step"], 1);
+        assert_eq!(results[0]["ok"], true);
+        assert_eq!(results[1]["step"], 2);
+        assert_eq!(results[1]["ok"], false);
+        assert_eq!(results[1]["error"]["code"], "TRANSPORT_DOWN");
+        assert_eq!(results[2]["step"], 3);
+        assert_eq!(results[2]["ok"], true);
+
+        let stopped = run_batch(
+            &cdp,
+            &channel,
+            &registry,
+            &router,
+            &json!({
+                "steps": [
+                    { "tool": "browser_navigate", "args": { "url": "https://example.test/" } },
+                    { "tool": "browser_list" }
+                ]
+            }),
+            None,
+        )
+        .await
+        .expect("a failing first step is still an envelope");
+        assert_eq!(stopped["ok"], false);
+        assert_eq!(stopped["count"], 1);
+        assert_eq!(stopped["stopped"], true);
+    }
+
+    #[tokio::test]
+    async fn browser_batch_refuses_recursion_at_the_executor() {
+        let registry = Arc::new(Registry::new());
+        let cdp = Arc::new(CdpClient::new());
+        let channel = Arc::new(ChannelState::new(
+            ChannelMode::Auto,
+            Arc::clone(&cdp),
+            Arc::clone(&registry),
+            true,
+        ));
+        let router = Router::new(Arc::clone(&registry), RouterConfig::default());
+        let error = run_batch(
+            &cdp,
+            &channel,
+            &registry,
+            &router,
+            &json!({ "steps": [{ "tool": "browser_batch", "args": { "steps": [] } }] }),
+            None,
+        )
+        .await
+        .expect_err("browser_batch must never recurse");
+        assert_eq!(error.code, ErrorCode::BadArgs);
+        assert_eq!(error.message, "browser_batch cannot call itself");
     }
 
     #[tokio::test]
@@ -1508,5 +1676,18 @@ mod channel_routing_tests {
         assert_eq!(body.code, ErrorCode::NotFound);
         assert_eq!(body.message, "no dialog is showing");
         assert_eq!(body.details.expect("details")["transport"], "cdp");
+    }
+
+    #[test]
+    fn unclickable_element_maps_to_not_interactable() {
+        let body = cdp_error_body(CdpError::NotInteractable("element is covered".into()));
+        assert_eq!(body.code, ErrorCode::NotInteractable);
+        assert_eq!(
+            body.message,
+            "element is not interactable: element is covered"
+        );
+        let details = body.details.expect("details");
+        assert_eq!(details["transport"], "cdp");
+        assert_eq!(details["cdp_code"], "NOT_INTERACTABLE");
     }
 }

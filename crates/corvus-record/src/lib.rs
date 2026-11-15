@@ -169,7 +169,7 @@ impl StepSink {
             .send(WriterMessage::Step(Box::new(step)))
             .is_err()
         {
-            tracing::warn!("recording writer is gone; the step was not stored");
+            tracing::warn!(reason = "writer gone", "tool step dropped");
         }
     }
 }
@@ -236,8 +236,8 @@ impl Recorder {
         let _ = self.sender.send(WriterMessage::Shutdown);
         match tokio::time::timeout(Duration::from_secs(5), self.task).await {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::warn!(error = %error, "recording writer ended badly"),
-            Err(_) => tracing::warn!("recording writer did not stop in time"),
+            Ok(Err(error)) => tracing::warn!(error = %error, "recording writer failed"),
+            Err(_) => tracing::warn!("recording writer shutdown timed out"),
         }
     }
 }

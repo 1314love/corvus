@@ -192,11 +192,6 @@ async fn main() -> anyhow::Result<()> {
                 ..DaemonConfig::default()
             })
             .await?;
-            eprintln!(
-                "corvus serving websocket on {} and MCP on http://{}/mcp",
-                daemon.ws_addr(),
-                daemon.http_addr()
-            );
             if stdio {
                 tokio::select! {
                     result = corvus_mcp::serve_stdio(std::sync::Arc::clone(daemon.mcp())) => {

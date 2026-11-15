@@ -65,7 +65,7 @@ conformance values into the browser tables.
 
 ## 4. Real-browser happy path
 
-Record each tool once. Result is the `structuredContent` or the parsed text
+Record each tool once. Result is the JSON object parsed from `content[0].text`.
 payload; latency is client-side `curl %{time_total}` in milliseconds.
 
 | # | tool | request arguments | key result fields (expected) | observed result | latency (ms) | evidence | PASS/FAIL |

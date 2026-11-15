@@ -16,7 +16,7 @@ struct Spec {
     open_world: bool,
 }
 
-const SPECS: [Spec; 42] = [
+const SPECS: [Spec; 43] = [
     Spec {
         name: "browser_navigate",
         title: "Navigate",
@@ -428,6 +428,16 @@ const SPECS: [Spec; 42] = [
         open_world: true,
     },
     Spec {
+        name: "browser_batch",
+        title: "Browser batch",
+        description: "Run up to 20 browser tool calls in order and return one result per step. Each step names a browser tool and its arguments. stop_on_error defaults to true; browser_batch cannot call itself.",
+        schema: batch_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
         name: "tool_help",
         title: "Tool help",
         description: "Return the tool catalogue index, one category with its tools, or the full description, schema and annotations of one tool.",
@@ -438,6 +448,20 @@ const SPECS: [Spec; 42] = [
         open_world: false,
     },
 ];
+
+/// Whether browser_batch may call this tool. Daemon control, recording,
+/// diagnostic-log and help tools are deliberately excluded, as is recursion.
+pub fn batch_tool_allowed(name: &str) -> bool {
+    SPECS.iter().any(|spec| spec.name == name)
+        && matches!(
+            category(name),
+            "page" | "input" | "tabs" | "network" | "files" | "cdp" | "diagnostics"
+        )
+        && !matches!(
+            name,
+            "browser_batch" | "browser_channel" | "metrics" | "logs_tail"
+        )
+}
 
 /// Names of every tool, in catalogue order.
 pub fn names() -> Vec<&'static str> {
@@ -453,7 +477,8 @@ pub fn definitions() -> Vec<Value> {
 pub fn category(name: &str) -> &'static str {
     match name {
         "browser_navigate" | "page_snapshot" | "page_text" | "page_html" | "page_find"
-        | "browser_wait" | "browser_history" | "browser_dialog" | "browser_emulate" => "page",
+        | "browser_wait" | "browser_history" | "browser_dialog" | "browser_emulate"
+        | "browser_batch" => "page",
         "browser_click" | "browser_type" | "browser_hover" | "browser_press" | "browser_scroll"
         | "browser_select" | "browser_eval" => "input",
         "tab_list" | "tab_new" | "tab_close" | "tab_switch" => "tabs",
@@ -511,6 +536,7 @@ pub fn summary(name: &str) -> &'static str {
         "browser_cookies" => "Browser cookies.",
         "browser_dialog" => "Accept or dismiss a JavaScript dialog.",
         "browser_emulate" => "Apply or reset device and network emulation.",
+        "browser_batch" => "Run up to 20 browser tool calls in order.",
         "tool_help" => "Catalogue index, category or full tool help.",
         _ => "Corvus tool.",
     }
@@ -531,6 +557,25 @@ pub fn categories() -> Vec<&'static str> {
     ]
 }
 
+/// Remove property descriptions from a brief input schema while keeping the
+/// structural keywords clients need: type, enum, default, bounds and required.
+fn strip_schema_descriptions(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("description");
+            for child in object.values_mut() {
+                strip_schema_descriptions(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_schema_descriptions(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Tool definitions filtered by category and detail level.
 ///
 /// brief (the default) replaces the long description with a one-line summary;
@@ -542,6 +587,9 @@ pub fn definitions_for(category_filter: Option<&str>, detail: &str) -> Vec<Value
         .map(|spec| {
             let mut schema = (spec.schema)();
             add_browser_id(&mut schema);
+            if detail != "full" {
+                strip_schema_descriptions(&mut schema);
+            }
             let description = if detail == "full" {
                 spec.description
             } else {
@@ -713,6 +761,22 @@ fn snapshot_schema() -> Value {
                 "minimum": 40,
                 "maximum": 3000,
                 "description": "Upper bound on the nodes returned; defaults to the daemon limit.",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["compact", "json"],
+                "default": "compact",
+                "description": "compact returns the shared line grammar; json keeps the legacy node objects.",
+            },
+            "viewport_only": {
+                "type": "boolean",
+                "default": false,
+                "description": "Only include nodes intersecting the current viewport.",
+            },
+            "include_bbox": {
+                "type": "boolean",
+                "default": false,
+                "description": "Include viewport-relative bounding boxes in compact lines.",
             },
         },
         "additionalProperties": false,
@@ -1550,6 +1614,42 @@ fn browser_emulate_schema() -> Value {
     })
 }
 
+fn batch_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "steps": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "description": "Browser tool calls to run in order.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "tool": {
+                            "type": "string",
+                            "description": "A browser tool name such as page_snapshot or browser_click.",
+                        },
+                        "args": {
+                            "type": "object",
+                            "description": "Arguments for the step tool; defaults to an empty object.",
+                        },
+                    },
+                    "required": ["tool"],
+                    "additionalProperties": false,
+                },
+            },
+            "stop_on_error": {
+                "type": "boolean",
+                "default": true,
+                "description": "Stop after the first failing step.",
+            },
+        },
+        "required": ["steps"],
+        "additionalProperties": false,
+    })
+}
+
 fn tool_help_schema() -> Value {
     json!({
         "type": "object",
@@ -1559,6 +1659,85 @@ fn tool_help_schema() -> Value {
         },
         "additionalProperties": false,
     })
+}
+
+fn validate_batch(object: &mut Map<String, Value>) -> Result<(), ErrorBody> {
+    let steps = match object.get_mut("steps") {
+        Some(Value::Array(steps)) if !steps.is_empty() && steps.len() <= 20 => steps,
+        _ => {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                "browser_batch steps must be an array of 1 to 20 steps",
+            ))
+        }
+    };
+    for (index, step) in steps.iter_mut().enumerate() {
+        let step_number = index + 1;
+        let step = step.as_object_mut().ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::BadArgs,
+                format!("browser_batch step {step_number} must be an object"),
+            )
+        })?;
+        if step.keys().any(|key| key != "tool" && key != "args") {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                format!("browser_batch step {step_number} has unknown fields"),
+            ));
+        }
+        let tool = step
+            .get("tool")
+            .and_then(Value::as_str)
+            .filter(|tool| !tool.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    format!("browser_batch step {step_number} requires a non-empty tool"),
+                )
+            })?;
+        if !batch_tool_allowed(&tool) {
+            let message = if tool == "browser_batch" {
+                "browser_batch cannot call itself".to_string()
+            } else {
+                format!("browser_batch step {step_number} tool {tool} is not allowed")
+            };
+            return Err(ErrorBody::new(ErrorCode::BadArgs, message)
+                .with_details(json!({ "step": step_number, "tool": tool })));
+        }
+        let args = step.entry("args".to_string()).or_insert_with(|| json!({}));
+        if !args.is_object() {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                format!("browser_batch step {step_number} args must be an object"),
+            ));
+        }
+        let normalized = validate(&tool, args).map_err(|error| {
+            ErrorBody::new(
+                error.code,
+                format!("browser_batch step {step_number}: {}", error.message),
+            )
+            .with_details(
+                error
+                    .details
+                    .unwrap_or_else(|| json!({ "step": step_number })),
+            )
+        })?;
+        *args = normalized;
+    }
+    match object.get("stop_on_error") {
+        None => {
+            object.insert("stop_on_error".to_string(), json!(true));
+        }
+        Some(Value::Bool(_)) => {}
+        Some(_) => {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                "browser_batch stop_on_error must be a boolean",
+            ))
+        }
+    }
+    Ok(())
 }
 
 /// Check a tool call against the catalogue and normalise its arguments.
@@ -1609,6 +1788,12 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
                     }
                 },
             }
+            optional_choice(&object, "format", &["compact", "json"], name)?;
+            optional_bool(&object, "viewport_only", name)?;
+            optional_bool(&object, "include_bbox", name)?;
+            fill_default(&mut object, "format", json!("compact"));
+            fill_default(&mut object, "viewport_only", json!(false));
+            fill_default(&mut object, "include_bbox", json!(false));
         }
         "browser_click" => {
             required_string(&object, "target", name)?;
@@ -1847,6 +2032,9 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
             fill_default(&mut object, "limit", json!(100));
             fill_default(&mut object, "wait_ms", json!(0));
             fill_default(&mut object, "clear", json!(false));
+        }
+        "browser_batch" => {
+            validate_batch(&mut object)?;
         }
         "browser_channel" => {
             optional_choice(&object, "action", &["status", "set"], name)?;
@@ -2242,7 +2430,7 @@ mod tests {
     #[test]
     fn every_definition_declares_a_category_and_summary() {
         let definitions = definitions_for(None, "brief");
-        assert_eq!(definitions.len(), 42);
+        assert_eq!(definitions.len(), 43);
         let categories = categories();
         for definition in &definitions {
             let name = definition
@@ -2283,6 +2471,114 @@ mod tests {
             full.len(),
             definitions_for(None, "brief").len()
         );
+    }
+
+    #[test]
+    fn browser_batch_is_bounded_normalised_and_rejects_recursion() {
+        let batch = validate(
+            "browser_batch",
+            &json!({
+                "steps": [
+                    { "tool": "page_snapshot" },
+                    { "tool": "tab_list", "args": {} }
+                ]
+            }),
+        )
+        .expect("batch");
+        assert_eq!(
+            batch.get("stop_on_error").and_then(Value::as_bool),
+            Some(true)
+        );
+        let steps = batch.get("steps").and_then(Value::as_array).expect("steps");
+        assert_eq!(steps.len(), 2);
+        let snapshot = steps[0].get("args").expect("defaults");
+        assert_eq!(
+            snapshot.get("mode").and_then(Value::as_str),
+            Some("interactive")
+        );
+        assert_eq!(
+            snapshot.get("format").and_then(Value::as_str),
+            Some("compact")
+        );
+        assert_eq!(
+            snapshot.get("viewport_only").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            snapshot.get("include_bbox").and_then(Value::as_bool),
+            Some(false)
+        );
+        let lenient = validate(
+            "browser_batch",
+            &json!({ "steps": [{ "tool": "tab_list" }], "stop_on_error": false }),
+        )
+        .expect("lenient");
+        assert_eq!(
+            lenient.get("stop_on_error").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(batch_tool_allowed("page_snapshot"));
+        assert!(batch_tool_allowed("browser_console"));
+        assert!(batch_tool_allowed("cdp_send"));
+        assert!(batch_tool_allowed("browser_list"));
+        for refused in [
+            "browser_batch",
+            "browser_channel",
+            "tool_help",
+            "metrics",
+            "logs_tail",
+            "session_list",
+        ] {
+            assert!(!batch_tool_allowed(refused), "{refused} must be refused");
+        }
+        let recursive = validate(
+            "browser_batch",
+            &json!({ "steps": [{ "tool": "browser_batch" }] }),
+        )
+        .expect_err("recursion");
+        assert_eq!(recursive.code, ErrorCode::BadArgs);
+        assert!(recursive.message.contains("cannot call itself"));
+        assert!(validate(
+            "browser_batch",
+            &json!({ "steps": [{ "tool": "metrics" }] }),
+        )
+        .is_err());
+        let too_many: Vec<Value> = (0..21).map(|_| json!({ "tool": "tab_list" })).collect();
+        assert!(validate("browser_batch", &json!({ "steps": too_many })).is_err());
+    }
+
+    #[test]
+    fn brief_schemas_strip_property_descriptions_but_keep_structure() {
+        let brief = definitions_for(Some("page"), "brief");
+        let snapshot = brief
+            .iter()
+            .find(|definition| {
+                definition.get("name").and_then(Value::as_str) == Some("page_snapshot")
+            })
+            .expect("page_snapshot");
+        let format = snapshot
+            .pointer("/inputSchema/properties/format")
+            .expect("format property");
+        assert_eq!(format.get("type").and_then(Value::as_str), Some("string"));
+        assert_eq!(
+            format.get("default").and_then(Value::as_str),
+            Some("compact")
+        );
+        assert!(format.get("description").is_none());
+        assert!(snapshot
+            .pointer("/inputSchema/properties/max_nodes/description")
+            .is_none());
+        let full = definitions_for(Some("page"), "full");
+        let snapshot = full
+            .iter()
+            .find(|definition| {
+                definition.get("name").and_then(Value::as_str) == Some("page_snapshot")
+            })
+            .expect("full page_snapshot");
+        assert!(snapshot
+            .pointer("/inputSchema/properties/format/description")
+            .and_then(Value::as_str)
+            .is_some());
     }
 
     #[test]
@@ -2337,7 +2633,7 @@ mod tests {
     #[test]
     fn definitions_carry_names_schemas_and_annotations() {
         let definitions = definitions();
-        assert_eq!(definitions.len(), 42);
+        assert_eq!(definitions.len(), 43);
         for definition in &definitions {
             assert!(definition.get("name").and_then(Value::as_str).is_some());
             let schema = definition.get("inputSchema").expect("schema");
@@ -2399,6 +2695,7 @@ mod tests {
                 "browser_cookies",
                 "browser_dialog",
                 "browser_emulate",
+                "browser_batch",
                 "tool_help",
             ]
         );
@@ -2532,6 +2829,23 @@ mod tests {
 
     #[test]
     fn new_tool_defaults_are_filled() {
+        let snapshot = validate("page_snapshot", &json!({})).expect("page_snapshot");
+        assert_eq!(
+            snapshot.get("mode").and_then(Value::as_str),
+            Some("interactive")
+        );
+        assert_eq!(
+            snapshot.get("format").and_then(Value::as_str),
+            Some("compact")
+        );
+        assert_eq!(
+            snapshot.get("viewport_only").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            snapshot.get("include_bbox").and_then(Value::as_bool),
+            Some(false)
+        );
         let text = validate("page_text", &json!({})).expect("page_text");
         assert_eq!(text.get("max_chars").and_then(Value::as_u64), Some(100_000));
         let html = validate("page_html", &json!({})).expect("page_html");

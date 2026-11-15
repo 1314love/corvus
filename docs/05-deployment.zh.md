@@ -38,16 +38,16 @@ Corvus 由一个本地守护进程、一个命令行和一个浏览器扩展组�
 
 相对根目录与相对 `--log-file` 分别按进程工作目录与根目录解析；服务定义中请使用绝对路径。
 
-文件日志默认写入 `logs/`。`--log-file <PATH>` 覆盖路径，`--no-log-file` 关闭文件日志，内存日志环与 stderr 输出仍然保留。滚动文件始终带 UTC 日期后缀，例如 `corvusd.log.2026-11-15`，而不是裸的 `corvusd.log`。
+文件日志默认写入 `logs/`。`--log-file <PATH>` 覆盖路径，`--no-log-file` 关闭文件日志，内存日志环与 stderr 输出仍然保留。滚动文件始终带 UTC 日期后缀，例如 `corvusd.log.2026-11-15`，而不是裸的 `corvusd.log`。事件结构与级别规则见 [08-logging.zh.md](08-logging.zh.md)。
 
 ## 2. Linux systemd 安装
 
 Linux 发布包仅面向 x86_64。先解压到一个目录，再安装：
 
 ```bash
-mkdir -p corvus-1.2.0-linux-x86_64
-tar -xzf corvus-1.2.0-linux-x86_64.tar.gz -C corvus-1.2.0-linux-x86_64
-cd corvus-1.2.0-linux-x86_64
+mkdir -p corvus-1.3.0-linux-x86_64
+tar -xzf corvus-1.3.0-linux-x86_64.tar.gz -C corvus-1.3.0-linux-x86_64
+cd corvus-1.3.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -98,7 +98,7 @@ Windows 发布包是 ZIP，包含 `corvusd.exe`、`corvus.exe`、`nssm.exe`、�
 在仓库根目录构建镜像：
 
 ```bash
-docker build -t corvus:1.2.0 .
+docker build -t corvus:1.3.0 .
 ```
 
 镜像以 UID/GID 10001 运行 `corvusd serve --bind 0.0.0.0 --home /data`，运行数据存放在 `/data` 卷，暴露 7330（WebSocket）与 7331（MCP HTTP）。未打包扩展位于 `/opt/corvus/extension`，不在 `/data`；请用 `docker cp` 复制出来，或在宿主机上使用发布 ZIP 中的扩展。只发布到宿主机回环：
@@ -107,7 +107,7 @@ docker build -t corvus:1.2.0 .
 docker volume create corvus-data
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
-  -v corvus-data:/data corvus:1.2.0
+  -v corvus-data:/data corvus:1.3.0
 curl -fsS http://127.0.0.1:7331/health
 ```
 
@@ -126,8 +126,8 @@ docker compose down
 `deploy/k8s/` 中的清单创建 `corvus` 命名空间、1 GiB ReadWriteOnce PVC、一个守护进程副本、ClusterIP Service 与默认拒绝的 NetworkPolicy。部署使用只读根文件系统、无 capability、RuntimeDefault seccomp，并通过 init 容器把镜像内的扩展播种到卷。
 
 ```bash
-docker build -t corvus:1.2.0 .
-kind load docker-image corvus:1.2.0   # 或推送到你的镜像仓库
+docker build -t corvus:1.3.0 .
+kind load docker-image corvus:1.3.0   # 或推送到你的镜像仓库
 kubectl apply -k deploy/k8s
 kubectl -n corvus rollout status deployment/corvus
 kubectl -n corvus port-forward svc/corvus 7330:7330 7331:7331

@@ -2,11 +2,11 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：1.2.0 交付 M1 至 M4 的后端能力、采用 CDP 与扩展混合传输的 42 工具 MCP 面，并加入单根目录打包、Linux 安装包、Docker 与 Kubernetes 部署。读者：工程实现者。
+状态：1.3.0 交付 M1 至 M4 的后端能力、采用 CDP 与扩展混合传输的 43 工具 MCP 面，并加入精简快照、批量调用、单根目录打包、Linux 安装包、Docker 与 Kubernetes 部署。读者：工程实现者。
 
 ## 1. 约束设计的硬条件
 
-1. **默认必须驱动用户正在使用的那个浏览器。** 零配置路径使用已在运行浏览器中的扩展：不重启、不建独立 profile、不加远程调试开关。v1.2.0 为已开启远程调试的浏览器增加一条可选、显式配置的 CDP 路径，因此设计仍不是纯 CDP：扩展仍是唯一提供 DOM 引用与仅扩展工具的路径。
+1. **默认必须驱动用户正在使用的那个浏览器。** 零配置路径使用已在运行浏览器中的扩展：不重启、不建独立 profile、不加远程调试开关。可选的显式回环 CDP 路径可以执行全部浏览器类工具并使用 `@c` 引用，但设计仍不是纯 CDP：扩展仍是零配置入口，并在其通道上提供 `@eN` 引用。
 2. **零审批、零配对、无必需设置页。** 扩展开箱即用；可选设置页只用于覆盖守护进程 URL 与可选 CDP 端点。
 3. **连接就是产品。** MV3 的 Service Worker 空闲约 30 秒即被回收，设计必须假定浏览器一侧对长连接是敌意的。
 4. **多浏览器、多 profile、并发。** 一个守护进程、N 个扩展、互相独立的会话。
@@ -77,7 +77,7 @@
 
 - 传输：stdio（IDE 类客户端默认）与 streamable-http，监听 127.0.0.1:7331/mcp（DSH 及 Web 类客户端默认）。
 - 工具命名：<域>_<动词>，一经发布永久稳定；别名只废弃不删除。
-- 发现：`tools/list` 默认返回简版描述（42 个工具 29,971 字节）；`detail: "full"` 返回 35,552 字节的完整描述，`tool_help` 按需说明单个工具。
+- 发现：`tools/list` 默认返回简版描述（43 个工具 20,452 字节）；`detail: "full"` 返回 37,067 字节的完整描述，`tool_help` 按需说明单个工具。
 - 每个工具都声明注解：readOnlyHint、destructiveHint、idempotentHint、openWorldHint。
 - 长输出按调用截断：`max_chars` 截断长字符串并置 `truncated: true`；M2 不做游标分页。
 - Resource：corvus://session/<id>/step/<n> 返回该步骤记录下来的页面快照，代理无需重跑即可查看历史。
@@ -214,7 +214,7 @@ M4 第一波不新增工具。它改变路由器调度调用的方式，以及�
 
 ### 5.6 混合 CDP 传输
 
-v1.2.0 新增十个工具，工具面达到 42 个。原有 32 个工具的参数与结果形状保持不变。浏览器类调用现在走两个通道之一。
+v1.2.0 新增十个工具，工具面达到 42 个；v1.3.0 再新增 `browser_batch`，达到 43 个。原有 32 个工具的参数与结果形状保持不变。浏览器类调用走两个通道之一。
 
 **探测。** 扩展设置页可以把 CDP 端点保存在 `corvus.cdpEndpoint`。`auto` 以 800 毫秒超时探测回环端口 9222、9223 与 9333，读取 `/json/version`，选择与本扩展浏览器家族匹配的可用端点。Chrome 与 Chromium 同族；Edge、Brave、Opera 与 Vivaldi 各自独立。握手携带包含端点、WebSocket 调试地址、浏览器、协议版本、来源与家族的 descriptor。只有探测成功时才声明 `cdp` 能力。
 
@@ -222,13 +222,13 @@ v1.2.0 新增十个工具，工具面达到 42 个。原有 32 个工具的参�
 
 **路由。** `auto` 优先 CDP，仅在 CDP 调用返回 `Unsupported` 时回退扩展。`cdp` 严格不回退。`extension` 忽略 CDP。`--no-cdp` 移除 CDP 路径，此时请求 `cdp` 模式会失败。`browser_channel` 在运行中的守护进程上切换模式；启动模式来自 `--channel` 或 `CORVUS_CHANNEL`。
 
-**可用性。** 八个工具仅扩展（快照与引用动作），八个仅 CDP，十七个共享，九个守护进程本地。强制模式对无法执行的工具返回 `CAPABILITY_UNAVAILABLE`，不会静默切换通道。只有 `auto` 可能在 CDP 返回 `Unsupported` 后移动调用。
+**可用性。** v1.3.0 中二十五个工具共享，八个仅 CDP，已无仅扩展工具，十个守护进程本地。强制 CDP 可执行全部 33 个浏览器类工具；强制扩展对仅 CDP 工具返回 `CAPABILITY_UNAVAILABLE`，不会静默切换。只有 `auto` 可能在 CDP 返回 `Unsupported` 后移动调用。
 
-**分类。** 发现采用两级：`tools/list` 默认返回简版描述（42 个工具 29,971 字节），`detail: "full"` 返回完整描述（35,552 字节）。`tool_help` 按需说明单个工具。
+**分类。** 发现采用两级：`tools/list` 默认返回简版描述（43 个工具 20,452 字节），`detail: "full"` 返回完整描述（37,067 字节）。`tool_help` 按需说明单个工具。
 
 | 分类 | 工具数 |
 |---|---|
-| 页面 | 9 |
+| 页面 | 10 |
 | 输入 | 7 |
 | 标签 | 4 |
 | 网络 | 5 |
@@ -237,9 +237,15 @@ v1.2.0 新增十个工具，工具面达到 42 个。原有 32 个工具的参�
 | 会话 | 4 |
 | 诊断 | 4 |
 | 帮助 | 1 |
-| **合计** | **42** |
+| **合计** | **43** |
 
 **安全。** 浏览器级 CDP 端点可以读取 cookie、注入脚本、拦截流量，并驱动该浏览器实例中的所有 profile。Corvus 不在其前面增加认证。校验只接受回环，但任何能访问调试端口的本地进程都拥有同等能力。绝不要把 9222、9223、9333、7330 或 7331 暴露到回环之外。
+
+### 5.7 精简快照与工具发现
+
+v1.3.0 保持混合传输并降低默认上下文开销。`page_snapshot` 在两个通道上都默认 `format: "compact"`，返回一棵文本树；`format: "json"` 保留对象形式。紧凑行在扩展通道为 `@eN 角色 "名称" [状态] value="..." bbox=x,y,w,h`，在 CDP 通道为 `@c<backendNodeId>`，文本节点使用 `# "文本"` 行。`max_nodes` 默认 300，可选 `viewport_only` 与 `include_bbox` 用于收窄或标注树。引用只在产生它的快照内有效。
+
+`browser_batch` 在守护进程本地一次执行最多 20 个 `{tool,args}` 步骤，默认在首个失败步骤停止（`stop_on_error: true`），并拒绝递归与守护进程控制类工具。工具发现默认精简：`tools/list` 简版为 43 个工具 20,452 字节，`detail: "full"` 为 37,067 字节，`tool_help` 返回单个完整描述。成功的 `tools/call` 只返回一个紧凑 JSON 文本块，不含 `structuredContent`，客户端解析 `content[0].text`。强制 CDP 覆盖全部 33 个浏览器类工具。
 
 ## 6. 扩展设计
 
@@ -327,9 +333,9 @@ v1.2.0 新增十个工具，工具面达到 42 个。原有 32 个工具的参�
 
 - cargo workspace，edition 2021，`Cargo.toml` 与 `rust-toolchain.toml` 固定 Rust 1.90 为 MSRV。
 - CI 矩阵：windows-latest、macos-latest、ubuntu-latest，各自运行 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace`。
-- 打包任务：`scripts/package-linux.sh` 构建 x86_64 tar.gz 并校验 systemd 单元；Docker 任务构建镜像、检查版本与 `/health`，并断言工具面为 42 个。
+- 打包任务：`scripts/package-linux.sh` 构建 x86_64 tar.gz 并校验 systemd 单元；Docker 任务构建镜像、检查版本与 `/health`，并断言工具面为 43 个。
 - 扩展：手写 MV3，无打包器；manifest key 固定，保证扩展 id 跨机器稳定。
-- 发布：平台安装包附 `SHA256SUMS`；1.2.0 不提供 macOS 安装包。
+- 发布：平台安装包附 `SHA256SUMS`；1.3.0 不提供 macOS 安装包。
 
 ## 12. 安全姿态
 

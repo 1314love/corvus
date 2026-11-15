@@ -148,7 +148,7 @@ impl ChannelState {
                     tracing::warn!(
                         extension_family = family.as_deref().unwrap_or("unknown"),
                         descriptor_family = ?descriptor.browser_family,
-                        "explicit CDP endpoint belongs to a different browser family"
+                        "cdp endpoint family mismatch"
                     );
                 }
             }

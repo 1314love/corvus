@@ -122,7 +122,7 @@ jobs:
           set -euo pipefail
           version="$(docker run --rm --entrypoint /usr/local/bin/corvusd corvus:test --version)"
           echo "$version"
-          echo "$version" | grep -q '1.2.0'
+          echo "$version" | grep -q '1.3.0'
 
       - name: Run container and verify health and tools
         run: |
@@ -154,7 +154,7 @@ jobs:
             sleep 1
           done
           test -n "$ready"
-          grep -Eq '"version"[[:space:]]*:[[:space:]]*"1\.2\.0"' /tmp/corvus-health.json
+          grep -Eq '"version"[[:space:]]*:[[:space:]]*"1\.3\.0"' /tmp/corvus-health.json
           echo "health: $(cat /tmp/corvus-health.json)"
           headers="$(mktemp)"
           init_body="$(mktemp)"
@@ -199,8 +199,8 @@ jobs:
           tools = payload.get("result", {}).get("tools", [])
           names = [tool.get("name") for tool in tools]
           print("tool count:", len(names))
-          if len(names) != 42:
-              raise SystemExit("expected 42 tools, got " + str(len(names)))
+          if len(names) != 43:
+              raise SystemExit("expected 43 tools, got " + str(len(names)))
           PY
 
   k8s:

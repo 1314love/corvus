@@ -3284,7 +3284,7 @@ async fn tools_list_brief_stays_within_the_token_budget() {
         .expect("tools/list always answers");
     let brief: Value = serde_json::from_str(&brief_text).expect("decode brief tools/list");
     let tools = brief["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 42);
+    assert_eq!(tools.len(), 43);
     println!(
         "tools/list brief bytes={} tools={}",
         brief_text.len(),
@@ -3321,7 +3321,7 @@ async fn tools_list_brief_stays_within_the_token_budget() {
         .expect("tools/list always answers");
     let page: Value = serde_json::from_str(&page_text).expect("decode page tools/list");
     let page_tools = page["result"]["tools"].as_array().expect("page tools");
-    assert!(!page_tools.is_empty() && page_tools.len() < 42);
+    assert!(!page_tools.is_empty() && page_tools.len() < 43);
     assert!(page_tools
         .iter()
         .all(|tool| { tool["_meta"]["corvus.category"].as_str() == Some("page") }));
@@ -3375,10 +3375,9 @@ async fn cdp_channel_serves_browser_tools_without_an_extension() {
         "navigate failed: {}",
         content_text(&navigate)
     );
-    let value = navigate
-        .get("structuredContent")
-        .cloned()
-        .expect("structured content");
+    assert!(navigate.get("structuredContent").is_none());
+    let value: Value =
+        serde_json::from_str(&content_text(&navigate)).expect("navigate result json");
     assert_eq!(value.get("tab_id").and_then(Value::as_str), Some("T1"));
     assert_eq!(
         value.get("url").and_then(Value::as_str),
@@ -3386,10 +3385,9 @@ async fn cdp_channel_serves_browser_tools_without_an_extension() {
     );
 
     let channel = tools_call(&daemon, "browser_channel", json!({})).await;
-    let channel = channel
-        .get("structuredContent")
-        .cloned()
-        .expect("channel status");
+    assert!(channel.get("structuredContent").is_none());
+    let channel: Value =
+        serde_json::from_str(&content_text(&channel)).expect("channel status json");
     assert_eq!(channel.get("channel").and_then(Value::as_str), Some("cdp"));
     assert_eq!(
         channel

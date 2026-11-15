@@ -38,16 +38,16 @@ Database path precedence is:
 
 Relative roots and relative `--log-file` values are resolved against the process working directory and the root respectively; use absolute paths in service definitions.
 
-File logging is on by default under `logs/`. `--log-file <PATH>` overrides it, `--no-log-file` disables it, and the in-memory log ring plus stderr output stay enabled. A rolling file is always suffixed with its UTC date, for example `corvusd.log.2026-11-15`; it is not a bare `corvusd.log`.
+File logging is on by default under `logs/`. `--log-file <PATH>` overrides it, `--no-log-file` disables it, and the in-memory log ring plus stderr output stay enabled. A rolling file is always suffixed with its UTC date, for example `corvusd.log.2026-11-15`; it is not a bare `corvusd.log`. The event schema and the level rules are in [08-logging.md](08-logging.md).
 
 ## 2. Linux systemd installation
 
 The Linux release archive is built for x86_64 only. Extract it into a directory, then install:
 
 ```bash
-mkdir -p corvus-1.2.0-linux-x86_64
-tar -xzf corvus-1.2.0-linux-x86_64.tar.gz -C corvus-1.2.0-linux-x86_64
-cd corvus-1.2.0-linux-x86_64
+mkdir -p corvus-1.3.0-linux-x86_64
+tar -xzf corvus-1.3.0-linux-x86_64.tar.gz -C corvus-1.3.0-linux-x86_64
+cd corvus-1.3.0-linux-x86_64
 sha256sum -c SHA256SUMS
 sudo ./install-linux.sh
 ```
@@ -98,7 +98,7 @@ The Windows bundle is a ZIP containing `corvusd.exe`, `corvus.exe`, `nssm.exe`, 
 Build the image from the repository root:
 
 ```bash
-docker build -t corvus:1.2.0 .
+docker build -t corvus:1.3.0 .
 ```
 
 The image runs `corvusd serve --bind 0.0.0.0 --home /data` as UID/GID 10001, stores runtime data under the `/data` volume, and exposes 7330 (WebSocket) and 7331 (MCP HTTP). The unpacked extension is carried at `/opt/corvus/extension`, not `/data`; copy it out with `docker cp` or load the extension from the release ZIP on the host. Publish only to host loopback:
@@ -107,7 +107,7 @@ The image runs `corvusd serve --bind 0.0.0.0 --home /data` as UID/GID 10001, sto
 docker volume create corvus-data
 docker run -d --name corvus \
   -p 127.0.0.1:7330:7330 -p 127.0.0.1:7331:7331 \
-  -v corvus-data:/data corvus:1.2.0
+  -v corvus-data:/data corvus:1.3.0
 curl -fsS http://127.0.0.1:7331/health
 ```
 
@@ -126,8 +126,8 @@ docker compose down
 The manifests in `deploy/k8s/` create a `corvus` namespace, a 1 GiB ReadWriteOnce PVC, one daemon replica, a ClusterIP Service, and a default-deny NetworkPolicy. The deployment runs with a read-only root filesystem, no capabilities, a RuntimeDefault seccomp profile and an init container that seeds the extension from the image into the volume.
 
 ```bash
-docker build -t corvus:1.2.0 .
-kind load docker-image corvus:1.2.0   # or push to your registry
+docker build -t corvus:1.3.0 .
+kind load docker-image corvus:1.3.0   # or push to your registry
 kubectl apply -k deploy/k8s
 kubectl -n corvus rollout status deployment/corvus
 kubectl -n corvus port-forward svc/corvus 7330:7330 7331:7331

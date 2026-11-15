@@ -329,7 +329,7 @@ impl Router {
         if self.step_sink.set(sink).is_ok() {
             true
         } else {
-            tracing::warn!("a recording sink is already attached to the router");
+            tracing::warn!("recording sink already attached");
             false
         }
     }
@@ -639,7 +639,7 @@ impl Router {
             pending.cleanup();
             return Err(DispatchFailure::Failed(error.error_body()));
         }
-        tracing::debug!(command = %command_id, tool = %request.tool, browser = %connection.id(), "command dispatched");
+        tracing::debug!(command_id = %command_id, tool = %request.tool, browser_id = %connection.id(), "command dispatched");
 
         let response = tokio::select! {
             biased;
@@ -719,16 +719,16 @@ impl Router {
                     let _ = pending.sender.send(envelope);
                 }
                 None => tracing::debug!(
-                    id = %envelope.id,
-                    browser = %browser,
-                    "dropping a response nobody is waiting for"
+                    request_id = %envelope.id,
+                    browser_id = %browser,
+                    "unclaimed response dropped"
                 ),
             }
         } else {
             tracing::debug!(
                 kind = %envelope.kind.as_str(),
-                browser = %browser,
-                "ignoring an inbound event"
+                browser_id = %browser,
+                "inbound event ignored"
             );
         }
     }

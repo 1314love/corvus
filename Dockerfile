@@ -7,7 +7,7 @@ COPY crates ./crates
 RUN cargo build --release --locked -p corvusd -p corvus
 
 FROM debian:bookworm-slim AS runtime
-ARG CORVUS_VERSION=1.1.0
+ARG CORVUS_VERSION=1.3.0
 LABEL org.opencontainers.image.title="Corvus" \
       org.opencontainers.image.description="Corvus browser hub daemon" \
       org.opencontainers.image.version="$CORVUS_VERSION"

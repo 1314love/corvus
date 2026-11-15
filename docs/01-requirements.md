@@ -211,6 +211,16 @@ v1.2.0 adds ten tools, including eight CDP-backed tools, taking the MCP surface 
 - **NFR-3 (not completed)** — The clean 72-hour soak was stopped at the client's request after about eight hours. NFR-3 is not passed and 1.2.0 is not 72-hour soak certified.
 - **NFR-6 (recorded deviation, unchanged)** — Firefox remains unsupported. Supported browsers are Edge 120+, Chrome 120+ and current Brave; Firefox is not claimed by this release.
 
+### 4.7 v1.3.0 token-efficiency traceability
+
+v1.3.0 adds `browser_batch` for 43 tools across nine categories and reduces default context cost without changing the original 32 result shapes.
+
+- **Compact snapshots** — `page_snapshot` defaults to compact text on the extension and CDP channels; `format: "json"` keeps the object form. Compact refs are `@eN` on extension and `@c<backendNodeId>` on CDP. `max_nodes`, `viewport_only`, `include_bbox` and the line grammar are documented in [09-tools.md](09-tools.md).
+- **Batched calls** — `browser_batch` executes up to 20 `{tool,args}` steps in one daemon-local call, stops on the first failure by default, and excludes recursion and daemon-control tools.
+- **Lean discovery** — brief `tools/list` is 20,452 bytes for 43 tools; `detail: "full"` is 37,067 bytes; `tool_help` returns one full entry. A successful `tools/call` returns one compact JSON text block and no `structuredContent`.
+- **CDP parity** — forced CDP serves all 33 browser-facing tools, including the eight former extension-only tools; the extension-only tool count is now zero. Cross-channel references fail with typed `BAD_ARGS`.
+- **NFR-3 (not completed)** — 1.3.0 is not 72-hour soak certified; the 72-hour run remains incomplete after the earlier stop at about eight hours. **NFR-6 (unchanged)** — Firefox remains unsupported; supported browsers are Edge 120+, Chrome 120+ and current Brave.
+
 ## 5. Non-functional requirements
 
 | ID | Category | Requirement |

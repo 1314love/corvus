@@ -824,7 +824,11 @@ async fn run_connection(
     tokio::spawn(async move {
         match tokio::time::timeout(Duration::from_secs(5), download_receiver).await {
             Ok(Ok(Err(error))) => {
-                tracing::warn!(%error, "Browser.setDownloadBehavior is unavailable");
+                tracing::warn!(
+                    method = "Browser.setDownloadBehavior",
+                    error = %error,
+                    "could not enable download behavior"
+                );
                 if warning_inner.connected.load(Ordering::SeqCst) {
                     warning_inner.set_error(format!(
                         "Browser.setDownloadBehavior is unavailable: {error}"
@@ -1256,6 +1260,52 @@ mod tests {
             sequence,
             vec!["Page.enable", "Runtime.enable", "Log.enable", "Test.echo"]
         );
+        drop(entries);
+        client.disconnect();
+    }
+
+    #[tokio::test]
+    async fn page_snapshot_uses_the_accessibility_and_dom_snapshot_domains() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (endpoint, _, _) = mock_cdp_with(MockOptions {
+            log: Some(log.clone()),
+            ..MockOptions::default()
+        })
+        .await;
+        let client = CdpClient::new();
+        client.connect(&endpoint).expect("connect");
+        assert!(client.wait_connected(Duration::from_secs(2)).await);
+        wait_for_page(&client).await;
+        let snapshot = client
+            .call_tool("page_snapshot", &json!({ "max_nodes": 40 }))
+            .await
+            .expect("snapshot result");
+        assert_eq!(snapshot["format"], "compact");
+        assert_eq!(snapshot["mode"], "interactive");
+        assert_eq!(snapshot["node_count"], 0);
+        assert_eq!(snapshot["text"], "");
+        let entries = log.lock().expect("command log");
+        let methods: Vec<&str> = entries
+            .iter()
+            .filter(|value| value.get("sessionId").and_then(Value::as_str) == Some("SESSION-1"))
+            .filter_map(|value| value.get("method").and_then(Value::as_str))
+            .collect();
+        assert!(
+            methods.contains(&"Accessibility.getFullAXTree"),
+            "missing AX tree request: {methods:?}"
+        );
+        assert!(
+            methods.contains(&"DOMSnapshot.captureSnapshot"),
+            "missing DOM snapshot request: {methods:?}"
+        );
+        let dom_request = entries
+            .iter()
+            .find(|value| {
+                value.get("method").and_then(Value::as_str) == Some("DOMSnapshot.captureSnapshot")
+            })
+            .expect("DOM snapshot request");
+        assert_eq!(dom_request["params"]["includeDOMRects"], true);
+        assert_eq!(dom_request["params"]["includePaintOrder"], false);
         drop(entries);
         client.disconnect();
     }

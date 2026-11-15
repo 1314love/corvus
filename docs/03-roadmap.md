@@ -12,6 +12,7 @@
 | M3 Observability | Make everything reviewable | recording, trace, replay, site memory, Prometheus | any historical session replays step by step |
 | M4 Ecosystem | Make it adoptable | installers, client config generators, docs site, examples, release pipeline | a stranger completes the quick start in 5 minutes |
 | M6 Hybrid CDP | Attach directly when a browser exposes a loopback CDP endpoint | CDP client, extension detection, channel routing, ten CDP-backed tools | 42 tools, auto/cdp/extension switchable, no regression to the original 32 |
+| M7 Token efficiency | Make the tool surface cheap enough for long agent sessions | compact page snapshots, lean brief schemas, browser_batch, full CDP parity | 43 tools, brief tools/list under 30 KB, compact snapshot measured |
 
 ## v1.1.0 deployment milestone
 
@@ -38,6 +39,21 @@ v1.2.0 is a tool-surface and transport slice. It adds ten CDP-backed tools, taki
 | Release | 1.2.0 binaries, changelog and bilingual release notes. CI and QA evidence is attached only when the runs exist; NFR-3 remains pending and Firefox remains unsupported. |
 
 Implementation and CI checks for this milestone run before the release tag. The 72-hour soak is still not passed, and the Firefox NFR-6 deviation is unchanged.
+
+## v1.3.0 token-efficiency milestone
+
+v1.3.0 is a context-efficiency and parity slice. It adds `browser_batch`, taking the MCP surface from 42 to 43, and makes the default discovery and snapshot output smaller.
+
+| Item | Exit criterion |
+|---|---|
+| Compact snapshots | `page_snapshot` defaults to compact text on both channels; `format: "json"` keeps node objects; `viewport_only` and `include_bbox` filter and annotate. |
+| Lean discovery | Brief `tools/list` removes property descriptions and titles; `detail: "full"` restores them; `tool_help` returns one complete entry. |
+| Batching | `browser_batch` runs up to 20 allowlisted browser steps with `stop_on_error`; it is daemon-local. |
+| CDP parity | Forced CDP serves all 33 browser-facing tools, including the eight former extension-only tools and `@c` references. |
+| Tool surface | 43 tools in 9 categories; the original 32 result shapes remain; brief tools/list is 20,452 bytes and full detail is 37,067 bytes. |
+| Release | 1.3.0 binaries, changelog and bilingual release notes. QA live acceptance, CI runs and asset hashes are attached only when available; NFR-3 remains pending and Firefox remains unsupported. |
+
+The compact-versus-JSON benchmark records the candidate mean at 364.83 bytes / 91.21 tokens versus 2,077.33 bytes / 519.33 tokens for JSON, 82.44% smaller. The measured asset rows stay marked pending until CI publishes them.
 
 ## Suggested schedule (one main developer + AI pairing)
 

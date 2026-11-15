@@ -98,7 +98,7 @@ impl McpServer {
             backend,
             name: "corvus".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            instructions: "Corvus drives a real browser over CDP when a browser-level endpoint is available, and through the Corvus extension otherwise. Call browser_channel to see which channel is active. The extension owns page_snapshot and the reference-based tools: call page_snapshot before browser_click or browser_type and pass a reference from the snapshot as target. Every failure names an error code; retry only when the answer says the failure is retryable.".to_string(),
+            instructions: "Corvus drives a real browser over CDP when a browser-level endpoint is available, and through the Corvus extension otherwise. Call browser_channel to see which channel is active. Both channels implement page_snapshot and the reference-based tools: call page_snapshot before browser_click or browser_type and pass a reference from the snapshot as target. CDP references look like @c<backendNodeId> and extension references look like @eN. browser_batch can run up to 20 browser tool calls in order. Every failure names an error code; retry only when the answer says the failure is retryable.".to_string(),
             health: Arc::new(|| json!({ "status": "ok" })),
             store: None,
             metrics: Arc::new(Metrics::new()),
@@ -227,7 +227,11 @@ impl McpServer {
                     .filter(|session| session.ended_at.is_none())
                 {
                     if let Err(error) = store.finish_session(&session.id, status) {
-                        tracing::warn!(error = %error, session = %session.id, "could not close a session");
+                        tracing::warn!(
+                            error = %error,
+                            session_id = %session.id,
+                            "could not close a session"
+                        );
                     }
                 }
             }
@@ -614,17 +618,13 @@ fn error_response(id: Value, code: i64, message: impl Into<String>) -> Value {
 }
 
 fn tool_success(result: &Value) -> Value {
-    let text = serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string());
-    let mut answer = json!({
-        "content": [{ "type": "text", "text": text }],
+    // A tools/call result carries the payload exactly once. The text block is
+    // compact JSON; duplicating the same object in structuredContent doubles the
+    // wire size of large results such as page_snapshot without adding information.
+    json!({
+        "content": [{ "type": "text", "text": encode(result) }],
         "isError": false,
-    });
-    if result.is_object() {
-        if let Some(object) = answer.as_object_mut() {
-            object.insert("structuredContent".to_string(), result.clone());
-        }
-    }
-    answer
+    })
 }
 
 fn tool_error(error: &ErrorBody) -> Value {
@@ -640,4 +640,110 @@ fn tool_error(error: &ErrorBody) -> Value {
         "content": [{ "type": "text", "text": text }],
         "isError": true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn representative_snapshot() -> Value {
+        let text = [
+            "@c10 button \"Press\" bbox=8,93,50,21",
+            "@c11 textbox \"Name\" value=\"Ada Lovelace\" bbox=106,93,177,21",
+            "@c12 combobox \"Choice\" value=\"Alpha\" bbox=283,94,57,19",
+            "@c13 option \"Alpha\" [selected] bbox=283,114,57,19",
+            "@c14 option \"Beta\" bbox=283,134,57,19",
+            "@c15 checkbox \"Remember me\" [mixed] bbox=8,150,20,20",
+            "@c16 link \"Documentation\" bbox=40,150,91,20",
+            "@c17 button \"Submit order\" [disabled] bbox=8,180,92,28",
+            "@c18 heading \"Corvus compact snapshot fixture\" bbox=8,220,280,30",
+            "@c19 text \"A representative page used to measure the MCP result envelope.\" bbox=8,260,340,20",
+            "@c20 img \"Corvus logo\" bbox=8,290,64,64",
+            "@c21 slider \"Volume\" value=\"50\" bbox=8,360,160,20",
+            "@c22 spinbutton \"Quantity\" value=\"2\" bbox=8,390,80,20",
+            "@c23 menuitem \"Account\" bbox=8,420,80,20",
+            "@c24 tab \"Overview\" [selected] bbox=8,450,80,24",
+            "@c25 tab \"Settings\" bbox=96,450,80,24"
+        ]
+        .join("\n");
+        json!({
+            "format": "compact",
+            "tab_id": "T1",
+            "url": "https://example.test/checkout",
+            "title": "Corvus compact snapshot fixture",
+            "viewport": {
+                "width": 1280,
+                "height": 720,
+                "scrollX": 0,
+                "scrollY": 0
+            },
+            "mode": "interactive",
+            "node_count": 16,
+            "truncated": false,
+            "text": text
+        })
+    }
+
+    // The old envelope, kept only to measure and prove the wire-size reduction.
+    fn legacy_tool_success(result: &Value) -> Value {
+        let text = serde_json::to_string_pretty(result).expect("pretty snapshot");
+        let mut answer = json!({
+            "content": [{ "type": "text", "text": text }],
+            "isError": false,
+        });
+        if result.is_object() {
+            answer
+                .as_object_mut()
+                .expect("object result")
+                .insert("structuredContent".to_string(), result.clone());
+        }
+        answer
+    }
+
+    #[test]
+    fn success_carries_one_compact_json_text_block() {
+        let result = representative_snapshot();
+        let answer = tool_success(&result);
+        assert_eq!(answer.get("isError").and_then(Value::as_bool), Some(false));
+        assert!(answer.get("structuredContent").is_none());
+        assert_eq!(answer.as_object().expect("object answer").len(), 2);
+        let content = answer
+            .get("content")
+            .and_then(Value::as_array)
+            .expect("content array");
+        assert_eq!(content.len(), 1);
+        let text = content[0]
+            .get("text")
+            .and_then(Value::as_str)
+            .expect("text content");
+        assert_eq!(content[0].get("type").and_then(Value::as_str), Some("text"));
+        assert_eq!(text, serde_json::to_string(&result).expect("compact json"));
+        assert!(
+            !text.contains('\n'),
+            "the text block must not be pretty printed"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(text).expect("parse text json"),
+            result
+        );
+    }
+
+    #[test]
+    fn compact_envelope_removes_the_duplicate_page_snapshot_payload() {
+        let result = representative_snapshot();
+        let payload = encode(&result);
+        let pretty = serde_json::to_string_pretty(&result).expect("pretty json");
+        let before = encode(&success(json!(23), legacy_tool_success(&result)));
+        let after = encode(&success(json!(23), tool_success(&result)));
+        println!(
+            "page_snapshot tools/call bytes: payload={} pretty={} before={} after={} saved={}",
+            payload.len(),
+            pretty.len(),
+            before.len(),
+            after.len(),
+            before.len() - after.len()
+        );
+        assert!(after.len() < before.len());
+        assert!(after.len() < payload.len() + pretty.len());
+    }
 }

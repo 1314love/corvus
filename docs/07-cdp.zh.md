@@ -2,18 +2,18 @@
 
 [English](07-cdp.md) | [中文](07-cdp.zh.md)
 
-状态：1.2.0。读者：希望在扩展传输之外使用浏览器级 CDP 控制的运维与开发人员。
+状态：1.3.0。读者：希望在扩展传输之外使用浏览器级 CDP 控制的运维与开发人员。
 
-Corvus 1.2.0 可以由 Rust 守护进程通过 Chrome DevTools Protocol（CDP）直接驱动 Chromium 浏览器，也可以继续走 Manifest V3 扩展。扩展仍是零配置路径，也是唯一实现元素引用与 DOM 快照的通道。CDP 是可选的：它要求浏览器已经在回环调试端口上监听。
+Corvus 1.3.0 可以由 Rust 守护进程通过 Chrome DevTools Protocol（CDP）直接驱动 Chromium 浏览器，也可以继续走 Manifest V3 扩展。扩展仍是零配置路径，也是用户浏览器的默认选择。CDP 是可选路径：它要求浏览器已经在回环调试端口上监听；在 1.3.0 中覆盖全部 33 个浏览器类工具，包括紧凑快照与 `@c` 元素引用。
 
 ## 1. 两个通道，一个工具面
 
-MCP 工具面共 42 个。通道只决定浏览器类调用如何传输，不改变原有 32 个工具的结果形状。
+MCP 工具面共 43 个。通道只决定浏览器类调用如何传输；原有 32 个结果形状仍可用，1.3.0 在其旁新增紧凑快照与批量结果。
 
 | 通道 | 传输 | 适用场景 |
 |---|---|---|
-| `extension` | 先连扩展 WebSocket，再经 `chrome.*` 与内容脚本 | 使用默认零配置路径、DOM 引用或扩展专属工具。忽略 CDP。 |
-| `cdp` | `corvusd` 到浏览器的单条长连接浏览器级 WebSocket | 浏览器已用 `--remote-debugging-port` 启动，需要直接访问协议。严格模式，不回退。 |
+| `extension` | 先连扩展 WebSocket，再经 `chrome.*` 与内容脚本 | 使用默认零配置路径、`@eN` DOM 引用或扩展的 25 个浏览器类工具。忽略 CDP。 |
+| `cdp` | `corvusd` 到浏览器的单条长连接浏览器级 WebSocket | 浏览器已用 `--remote-debugging-port` 启动，需要全部 33 个浏览器类工具，包括使用 `@c` 引用的 `page_snapshot`。严格模式，不回退。 |
 | `auto` | 已连接 CDP 时用 CDP，否则用扩展 | 默认值。优先 CDP，仅在 CDP 调用报告 `Unsupported` 时回退到扩展；传输与协议错误不会改走另一通道重试。 |
 
 `auto` 刻意保守。如果 CDP 调用因为浏览器已关闭或 WebSocket 断开而失败，调用会返回结构化错误，而不是悄悄通过另一个浏览器重放动作。只有真正的「该操作没有等价 CDP 实现」才会触发回退。
@@ -161,11 +161,25 @@ corvusd serve --home /opt/corvus --channel extension
 
 事件环保留 1000 条。`next_seq` 是下次读取游标，`dropped` 统计读者看到之前已被淘汰的事件。事件序号在守护进程生命周期内单调递增，而不是单条连接内。
 
+### CDP 上的快照与引用
+
+`page_snapshot` 在两个通道上都可用。走 CDP 时，紧凑输出使用 `@c<backendNodeId>` 元素引用，行语法与扩展通道相同：
+
+```text
+@c42 button "保存" [focused] bbox=40,120,96,32
+@c43 textbox "姓名" value="Ada"
+# "Hello world"
+```
+
+`format: "json"` 返回节点对象而不是文本；`viewport_only`、`include_bbox` 与 `max_nodes` 的行为见 [09-tools.zh.md](09-tools.zh.md)。引用只在产生它的快照内有效；导航或 DOM 变化后请重新快照。
+
+`@c` 引用仅属于 CDP，`@eN` 引用仅属于扩展。交给另一通道会返回类型化 `BAD_ARGS`；省略 `tab_id` 可对活动目标操作。此前仅扩展的八个工具现在在强制 `cdp` 下也接受 `@c` 引用；1.3.0 中仅扩展可用性为零。
+
 ### 跨通道的标签 id
 
-1.2.0 中不同通道的标签 id 不能互换。扩展使用数字标签 id（数字或数字字符串，例如 `7`）；CDP 使用 `cdp_targets` 返回的 32 位十六进制 `target_id`。守护进程不会在两种命名空间之间做转换。
+1.3.0 中不同通道的标签 id 不能互换。扩展使用数字标签 id（数字或数字字符串，例如 `7`）；CDP 使用 `cdp_targets` 返回的 32 位十六进制 `target_id`。守护进程不会在两种命名空间之间做转换。
 
-数字扩展 id 交给路由到 CDP 的工具时，调用返回类型化 `BAD_ARGS`；`details.hint` 为 `omit tab_id to use the active tab; extension tab ids are not CDP target ids`。32 位十六进制 CDP 目标 id 交给路由到扩展的工具时同样失败；`details.hint` 为 `omit tab_id to use the active tab; CDP target ids are not extension tab ids`。`details.tab_id` 回显被拒绝的值。请使用当前通道返回的 id，或省略 `tab_id` 对活动标签操作。两个命名空间之间的完整桥接推迟到 1.3。
+数字扩展 id 交给路由到 CDP 的工具时，调用返回类型化 `BAD_ARGS`；`details.hint` 为 `omit tab_id to use the active tab; extension tab ids are not CDP target ids`。32 位十六进制 CDP 目标 id 交给路由到扩展的工具时同样失败；`details.hint` 为 `omit tab_id to use the active tab; CDP target ids are not extension tab ids`。`details.tab_id` 回显被拒绝的值。请使用当前通道返回的 id，或省略 `tab_id` 对活动标签操作。两个命名空间在 1.3.0 中仍相互独立；完整桥接推迟到后续版本。
 
 `cdp_targets` 是 CDP 目标 id 的权威列表；`tab_list` 返回实际服务该调用的通道所用的 id。
 
@@ -198,12 +212,12 @@ corvusd serve --home /opt/corvus --channel extension
 
 | 分组 | 数量 | 工具 |
 |---|---|---|
-| 仅扩展 | 8 | `page_snapshot`、`browser_click`、`browser_type`、`page_find`、`browser_hover`、`browser_press`、`browser_scroll`、`browser_select` |
+| 两种通道 | 25 | `browser_navigate`、`page_snapshot`、`page_text`、`page_html`、`page_find`、`browser_wait`、`browser_history`、`browser_click`、`browser_type`、`browser_hover`、`browser_press`、`browser_scroll`、`browser_select`、`browser_eval`、`tab_list`、`tab_new`、`tab_close`、`tab_switch`、`net_capture`、`net_log`、`net_clear`、`net_intercept`、`upload_file`、`download_list`、`download_wait` |
 | 仅 CDP | 8 | `cdp_status`、`cdp_targets`、`cdp_send`、`cdp_events`、`browser_console`、`browser_cookies`、`browser_dialog`、`browser_emulate` |
-| 共享 | 17 | `browser_navigate`、`page_text`、`page_html`、`browser_eval`、`browser_wait`、`browser_history`、`tab_list`、`tab_new`、`tab_close`、`tab_switch`、`net_capture`、`net_log`、`net_clear`、`net_intercept`、`download_list`、`download_wait`、`upload_file` |
-| 守护进程本地 | 9 | `browser_list`、`session_list`、`session_steps`、`session_replay`、`session_export`、`metrics`、`logs_tail`、`browser_channel`、`tool_help` |
+| 仅扩展 | 0 | 1.3.0 中没有。 |
+| 守护进程本地 | 10 | `browser_list`、`browser_channel`、`tool_help`、`browser_batch`、`session_list`、`session_steps`、`session_replay`、`session_export`、`metrics`、`logs_tail` |
 
-合计 42 个。守护进程本地工具不经过任何浏览器通道。强制 `cdp` 时，仅扩展工具返回 `CAPABILITY_UNAVAILABLE`；强制 `extension` 时，仅 CDP 工具同样如此。`auto` 是唯一可能在通道间移动调用的模式，且只针对 `Unsupported` 的 CDP 结果。
+合计 43 个。守护进程本地工具不经过任何浏览器通道。CDP 覆盖全部 33 个浏览器类工具；八个仅 CDP 工具仍不对扩展开放。强制 `cdp` 时所有浏览器类工具都接受；强制 `extension` 时仅 CDP 工具返回 `CAPABILITY_UNAVAILABLE`。`auto` 是唯一可能在通道间移动调用的模式，且只针对 `Unsupported` 的 CDP 结果。
 
 ## 11. 故障排查
 
@@ -215,7 +229,7 @@ corvusd serve --home /opt/corvus --channel extension
 | WebSocket 地址返回 404 | 地址取自 `/json/list` 而不是 `/json/version` | 使用 `/json/version` 返回的浏览器级 `webSocketDebuggerUrl`。 |
 | DevTools 与 Corvus 在标签上冲突 | DevTools 打开时出现挂载错误或 `CAPABILITY_UNAVAILABLE` | 关闭该标签的 DevTools，或改用专用浏览器 profile。标签级 debugger 挂载是独占的。 |
 | `browser_channel set cdp` 失败 | `cdp_enabled` 为 false | 去掉 `--no-cdp` 重启后再设置通道。 |
-| 强制 `cdp` 下仅扩展工具失败 | 强制模式没有回退 | 切换到 `auto` 或 `extension`；CDP 没有元素引用快照路径。 |
+| 强制 `extension` 下仅 CDP 工具失败 | 强制扩展模式无法访问 CDP | 切换到 `auto` 或 `cdp`，或使用扩展的 25 个浏览器类工具。1.3.0 中 `page_snapshot` 不再是仅扩展工具。 |
 | 起初正常，浏览器重启后停止 | `cdp_status.connected` 为 false，`reconnects` 不再增加 | 浏览器重启改变了 WebSocket 地址。端点来自扩展 descriptor 时，守护进程每 500 毫秒重新轮询，选择替换端点并自动重连；随后 `cdp_status.reconnects` 增加，无需重启守护进程。用 `--cdp-endpoint` 固定的地址不会被重新发现；只有浏览器打印的 `webSocketDebuggerUrl` 确实变化时才更新该参数。 |
 | 运行时修改了已配置的 CDP 端点 | 守护进程已连接时在扩展中修改端点 | 自动发现的端点每 500 毫秒重新轮询并自动重连；显式配置的端点变化可能需要重启守护进程才能生效。更新地址后按需重启，并用 `cdp_status` 确认新端点。 |
 
@@ -227,10 +241,10 @@ CDP 不是沙箱。浏览器级端点可以读取 cookie、注入脚本、导航
 - CDP 工作使用专用 profile；不要把测试工具挂到存有真实账号的日常浏览器 profile。
 - 把 CDP 事件环、console 输出与 cookie 结果视为敏感数据。
 - 守护进程不启动也不安装浏览器。Docker 与 Kubernetes 默认无法访问宿主机回环，随包镜像也不含浏览器；该限制见 [05-deployment.zh.md](05-deployment.zh.md#7-端口暴露面与无认证边界)。
-- 快照、引用与仅扩展工具仍需要扩展。CDP 是额外通道，不是替代品。
+- 扩展仍是零配置路径，以 `@eN` 引用提供 25 个浏览器类工具。CDP 现在以 `@c` 引用提供全部 33 个浏览器类工具；任一通道都不是任意失败下的回退路径。
 
 ## 13. 测试策略
 
 不要用自动化测试驱动用户日常的 Edge 或 Chrome 窗口。请用独立 `--user-data-dir`、临时端口且未登录账号的专用浏览器。这是测试策略，不是产品限制：守护进程会驱动交给它的任何回环 CDP 端点，选择该端点是运维责任。
 
-安装与升级步骤见 [04-install.zh.md](04-install.zh.md)。容器与 Kubernetes 限制见 [05-deployment.zh.md](05-deployment.zh.md)。通道路由架构见 [02-architecture.zh.md](02-architecture.zh.md#56-混合-cdp-传输)。
+安装与升级步骤见 [04-install.zh.md](04-install.zh.md)。容器与 Kubernetes 限制见 [05-deployment.zh.md](05-deployment.zh.md)。通道路由架构见 [02-architecture.zh.md](02-architecture.zh.md#56-混合-cdp-传输)。完整工具目录与紧凑语法见 [09-tools.zh.md](09-tools.zh.md)。

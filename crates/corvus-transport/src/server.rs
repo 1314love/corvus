@@ -91,7 +91,7 @@ impl WsServer {
                             ));
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, "websocket accept failed");
+                            tracing::warn!(error = %error, "could not accept a websocket");
                             tokio::time::sleep(Duration::from_millis(50)).await;
                         }
                     }
@@ -119,12 +119,12 @@ async fn handle_connection(
     inbound: mpsc::Sender<Inbound>,
 ) {
     if let Err(error) = stream.set_nodelay(true) {
-        tracing::debug!(error = %error, "could not disable Nagle algorithm");
+        tracing::debug!(error = %error, "could not disable nagle algorithm");
     }
     let websocket = match accept_async(stream).await {
         Ok(websocket) => websocket,
         Err(error) => {
-            tracing::debug!(remote = %remote, error = %error, "websocket handshake failed");
+            tracing::debug!(remote = %remote, error = %error, "could not complete the handshake");
             return;
         }
     };
@@ -137,7 +137,7 @@ async fn handle_connection(
                 Outbound::Envelope(envelope) => match serde_json::to_string(&envelope) {
                     Ok(text) => Message::text(text),
                     Err(error) => {
-                        tracing::error!(error = %error, "failed to serialize envelope");
+                        tracing::error!(error = %error, "could not serialize an envelope");
                         continue;
                     }
                 },
@@ -147,7 +147,7 @@ async fn handle_connection(
                 }
             };
             if let Err(error) = sink.send(message).await {
-                tracing::debug!(error = %error, "websocket write failed");
+                tracing::debug!(error = %error, "could not write to the websocket");
                 break;
             }
         }
@@ -159,14 +159,14 @@ async fn handle_connection(
         let frame = match frame {
             Ok(frame) => frame,
             Err(error) => {
-                tracing::debug!(error = %error, "websocket read failed");
+                tracing::debug!(error = %error, "could not read from the websocket");
                 break;
             }
         };
         let text = match frame {
             Message::Text(text) => text.as_str().to_string(),
             Message::Binary(_) => {
-                tracing::warn!("binary frames are not supported");
+                tracing::warn!("binary frame dropped");
                 break;
             }
             Message::Close(_) => break,
@@ -175,7 +175,7 @@ async fn handle_connection(
         let envelope: Envelope = match serde_json::from_str(&text) {
             Ok(envelope) => envelope,
             Err(error) => {
-                tracing::warn!(error = %error, "rejecting malformed envelope");
+                tracing::warn!(error = %error, "malformed envelope dropped");
                 reject(
                     &outbound,
                     "malformed",
@@ -186,7 +186,7 @@ async fn handle_connection(
             }
         };
         if let Err(error) = envelope.validate() {
-            tracing::warn!(code = %error.code, "rejecting invalid envelope");
+            tracing::warn!(code = %error.code, "invalid envelope dropped");
             let id = envelope.id.clone();
             let _ = outbound.send(Outbound::Envelope(Box::new(Envelope::response_err(
                 id, error,
@@ -211,7 +211,7 @@ async fn handle_connection(
                         session = Some((browser, connection));
                     }
                     Err(error) => {
-                        tracing::warn!(code = %error.code, message = %error.message, "handshake rejected");
+                        tracing::warn!(code = %error.code, error = %error.message, "handshake rejected");
                         let id = envelope.id.clone();
                         let _ = outbound.send(Outbound::Envelope(Box::new(
                             Envelope::response_err(id, error),
@@ -241,7 +241,7 @@ async fn handle_connection(
                         .await
                         .is_err()
                     {
-                        tracing::debug!("runtime is gone; closing connection");
+                        tracing::debug!("runtime ended, closing connection");
                         break;
                     }
                 }
@@ -264,7 +264,7 @@ async fn handle_connection(
     match session {
         Some((browser, connection)) => {
             if registry.remove(&browser, &connection) {
-                tracing::info!(browser = %browser, "browser disconnected");
+                tracing::info!(browser_id = %browser, "browser disconnected");
             }
             let _ = outbound.send(Outbound::Close);
             drop(outbound);
@@ -351,7 +351,7 @@ fn complete_handshake(
         remote: remote.to_string(),
     };
     tracing::info!(
-        browser = %browser,
+        browser_id = %browser,
         profile = %hello.profile,
         version = %hello.version,
         offered = ?hello.capabilities,
@@ -366,7 +366,7 @@ fn complete_handshake(
         outbound.clone(),
     ));
     if let Some(previous) = registry.register(connection_state) {
-        tracing::info!(browser = %browser, "replacing an older session");
+        tracing::info!(browser_id = %browser, "browser session replaced");
         previous.close();
     }
     let ack = HelloAck {

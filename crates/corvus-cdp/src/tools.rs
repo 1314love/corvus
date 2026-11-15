@@ -11,6 +11,7 @@ use base64::Engine as _;
 use serde_json::{json, Map, Value};
 
 use crate::client::EVENT_CAPACITY;
+use crate::snapshot::{self, Format, Mode, Options, PageInfo, Viewport};
 use crate::{CdpClient, CdpError};
 
 /// Existing tools that can be served through CDP.
@@ -40,6 +41,14 @@ pub const CDP_TOOL_NAMES: &[&str] = &[
     "browser_cookies",
     "browser_dialog",
     "browser_emulate",
+    "page_snapshot",
+    "page_find",
+    "browser_click",
+    "browser_type",
+    "browser_hover",
+    "browser_press",
+    "browser_scroll",
+    "browser_select",
 ];
 
 /// Whether this tool can be answered over CDP.
@@ -79,6 +88,14 @@ impl CdpClient {
             "browser_cookies" => self.cookies_tool(args).await,
             "browser_dialog" => self.dialog_tool(args).await,
             "browser_emulate" => self.emulate_tool(args).await,
+            "page_snapshot" => self.snapshot_tool(args).await,
+            "page_find" => self.find_tool(args).await,
+            "browser_click" => self.click_tool(args).await,
+            "browser_type" => self.type_tool(args).await,
+            "browser_hover" => self.hover_tool(args).await,
+            "browser_press" => self.press_tool(args).await,
+            "browser_scroll" => self.scroll_tool(args).await,
+            "browser_select" => self.select_tool(args).await,
             other => Err(CdpError::Unsupported(format!("{other} is not a CDP tool"))),
         }
     }
@@ -1290,6 +1307,656 @@ impl CdpClient {
         Ok(json!({ "applied": applied }))
     }
 
+    async fn snapshot_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let (session, target_id) = self.page(args, 15_000).await?;
+        let mode = Mode::parse(args.get("mode").and_then(Value::as_str))?;
+        let format = Format::parse(args.get("format").and_then(Value::as_str))?;
+        let options = Options {
+            mode,
+            format,
+            max_nodes: integer(args, "max_nodes", 300, 40, 3000) as usize,
+            viewport_only: args
+                .get("viewport_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            include_bbox: args
+                .get("include_bbox")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        let (ax, dom, page) = self.snapshot_inputs(&session).await?;
+        let snapshot = snapshot::render(&ax, &dom, &page, &options)?;
+        let viewport = page.viewport.as_json();
+        match format {
+            Format::Compact => Ok(json!({
+                "format": "compact",
+                "tab_id": target_id,
+                "url": page.url,
+                "title": page.title,
+                "viewport": viewport,
+                "mode": mode.as_str(),
+                "node_count": snapshot.node_count,
+                "truncated": snapshot.truncated,
+                "text": snapshot.text,
+            })),
+            Format::Json => Ok(json!({
+                "format": "json",
+                "tab_id": target_id,
+                "url": page.url,
+                "title": page.title,
+                "viewport": viewport,
+                "mode": mode.as_str(),
+                "node_count": snapshot.node_count,
+                "truncated": snapshot.truncated,
+                "nodes": snapshot.nodes,
+            })),
+        }
+    }
+
+    async fn find_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let query = required_string(args, "query")?;
+        let role = optional_string(args, "role");
+        let regex = args.get("regex").and_then(Value::as_bool).unwrap_or(false);
+        let limit = integer(args, "limit", 20, 1, 100) as usize;
+        let (session, _) = self.page(args, 15_000).await?;
+        let (ax, dom, page) = self.snapshot_inputs(&session).await?;
+        let (matches, _truncated) =
+            snapshot::find(&ax, &dom, &query, role.as_deref(), regex, limit)?;
+        let matches: Vec<Value> = matches
+            .into_iter()
+            .map(|found| {
+                json!({
+                    "ref": found.reference,
+                    "tag": found.tag,
+                    "role": found.role,
+                    "text": found.text,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "url": page.url,
+            "count": matches.len(),
+            "matches": matches,
+        }))
+    }
+
+    async fn snapshot_inputs(&self, session: &str) -> Result<(Value, Value, PageInfo), CdpError> {
+        let ax = self
+            .send(
+                "Accessibility.getFullAXTree",
+                json!({}),
+                Some(session),
+                None,
+                Some(15_000),
+            )
+            .await?;
+        let dom = self
+            .send(
+                "DOMSnapshot.captureSnapshot",
+                json!({
+                    "computedStyles": [],
+                    "includePaintOrder": false,
+                    "includeDOMRects": true,
+                }),
+                Some(session),
+                None,
+                Some(15_000),
+            )
+            .await?;
+        let meta = self
+            .eval_value(
+                session,
+                "(() => ({ url: location.href, title: document.title, width: window.innerWidth, height: window.innerHeight, scrollX: window.scrollX, scrollY: window.scrollY }))()",
+                false,
+            )
+            .await?;
+        let viewport = Viewport {
+            width: json_i64(meta.get("width")),
+            height: json_i64(meta.get("height")),
+            scroll_x: json_f64(meta.get("scrollX")),
+            scroll_y: json_f64(meta.get("scrollY")),
+        };
+        let page = PageInfo {
+            url: meta
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            title: meta
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            viewport,
+        };
+        Ok((ax, dom, page))
+    }
+
+    async fn click_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let target = required_string(args, "target")?;
+        let (session, _) = self.page(args, 15_000).await?;
+        let (object_id, info) = self.resolve_element(&session, &target).await?;
+        ensure_interactable(&info)?;
+        self.scroll_into_view(&session, &object_id).await?;
+        let info = self.element_info(&session, &object_id).await?;
+        ensure_interactable(&info)?;
+        let point = self.box_center(&session, &object_id).await?;
+        if !self.hit_test(&session, &object_id, point).await? {
+            return Err(CdpError::NotInteractable(
+                "element is covered by another element".into(),
+            ));
+        }
+        for (event, buttons) in [("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 0)] {
+            self.send(
+                "Input.dispatchMouseEvent",
+                json!({
+                    "type": event,
+                    "x": point.0,
+                    "y": point.1,
+                    "button": "left",
+                    "buttons": buttons,
+                    "clickCount": 1,
+                }),
+                Some(&session),
+                None,
+                Some(10_000),
+            )
+            .await?;
+        }
+        let url = self.current_url(&session).await?;
+        Ok(json!({
+            "clicked": true,
+            "ref": target,
+            "selector": target,
+            "tag": info.tag,
+            "role": info.role,
+            "name": info.name,
+            "bbox": info.rect.as_json(),
+            "point": { "x": point.0, "y": point.1 },
+            "events": ["mousemove", "mousedown", "mouseup", "click"],
+            "url": url,
+        }))
+    }
+
+    async fn hover_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let target = required_string(args, "target")?;
+        let (session, _) = self.page(args, 15_000).await?;
+        let (object_id, info) = self.resolve_element(&session, &target).await?;
+        ensure_interactable(&info)?;
+        self.scroll_into_view(&session, &object_id).await?;
+        let info = self.element_info(&session, &object_id).await?;
+        ensure_interactable(&info)?;
+        let point = self.box_center(&session, &object_id).await?;
+        self.send(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mouseMoved",
+                "x": point.0,
+                "y": point.1,
+                "button": "none",
+                "buttons": 0,
+            }),
+            Some(&session),
+            None,
+            Some(10_000),
+        )
+        .await?;
+        let url = self.current_url(&session).await?;
+        Ok(json!({
+            "hovered": true,
+            "ref": target,
+            "url": url,
+            "target": { "ref": target, "tag": info.tag, "role": info.role, "text": info.name },
+        }))
+    }
+
+    async fn type_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let target = required_string(args, "target")?;
+        let text = required_string_allow_empty(args, "text")?;
+        let clear = args.get("clear").and_then(Value::as_bool).unwrap_or(true);
+        let blur = args.get("blur").and_then(Value::as_bool).unwrap_or(false);
+        let (session, _) = self.page(args, 15_000).await?;
+        let (object_id, info) = self.resolve_element(&session, &target).await?;
+        ensure_interactable(&info)?;
+        self.scroll_into_view(&session, &object_id).await?;
+        self.send(
+            "DOM.focus",
+            json!({ "objectId": object_id }),
+            Some(&session),
+            None,
+            Some(10_000),
+        )
+        .await?;
+        let prepare = if clear {
+            "function() { this.focus(); if (this.select) { this.select(); } else if (this.isContentEditable) { const range = document.createRange(); range.selectNodeContents(this); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); } }"
+        } else {
+            "function() { this.focus(); if (this.setSelectionRange && typeof this.value === 'string') { this.setSelectionRange(this.value.length, this.value.length); } }"
+        };
+        self.call_on(&session, &object_id, prepare, json!([]), false)
+            .await?;
+        self.send(
+            "Input.insertText",
+            json!({ "text": text }),
+            Some(&session),
+            None,
+            Some(15_000),
+        )
+        .await?;
+        if blur {
+            self.call_on(
+                &session,
+                &object_id,
+                "function() { this.blur(); }",
+                json!([]),
+                false,
+            )
+            .await?;
+        }
+        let url = self.current_url(&session).await?;
+        let events = if blur {
+            json!(["focus", "input", "change", "blur"])
+        } else {
+            json!(["focus", "input"])
+        };
+        Ok(json!({
+            "typed": true,
+            "ref": target,
+            "selector": target,
+            "tag": info.tag,
+            "role": info.role,
+            "cleared": clear,
+            "events": events,
+            "value_length": text.chars().count(),
+            "url": url,
+        }))
+    }
+
+    async fn press_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let raw_keys = match args.get("keys") {
+            Some(Value::String(key)) if !key.is_empty() => vec![key.clone()],
+            Some(Value::Array(keys)) if !keys.is_empty() => {
+                let mut parsed = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let key = key.as_str().filter(|key| !key.is_empty()).ok_or_else(|| {
+                        CdpError::InvalidArgument("keys must contain non-empty strings".into())
+                    })?;
+                    parsed.push(key.to_string());
+                }
+                parsed
+            }
+            _ => {
+                return Err(CdpError::InvalidArgument(
+                    "keys must be a non-empty string or array of strings".into(),
+                ))
+            }
+        };
+        let (session, _) = self.page(args, 15_000).await?;
+        if let Some(target) = optional_string(args, "target") {
+            let (object_id, info) = self.resolve_element(&session, &target).await?;
+            ensure_interactable(&info)?;
+            self.scroll_into_view(&session, &object_id).await?;
+            self.send(
+                "DOM.focus",
+                json!({ "objectId": object_id }),
+                Some(&session),
+                None,
+                Some(10_000),
+            )
+            .await?;
+        }
+        for raw in &raw_keys {
+            let (modifiers, stroke) = parse_key(raw)?;
+            let mut params = json!({
+                "type": "keyDown",
+                "modifiers": modifiers,
+                "key": stroke.key,
+                "code": stroke.code,
+                "windowsVirtualKeyCode": stroke.key_code,
+                "nativeVirtualKeyCode": stroke.key_code,
+            });
+            if let Some(text) = &stroke.text {
+                params["text"] = json!(text);
+                params["unmodifiedText"] = json!(text);
+            }
+            self.send(
+                "Input.dispatchKeyEvent",
+                params,
+                Some(&session),
+                None,
+                Some(10_000),
+            )
+            .await?;
+            self.send(
+                "Input.dispatchKeyEvent",
+                json!({
+                    "type": "keyUp",
+                    "modifiers": modifiers,
+                    "key": stroke.key,
+                    "code": stroke.code,
+                    "windowsVirtualKeyCode": stroke.key_code,
+                    "nativeVirtualKeyCode": stroke.key_code,
+                }),
+                Some(&session),
+                None,
+                Some(10_000),
+            )
+            .await?;
+        }
+        let url = self.current_url(&session).await?;
+        Ok(json!({ "pressed": raw_keys, "keys": raw_keys, "url": url }))
+    }
+
+    async fn scroll_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let direction = required_string(args, "direction")?;
+        let (dx, dy) = match direction.as_str() {
+            "up" => (0.0, -1.0),
+            "down" => (0.0, 1.0),
+            "left" => (-1.0, 0.0),
+            "right" => (1.0, 0.0),
+            other => {
+                return Err(CdpError::InvalidArgument(format!(
+                    "direction must be up, down, left or right, got {other}"
+                )))
+            }
+        };
+        let pages = args
+            .get("pages")
+            .and_then(Value::as_f64)
+            .unwrap_or(1.0)
+            .clamp(0.0, 50.0);
+        let (session, target_id) = self.page(args, 15_000).await?;
+        let (x, y, url) = if let Some(target) = optional_string(args, "target") {
+            let (object_id, info) = self.resolve_element(&session, &target).await?;
+            ensure_interactable(&info)?;
+            let result = self
+                .call_on(
+                    &session,
+                    &object_id,
+                    "function(dx, dy) { this.scrollBy(dx * this.clientWidth, dy * this.clientHeight); return { x: this.scrollLeft, y: this.scrollTop }; }",
+                    json!([{ "value": dx * pages }, { "value": dy * pages }]),
+                    true,
+                )
+                .await?;
+            let url = self.current_url(&session).await?;
+            (json_i64(result.get("x")), json_i64(result.get("y")), url)
+        } else {
+            let expression = format!(
+                "(() => {{ window.scrollBy({} * window.innerWidth, {} * window.innerHeight); return {{ x: window.scrollX, y: window.scrollY, url: location.href }}; }})()",
+                dx * pages,
+                dy * pages
+            );
+            let result = self.eval_value(&session, &expression, false).await?;
+            (
+                json_i64(result.get("x")),
+                json_i64(result.get("y")),
+                result.get("url").cloned().unwrap_or(Value::Null),
+            )
+        };
+        Ok(json!({
+            "scrolled": true,
+            "x": x,
+            "y": y,
+            "url": url,
+            "tab_id": target_id,
+        }))
+    }
+
+    async fn select_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let target = required_string(args, "target")?;
+        let values = match args.get("values") {
+            Some(Value::Array(values)) if !values.is_empty() => values
+                .iter()
+                .map(|value| {
+                    value.as_str().map(str::to_string).ok_or_else(|| {
+                        CdpError::InvalidArgument("values must be an array of strings".into())
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => {
+                return Err(CdpError::InvalidArgument(
+                    "values must be a non-empty array of strings".into(),
+                ))
+            }
+        };
+        let (session, _) = self.page(args, 15_000).await?;
+        let (object_id, info) = self.resolve_element(&session, &target).await?;
+        ensure_interactable(&info)?;
+        self.scroll_into_view(&session, &object_id).await?;
+        let arguments: Vec<Value> = values
+            .iter()
+            .map(|value| json!({ "value": value }))
+            .collect();
+        let result = self
+            .call_on(
+                &session,
+                &object_id,
+                "function(...values) { if (!(this instanceof HTMLSelectElement)) { return { ok: false, code: 'constraint', reason: 'element is not a select' }; } const wanted = values.map(String); const options = Array.from(this.options); const missing = wanted.filter(value => !options.some(option => option.value === value)); if (missing.length > 0) { return { ok: false, code: 'missing', reason: missing.join(', ') }; } if (!this.multiple && wanted.length !== 1) { return { ok: false, code: 'constraint', reason: 'multiple values require a multiple select' }; } for (const option of options) { option.selected = wanted.includes(option.value); } this.dispatchEvent(new Event('input', { bubbles: true })); this.dispatchEvent(new Event('change', { bubbles: true })); return { ok: true, selected: this.multiple ? Array.from(this.selectedOptions).map(option => option.value) : this.value }; }",
+                Value::Array(arguments),
+                true,
+            )
+            .await?;
+        if result.get("ok").and_then(Value::as_bool) != Some(true) {
+            let reason = result
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("selection failed");
+            if result.get("code").and_then(Value::as_str) == Some("missing") {
+                return Err(CdpError::TargetNotFound(format!("option {reason}")));
+            }
+            return Err(CdpError::InvalidArgument(reason.to_string()));
+        }
+        let selected = result.get("selected").cloned().unwrap_or_else(|| json!([]));
+        let url = self.current_url(&session).await?;
+        Ok(json!({ "selected": selected, "value": selected, "url": url }))
+    }
+
+    async fn resolve_element(
+        &self,
+        session: &str,
+        target: &str,
+    ) -> Result<(String, ElementInfo), CdpError> {
+        let object_id = self.element_object(session, target).await?;
+        let info = self.element_info(session, &object_id).await?;
+        Ok((object_id, info))
+    }
+
+    async fn element_object(&self, session: &str, target: &str) -> Result<String, CdpError> {
+        if let Some(backend) = target.strip_prefix("@c") {
+            let backend_id: i64 = backend.parse().map_err(|_| {
+                CdpError::InvalidArgument(
+                    "CDP element references are @c<backendNodeId>, for example @c42".into(),
+                )
+            })?;
+            let response = self
+                .send(
+                    "DOM.resolveNode",
+                    json!({ "backendNodeId": backend_id }),
+                    Some(session),
+                    None,
+                    Some(10_000),
+                )
+                .await?;
+            return response
+                .pointer("/object/objectId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| CdpError::TargetNotFound(target.to_string()));
+        }
+        if target.starts_with('@') {
+            return Err(CdpError::InvalidArgument(
+                "extension references such as @e12 are not CDP node ids; use @c<backendNodeId> from page_snapshot, or omit tab_id and use the extension channel".into(),
+            ));
+        }
+        let expression = format!("document.querySelector({})", js_string(target));
+        let response = self
+            .send(
+                "Runtime.evaluate",
+                json!({ "expression": expression, "returnByValue": false, "awaitPromise": false }),
+                Some(session),
+                None,
+                Some(10_000),
+            )
+            .await?;
+        if let Some(exception) = response.get("exceptionDetails") {
+            return Err(CdpError::InvalidArgument(format!(
+                "invalid CSS selector {target}: {}",
+                exception
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("querySelector failed")
+            )));
+        }
+        response
+            .pointer("/result/objectId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| CdpError::TargetNotFound(format!("element selector {target}")))
+    }
+
+    async fn element_info(&self, session: &str, object_id: &str) -> Result<ElementInfo, CdpError> {
+        let value = self
+            .call_on(
+                session,
+                object_id,
+                "function() { const el = this; const tag = (el.tagName || '').toLowerCase(); let role = el.getAttribute ? (el.getAttribute('role') || '') : ''; if (!role) { if (tag === 'a' && el.hasAttribute && el.hasAttribute('href')) { role = 'link'; } else if (tag === 'button') { role = 'button'; } else if (tag === 'select') { role = 'combobox'; } else if (tag === 'textarea') { role = 'textbox'; } else if (tag === 'input') { const type = (el.type || 'text').toLowerCase(); role = type === 'checkbox' ? 'checkbox' : type === 'radio' ? 'radio' : type === 'submit' || type === 'button' ? 'button' : 'textbox'; } } const text = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title')) || el.innerText || el.value || '').trim().slice(0, 120); const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { x: 0, y: 0, width: 0, height: 0 }; let visible = true; try { if (el.checkVisibility) { visible = el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }); } } catch (_) { visible = true; } const style = getComputedStyle(el); if (style.visibility === 'hidden' || style.display === 'none') { visible = false; } return { tag: tag, role: role, name: text, disabled: !!el.disabled || (el.getAttribute && el.getAttribute('aria-disabled') === 'true'), readOnly: !!el.readOnly, visible: visible, type: (el.type || '').toLowerCase(), rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }; }",
+                json!([]),
+                true,
+            )
+            .await?;
+        let rect = value.get("rect").cloned().unwrap_or_else(|| json!({}));
+        Ok(ElementInfo {
+            tag: value
+                .get("tag")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            role: value
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            name: value
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            disabled: value
+                .get("disabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            visible: value
+                .get("visible")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            rect: ElementBox {
+                x: json_f64(rect.get("x")),
+                y: json_f64(rect.get("y")),
+                width: json_f64(rect.get("width")),
+                height: json_f64(rect.get("height")),
+            },
+        })
+    }
+
+    async fn call_on(
+        &self,
+        session: &str,
+        object_id: &str,
+        function: &str,
+        arguments: Value,
+        return_by_value: bool,
+    ) -> Result<Value, CdpError> {
+        let response = self
+            .send(
+                "Runtime.callFunctionOn",
+                json!({
+                    "objectId": object_id,
+                    "functionDeclaration": function,
+                    "arguments": arguments,
+                    "returnByValue": return_by_value,
+                    "awaitPromise": true,
+                }),
+                Some(session),
+                None,
+                Some(15_000),
+            )
+            .await?;
+        if let Some(exception) = response.get("exceptionDetails") {
+            let message = exception
+                .pointer("/exception/description")
+                .and_then(Value::as_str)
+                .or_else(|| exception.get("text").and_then(Value::as_str))
+                .unwrap_or("element evaluation failed");
+            return Err(CdpError::Protocol(message.to_string()));
+        }
+        if return_by_value {
+            Ok(response
+                .pointer("/result/value")
+                .cloned()
+                .unwrap_or(Value::Null))
+        } else {
+            Ok(response.get("result").cloned().unwrap_or(Value::Null))
+        }
+    }
+
+    async fn scroll_into_view(&self, session: &str, object_id: &str) -> Result<(), CdpError> {
+        self.send(
+            "DOM.scrollIntoViewIfNeeded",
+            json!({ "objectId": object_id }),
+            Some(session),
+            None,
+            Some(10_000),
+        )
+        .await
+        .map_err(interaction_error)?;
+        Ok(())
+    }
+
+    async fn box_center(&self, session: &str, object_id: &str) -> Result<(f64, f64), CdpError> {
+        let model = self
+            .send(
+                "DOM.getBoxModel",
+                json!({ "objectId": object_id }),
+                Some(session),
+                None,
+                Some(10_000),
+            )
+            .await
+            .map_err(interaction_error)?;
+        let quad = model
+            .pointer("/model/content")
+            .or_else(|| model.pointer("/model/border"))
+            .and_then(Value::as_array)
+            .filter(|quad| quad.len() >= 8)
+            .ok_or_else(|| CdpError::NotInteractable("element has no layout box".into()))?;
+        let numbers: Vec<f64> = quad
+            .iter()
+            .take(8)
+            .map(|value| value.as_f64().unwrap_or(0.0))
+            .collect();
+        Ok((
+            (numbers[0] + numbers[4]) / 2.0,
+            (numbers[1] + numbers[5]) / 2.0,
+        ))
+    }
+
+    async fn hit_test(
+        &self,
+        session: &str,
+        object_id: &str,
+        point: (f64, f64),
+    ) -> Result<bool, CdpError> {
+        let result = self
+            .call_on(
+                session,
+                object_id,
+                "function(x, y) { const hit = document.elementFromPoint(x, y); return !!hit && (hit === this || this.contains(hit) || hit.contains(this)); }",
+                json!([{ "value": point.0 }, { "value": point.1 }]),
+                true,
+            )
+            .await?;
+        Ok(result.as_bool().unwrap_or(false))
+    }
+
     async fn page(&self, args: &Value, timeout: u64) -> Result<(String, String), CdpError> {
         if !self.is_connected() {
             return Err(CdpError::NotConnected);
@@ -1365,6 +2032,217 @@ impl CdpClient {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ElementInfo {
+    tag: String,
+    role: String,
+    name: String,
+    disabled: bool,
+    visible: bool,
+    rect: ElementBox,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ElementBox {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl ElementBox {
+    fn as_json(self) -> Value {
+        json!({
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height,
+        })
+    }
+}
+
+fn ensure_interactable(info: &ElementInfo) -> Result<(), CdpError> {
+    if !info.visible || info.rect.width <= 0.0 || info.rect.height <= 0.0 {
+        return Err(CdpError::NotInteractable("element is not visible".into()));
+    }
+    if info.disabled {
+        return Err(CdpError::NotInteractable("element is disabled".into()));
+    }
+    Ok(())
+}
+
+/// A box-model failure means the element cannot be clicked. Transport and
+/// timeout failures keep their own identity so callers do not mistake a dead
+/// connection for a non-interactable element.
+fn interaction_error(error: CdpError) -> CdpError {
+    match error {
+        CdpError::Transport(_) | CdpError::NotConnected | CdpError::Timeout(_) => error,
+        other => CdpError::NotInteractable(other.to_string()),
+    }
+}
+
+fn json_i64(value: Option<&Value>) -> i64 {
+    value
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_f64().map(|number| number as i64))
+        })
+        .unwrap_or(0)
+}
+
+fn json_f64(value: Option<&Value>) -> f64 {
+    value
+        .and_then(|value| value.as_f64().or_else(|| value.as_i64().map(|n| n as f64)))
+        .unwrap_or(0.0)
+}
+
+#[derive(Clone, Debug)]
+struct KeyStroke {
+    key: String,
+    code: String,
+    key_code: i64,
+    text: Option<String>,
+}
+
+/// Parse one key specification such as Enter, Control+a or Shift+2.
+fn parse_key(spec: &str) -> Result<(i64, KeyStroke), CdpError> {
+    let mut parts: Vec<&str> = spec.split('+').collect();
+    let raw_key = parts.pop().unwrap_or_default();
+    if raw_key.is_empty() {
+        return Err(CdpError::InvalidArgument(format!(
+            "key {spec} does not name a key"
+        )));
+    }
+    let mut modifiers = 0i64;
+    for modifier in parts {
+        match modifier.to_ascii_lowercase().as_str() {
+            "alt" => modifiers |= 1,
+            "ctrl" | "control" => modifiers |= 2,
+            "meta" | "cmd" | "command" => modifiers |= 4,
+            "shift" => modifiers |= 8,
+            other => {
+                return Err(CdpError::InvalidArgument(format!(
+                    "key {spec} has unsupported modifier {other}"
+                )))
+            }
+        }
+    }
+    let lower = raw_key.to_ascii_lowercase();
+    let named = match lower.as_str() {
+        "enter" => Some(("Enter", "Enter", 13, Some("\r".to_string()))),
+        "tab" => Some(("Tab", "Tab", 9, None)),
+        "escape" | "esc" => Some(("Escape", "Escape", 27, None)),
+        "backspace" => Some(("Backspace", "Backspace", 8, None)),
+        "delete" => Some(("Delete", "Delete", 46, None)),
+        "space" | " " => Some((" ", "Space", 32, Some(" ".to_string()))),
+        "arrowup" | "up" => Some(("ArrowUp", "ArrowUp", 38, None)),
+        "arrowdown" | "down" => Some(("ArrowDown", "ArrowDown", 40, None)),
+        "arrowleft" | "left" => Some(("ArrowLeft", "ArrowLeft", 37, None)),
+        "arrowright" | "right" => Some(("ArrowRight", "ArrowRight", 39, None)),
+        "pageup" => Some(("PageUp", "PageUp", 33, None)),
+        "pagedown" => Some(("PageDown", "PageDown", 34, None)),
+        "home" => Some(("Home", "Home", 36, None)),
+        "end" => Some(("End", "End", 35, None)),
+        _ => None,
+    };
+    if let Some((key, code, key_code, text)) = named {
+        let text = text.filter(|_| modifiers & (1 | 2 | 4) == 0);
+        return Ok((
+            modifiers,
+            KeyStroke {
+                key: key.to_string(),
+                code: code.to_string(),
+                key_code,
+                text,
+            },
+        ));
+    }
+    if raw_key.chars().count() != 1 {
+        return Err(CdpError::InvalidArgument(format!(
+            "key {spec} is not supported"
+        )));
+    }
+    let character = raw_key.chars().next().unwrap_or_default();
+    let (mut key, code, key_code, mut text) = if character.is_ascii_alphabetic() {
+        let upper = character.to_ascii_uppercase();
+        (
+            upper.to_string(),
+            format!("Key{upper}"),
+            upper as i64,
+            Some(character.to_string()),
+        )
+    } else if character.is_ascii_digit() {
+        let shifted = match character {
+            '1' => Some('!'),
+            '2' => Some('@'),
+            '3' => Some('#'),
+            '4' => Some('$'),
+            '5' => Some('%'),
+            '6' => Some('^'),
+            '7' => Some('&'),
+            '8' => Some('*'),
+            '9' => Some('('),
+            '0' => Some(')'),
+            _ => None,
+        };
+        let rendered = if modifiers & 8 != 0 {
+            shifted.unwrap_or(character)
+        } else {
+            character
+        };
+        (
+            rendered.to_string(),
+            format!("Digit{character}"),
+            character as i64,
+            Some(rendered.to_string()),
+        )
+    } else {
+        let (code, key_code) = match character {
+            ';' => ("Semicolon", 186),
+            '=' => ("Equal", 187),
+            ',' => ("Comma", 188),
+            '-' => ("Minus", 189),
+            '.' => ("Period", 190),
+            '/' => ("Slash", 191),
+            '\x60' => ("Backquote", 192),
+            '[' => ("BracketLeft", 219),
+            '\\' => ("Backslash", 220),
+            ']' => ("BracketRight", 221),
+            '\'' => ("Quote", 222),
+            _ => {
+                return Err(CdpError::InvalidArgument(format!(
+                    "key {spec} is not supported"
+                )))
+            }
+        };
+        (
+            character.to_string(),
+            code.to_string(),
+            key_code,
+            Some(character.to_string()),
+        )
+    };
+    if modifiers & (1 | 2 | 4) != 0 {
+        text = None;
+    }
+    if modifiers & 8 != 0 && key.len() == 1 {
+        key = key.to_ascii_uppercase();
+        if let Some(value) = text.as_mut() {
+            *value = value.to_ascii_uppercase();
+        }
+    }
+    Ok((
+        modifiers,
+        KeyStroke {
+            key,
+            code,
+            key_code,
+            text,
+        },
+    ))
+}
+
 /// Chrome reports an absent dialog as a protocol error. That is an expected
 /// negative result, not an internal failure; every other protocol error is
 /// left untouched so callers can classify it normally.
@@ -1401,6 +2279,13 @@ fn required_string(args: &Value, key: &str) -> Result<String, CdpError> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| CdpError::InvalidArgument(format!("{key} must be a non-empty string")))
+}
+
+fn required_string_allow_empty(args: &Value, key: &str) -> Result<String, CdpError> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| CdpError::InvalidArgument(format!("{key} must be a string")))
 }
 
 fn optional_string(args: &Value, key: &str) -> Option<String> {
@@ -1489,10 +2374,11 @@ mod tests {
 
     #[test]
     fn catalogue_has_the_expected_tools() {
-        assert_eq!(CDP_TOOL_NAMES.len(), 25);
+        assert_eq!(CDP_TOOL_NAMES.len(), 33);
         assert!(is_cdp_tool("browser_navigate"));
         assert!(is_cdp_tool("cdp_send"));
-        assert!(!is_cdp_tool("page_snapshot"));
+        assert!(is_cdp_tool("page_snapshot"));
+        assert!(is_cdp_tool("browser_select"));
         assert!(!is_cdp_tool("browser_channel"));
     }
 
