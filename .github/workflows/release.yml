@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
@@ -93,7 +93,7 @@ jobs:
       CORVUS_CARGO_OFFLINE: '0'
     steps:
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
@@ -159,7 +159,7 @@ jobs:
     needs: [linux, windows]
     steps:
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
