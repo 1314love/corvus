@@ -42,7 +42,7 @@ clap = { version = "4", features = ["derive", "env"] }
 axum = { version = "0.8", features = ["ws"] }
 futures = "0.3"
 tokio-tungstenite = "0.29"
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.10"
 rusqlite = { version = "0.40", features = ["bundled"] }
 sea-orm = { version = "1.1.19", default-features = false, features = ["runtime-tokio-rustls", "sqlx-sqlite", "macros", "with-json"] }
