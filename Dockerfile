@@ -8,7 +8,7 @@ RUN cargo build --release --locked -p corvusd -p corvus
 
 # Build the extension with a pinned Node and pnpm toolchain so the image does
 # not depend on a host-side build or an ignored build directory.
-FROM node:22-bookworm-slim AS extension-build
+FROM node:26-bookworm-slim AS extension-build
 RUN corepack enable && corepack prepare pnpm@10 --activate
 WORKDIR /build/extension
 COPY extension/package.json extension/pnpm-lock.yaml extension/pnpm-workspace.yaml ./
