@@ -1,5 +1,5 @@
-/** Content-script entry: the standalone DOM runtime. */
+/** Content-script entry: the standalone provider page runtime. */
 
-import './runtime';
+import './provider-runtime';
 
 export {};

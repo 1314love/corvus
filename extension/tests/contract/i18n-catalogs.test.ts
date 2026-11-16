@@ -35,27 +35,43 @@ describe('i18n catalogs', () => {
       'app.popupTitle',
       'app.optionsTitle',
       'app.version',
-      'common.save',
-      'common.resetToDefault',
-      'common.detectNow',
+      'common.settings',
+      'common.refresh',
+      'common.refreshStatus',
+      'common.connect',
+      'common.disconnect',
+      'common.saveAndConnect',
       'common.english',
       'common.chinese',
-      'options.daemonConnection',
-      'options.browserCdpEndpoint',
+      'options.pairing',
+      'options.pairingHelp',
+      'options.baseUrl',
+      'options.token',
+      'options.tokenPlaceholder',
       'options.status',
+      'options.service',
       'status.connected',
-      'family.match',
-      'family.mismatch',
-      'source.auto',
-      'notice.daemonSaved',
-      'notice.cdpSaved',
-      'errors.policyDenied',
-      'errors.policyDeniedWithReason',
-      'validation.daemon',
-      'validation.cdp',
+      'status.pairing_required',
+      'notice.saved',
+      'validation.base',
+      'validation.token',
     ];
     for (const key of required) expect(enFlat, 'en ' + key).toHaveProperty(key);
     for (const key of required) expect(zhFlat, 'zh-CN ' + key).toHaveProperty(key);
+  });
+
+  it('does not retain removed daemon, CDP or policy strings', () => {
+    for (const key of [
+      'options.daemonConnection',
+      'options.browserCdpEndpoint',
+      'errors.policyDenied',
+      'errors.policyDeniedWithReason',
+    ]) {
+      expect(enFlat).not.toHaveProperty(key);
+      expect(zhFlat).not.toHaveProperty(key);
+    }
+    const text = Object.values(enFlat).join(' ');
+    expect(text).not.toMatch(/\bCDP\b|daemon policy/i);
   });
 
   it('uses only catalog keys referenced by popup/options sources', () => {

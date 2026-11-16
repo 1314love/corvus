@@ -14,6 +14,7 @@ use corvus_proto::{ErrorBody, ErrorCode};
 
 use crate::backend::{ToolBackend, ToolCall};
 use crate::metrics::{ChannelMetrics, Metrics};
+use crate::surface::ToolSurface;
 use crate::tools;
 
 /// MCP revision this server implements.
@@ -89,6 +90,7 @@ pub struct McpServer {
     health: Arc<dyn Fn() -> Value + Send + Sync>,
     store: Option<Arc<dyn SessionRecording>>,
     metrics: Arc<Metrics>,
+    surface: Option<Arc<dyn ToolSurface>>,
     cancels: Mutex<HashMap<String, RequestCancel>>,
 }
 
@@ -103,6 +105,7 @@ impl McpServer {
             health: Arc::new(|| json!({ "status": "ok" })),
             store: None,
             metrics: Arc::new(Metrics::new()),
+            surface: None,
             cancels: Mutex::new(HashMap::new()),
         }
     }
@@ -159,6 +162,18 @@ impl McpServer {
         };
         self.metrics
             .prometheus_with_channel(browsers, sessions, steps, &channel_metrics)
+    }
+
+    /// Serve a live tool surface instead of the static catalogue.
+    pub fn with_surface(mut self, surface: Arc<dyn ToolSurface>) -> Self {
+        self.surface = Some(surface);
+        self
+    }
+
+    /// Fingerprint of the currently visible tool list, when a live surface is
+    /// attached. Transports use this to decide whether to announce a change.
+    pub fn surface_signature(&self) -> Option<String> {
+        self.surface.as_ref().map(|surface| surface.signature())
     }
 
     /// Attach the recording store used for session bookkeeping.
@@ -392,7 +407,7 @@ impl McpServer {
             }
         }
         match method.as_str() {
-            "initialize" => Some(success(id, self.initialize(&params))),
+            "initialize" => Some(success(id, self.initialize(&params, session))),
             "notifications/initialized" | "notifications/progress" => None,
             "notifications/cancelled" => {
                 if let Some(request_id) = params.get("requestId") {
@@ -401,7 +416,7 @@ impl McpServer {
                 None
             }
             "ping" => Some(success(id, json!({}))),
-            "tools/list" => match tools::list(&params) {
+            "tools/list" => match self.list_tools(&params) {
                 Ok(tools) => Some(success(id, json!({ "tools": tools }))),
                 Err(error) => Some(error_response(
                     id,
@@ -429,7 +444,7 @@ impl McpServer {
         }
     }
 
-    fn initialize(&self, params: &Value) -> Value {
+    fn initialize(&self, params: &Value, session: Option<&SessionContext>) -> Value {
         let requested = params
             .get("protocolVersion")
             .and_then(Value::as_str)
@@ -439,17 +454,34 @@ impl McpServer {
         } else {
             PROTOCOL_VERSION
         };
+        let (instructions, list_changed) = match self.surface.as_ref() {
+            Some(surface) => (
+                surface.instructions(),
+                // Only the line-oriented stdio transport can push a
+                // notification without a request. HTTP has no SSE stream yet,
+                // so it must not advertise what it cannot deliver.
+                session.is_some_and(|session| session.transport == "stdio"),
+            ),
+            None => (self.instructions.as_str(), false),
+        };
         json!({
             "protocolVersion": version,
             "capabilities": {
-                "tools": { "listChanged": false }
+                "tools": { "listChanged": list_changed }
             },
             "serverInfo": {
                 "name": self.name,
                 "version": self.version,
             },
-            "instructions": self.instructions,
+            "instructions": instructions,
         })
+    }
+
+    fn list_tools(&self, params: &Value) -> Result<Vec<Value>, ErrorBody> {
+        match self.surface.as_ref() {
+            Some(surface) => Ok(surface.tools()),
+            None => tools::list(params),
+        }
     }
 
     fn record_initialize(&self, session: &SessionContext, params: &Value) {
@@ -489,11 +521,15 @@ impl McpServer {
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
-        let arguments = match tools::validate(&name, &arguments) {
+        let validated = match self.surface.as_ref() {
+            Some(surface) => surface.validate(&name, &arguments),
+            None => tools::validate(&name, &arguments),
+        };
+        let arguments = match validated {
             Ok(arguments) => arguments,
             Err(error) => {
                 measurement.finish(Some(&error));
-                return CallOutcome::Answer(tool_error(&error));
+                return CallOutcome::Answer(self.tool_error_value(&error));
             }
         };
         let call = ToolCall {
@@ -526,11 +562,11 @@ impl McpServer {
         match outcome {
             Some(Ok(result)) => {
                 measurement.finish(None);
-                CallOutcome::Answer(tool_success(&result))
+                CallOutcome::Answer(self.tool_success_value(&result))
             }
             Some(Err(error)) => {
                 measurement.finish(Some(&error));
-                CallOutcome::Answer(tool_error(&error))
+                CallOutcome::Answer(self.tool_error_value(&error))
             }
             None => {
                 let elapsed = started.elapsed().as_millis() as i64;
@@ -538,6 +574,22 @@ impl McpServer {
                 measurement.finish(None);
                 CallOutcome::Cancelled
             }
+        }
+    }
+
+    fn tool_success_value(&self, result: &Value) -> Value {
+        if self.surface.is_some() {
+            surface_tool_success(result)
+        } else {
+            tool_success(result)
+        }
+    }
+
+    fn tool_error_value(&self, error: &ErrorBody) -> Value {
+        if self.surface.is_some() {
+            surface_tool_error(error)
+        } else {
+            tool_error(error)
         }
     }
 
@@ -645,6 +697,52 @@ fn tool_success(result: &Value) -> Value {
         "content": [{ "type": "text", "text": encode(result) }],
         "isError": false,
     })
+}
+
+fn surface_tool_error(error: &ErrorBody) -> Value {
+    let (code, message) = error
+        .details
+        .as_ref()
+        .and_then(|details| details.get("p2"))
+        .and_then(|p2| {
+            Some((
+                p2.get("code")?.as_str()?.to_string(),
+                p2.get("message")?.as_str()?.to_string(),
+            ))
+        })
+        .unwrap_or_else(|| (error.code.as_str().to_string(), error.message.clone()));
+    let text = json!({ "error": { "code": code, "message": message } });
+    json!({
+        "content": [{ "type": "text", "text": text.to_string() }],
+        "isError": true,
+    })
+}
+
+fn surface_tool_success(result: &Value) -> Value {
+    if let Some(image) = result.get("image") {
+        if let (Some(data), Some(mime_type)) = (
+            image.get("data").and_then(Value::as_str),
+            image.get("mime_type").and_then(Value::as_str),
+        ) {
+            let mut metadata = result.clone();
+            if let Some(image) = metadata.get_mut("image").and_then(Value::as_object_mut) {
+                image.remove("data");
+                if image.is_empty() {
+                    metadata
+                        .as_object_mut()
+                        .map(|object| object.remove("image"));
+                }
+            }
+            return json!({
+                "content": [
+                    { "type": "text", "text": encode(&metadata) },
+                    { "type": "image", "data": data, "mimeType": mime_type },
+                ],
+                "isError": false,
+            });
+        }
+    }
+    tool_success(result)
 }
 
 fn tool_error(error: &ErrorBody) -> Value {

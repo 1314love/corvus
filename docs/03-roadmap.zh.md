@@ -110,6 +110,14 @@ CDP 提供 46 个浏览器类工具，扩展提供 42 个，12 个为守护进�
 QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过，本地 Windows 打包单独通过：25 条结果行上的 263 个 workspace 测试、137 项一致性检查、13 个文件中的 91 个 Vitest 测试、14 文件/537,844 B 的扩展构建、3 个 Playwright 端到端测试，以及在 ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e` 上的 160/160 项本地打包检查；该 ZIP 仅本地可用，不是 CI 重建产物或已发布产物。[tests/conformance/schema-snapshot.v1.7.0.json](../tests/conformance/schema-snapshot.v1.7.0.json) 的 schema 快照是 62 条目文件（36,993 B、1,853 行、SHA-256 `0763eee9256bae1942c1480317fc6a80375257d44b3674261b689ae1f3844114`），`tests/conformance/run.sh` 为 52,902 B、1,046 行、SHA-256 `43df9ea1e2366eff9db6171b369b9b56af2a75fbc412c04b589b52bb7e3d691f`；冻结的 62 工具二进制上一致性检查通过 137 项、0 失败、0 跳过。标签 `v1.7.0` 的对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向发布提交 `f12930c145c8cac05a50db9702ab3f1ad021c666`；主 CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了 Windows ZIP 19,159,984 B SHA-256 `3269ea25a916687c0d638b4798965e24d32dc4adbd5cd9490352afc21076e5e1`、Linux tar 包 20,443,563 B SHA-256 `f0e90a7a8d338cdbe3bcee251739567c03186395071457d1a08b064c2733b4c1` 与合并 `SHA256SUMS` 194 B SHA-256 `7d7163ea9ceabbd9f27018e9510ba6c4cdc96e939bea7e664e5cc62e0bfd6fea`。此前的 44 工具 v1.7.0 QA PASS 与本地打包 PASS 已被本次重划取代。1.6.0 为上一版本，NFR-3 仍未通过。
 
 
+## v2.0.0 P2 内部里程碑（未发布）
+
+`v2.0` 分支承载一个内部 P2 垂直切片。它未打标签、未发布、未部署；1.7.0 仍是当前已发布版本，P2 是部分实现。
+
+P2 暴露恰好十个工具：`browser_status`、`tab_list`、`tab_open`、`tab_close`、`page_navigate`、`page_read`、`page_snapshot`、`element_click`、`element_type` 与 `page_screenshot`。`tools/list` 是动态的，能力变化时在 stdio 上发出 `notifications/tools/list_changed`。group 矩阵为 10/9/8/7/5/2/1，节点引用是 `r-<8 个小写十六进制>` 的不透明值，`page_screenshot` 仅视口且解码上限 8 MiB；`full_page` 属于 P3。
+
+扩展是 provider-only，恰好五项权限（`tabs`、`activeTab`、`scripting`、`storage`、`offscreen`），没有 debugger，并使用加密 `/provider/v2` 配对。Rust 网关拥有能力路由与语义，受监督的 `corvus-cdp-worker` 拥有 CDP 路径。QA 通过 303/303 项检查、133 个步骤与三个数据库上的 27/27 项录制断言、Rust 321/0/1 与 13 个文件中的 89 个扩展测试加 1 个端到端测试，无 High 或 Medium 缺陷；证据为 [tests/report/v2.0.0-p2-capability-qa.md](../tests/report/v2.0.0-p2-capability-qa.md)，21,978 B / 253 行 / SHA-256 `59cc8603c6e57532ca1f4755d5ba571daa7d13b88efda44fa872ef199a4d6d23`。P3 恢复完整覆盖，且不宣称 NFR-3 或实机部署。
+
 ## 建议排期（以 1 名主力 + AI 结对估算）
 
 | 周 | 内容 |

@@ -1,10 +1,10 @@
-/** Options/popup ViewModel: commands, drafts and derived presentation state. */
+/** Options/popup ViewModel: pairing drafts, commands and derived presentation state. */
 
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { DEFAULT_CDP_ENDPOINT, validateCdpEndpoint } from '../../../shared/cdp-endpoint';
-import { DEFAULT_DAEMON_URL, validateDaemonUrl } from '../../../shared/storage/daemon-url';
-import type { UiReply, UiState } from '../../../shared/contracts/ui';
+import { DEFAULT_DAEMON_URL } from '../../../shared/storage/daemon-url';
+import { providerEndpointFromBase } from '../../../shared/provider/endpoint';
+import type { ProviderUiState, UiReply } from '../../../shared/contracts/ui';
 import { errorMessage, uiService } from '../rpc/service';
 import { useSessionStore } from '../stores/session';
 
@@ -14,22 +14,21 @@ export function useSessionViewModel(pollMs = 1500) {
 
   const status = computed(() => store.status);
   const connected = computed(() => store.connected);
-  const cdpAvailable = computed(() => store.cdpAvailable);
+  const tokenSaved = computed(() => store.tokenSaved);
+  const browser = computed(() => store.browser);
 
-  const daemonDraft = ref('');
-  const cdpDraft = ref(DEFAULT_CDP_ENDPOINT);
-  const daemonError = ref('');
-  const cdpError = ref('');
+  const baseDraft = ref(DEFAULT_DAEMON_URL);
+  const tokenDraft = ref('');
+  const baseError = ref('');
   const notice = ref('');
   const busy = ref(false);
   let initialized = false;
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  function applyState(state: UiState): void {
+  function applyState(state: ProviderUiState, forceDraft = false): void {
     store.setSnapshot(state);
-    if (!initialized) {
-      daemonDraft.value = state.wsUrl;
-      cdpDraft.value = state.cdpEndpoint || DEFAULT_CDP_ENDPOINT;
+    if (!initialized || forceDraft) {
+      baseDraft.value = state.base_url;
       initialized = true;
     }
   }
@@ -55,16 +54,13 @@ export function useSessionViewModel(pollMs = 1500) {
     }
   }
 
-  async function perform(action: () => Promise<UiReply>, success: string): Promise<void> {
+  async function perform(action: () => Promise<UiReply>, success: string, forceDraft = false): Promise<void> {
     busy.value = true;
     notice.value = '';
     try {
       const reply = await action();
       if (reply.ok) {
-        store.setSnapshot(reply.state);
-        daemonDraft.value = reply.state.wsUrl;
-        cdpDraft.value = reply.state.cdpEndpoint || DEFAULT_CDP_ENDPOINT;
-        initialized = true;
+        applyState(reply.state, forceDraft);
         notice.value = success;
       } else {
         store.setError(reply.error);
@@ -76,47 +72,28 @@ export function useSessionViewModel(pollMs = 1500) {
     }
   }
 
-  async function saveDaemon(): Promise<void> {
-    daemonError.value = '';
-    const checked = validateDaemonUrl(daemonDraft.value);
-    if (!checked.ok) {
-      daemonError.value = 'validation.daemon';
+  async function saveAndConnect(): Promise<void> {
+    baseError.value = '';
+    const endpoint = providerEndpointFromBase(baseDraft.value);
+    if (!endpoint) {
+      baseError.value = 'validation.base';
       return;
     }
-    daemonDraft.value = checked.value || daemonDraft.value;
-    await perform(() => uiService.saveDaemon(daemonDraft.value), 'notice.daemonSaved');
-  }
-
-  async function resetDaemon(): Promise<void> {
-    daemonError.value = '';
-    daemonDraft.value = DEFAULT_DAEMON_URL;
-    await perform(() => uiService.resetDaemon(), 'notice.daemonReset');
-  }
-
-  async function saveCdp(): Promise<void> {
-    cdpError.value = '';
-    const text = cdpDraft.value.trim() || DEFAULT_CDP_ENDPOINT;
-    const checked = validateCdpEndpoint(text);
-    if (!checked.ok) {
-      cdpError.value = 'validation.cdp';
+    const token = tokenDraft.value.trim();
+    if (!token && !tokenSaved.value) {
+      baseError.value = 'validation.token';
       return;
     }
-    cdpDraft.value = checked.value || text;
-    await perform(() => uiService.saveCdp(cdpDraft.value), 'notice.cdpSaved');
+    await perform(() => uiService.saveAndConnect(baseDraft.value.trim(), token || undefined), 'notice.saved', true);
+    tokenDraft.value = '';
   }
 
-  async function resetCdp(): Promise<void> {
-    cdpError.value = '';
-    cdpDraft.value = DEFAULT_CDP_ENDPOINT;
-    await perform(() => uiService.resetCdp(), 'notice.cdpReset');
+  async function connect(): Promise<void> {
+    await perform(() => uiService.connect(), 'notice.connecting');
   }
 
-  async function detectCdp(): Promise<void> {
-    await perform(() => uiService.refreshCdp(), 'notice.cdpRefreshed');
-  }
-
-  async function reconnect(): Promise<void> {
-    await perform(() => uiService.reconnect(), 'notice.reconnecting');
+  async function disconnect(): Promise<void> {
+    await perform(() => uiService.disconnect(), 'notice.disconnected');
   }
 
   function openOptions(): void {
@@ -138,22 +115,18 @@ export function useSessionViewModel(pollMs = 1500) {
     error,
     status,
     connected,
-    cdpAvailable,
-    daemonDraft,
-    cdpDraft,
-    daemonError,
-    cdpError,
+    tokenSaved,
+    browser,
+    baseDraft,
+    tokenDraft,
+    baseError,
     notice,
     busy,
-    daemonDefault: DEFAULT_DAEMON_URL,
-    cdpDefault: DEFAULT_CDP_ENDPOINT,
+    baseDefault: DEFAULT_DAEMON_URL,
     refresh,
-    saveDaemon,
-    resetDaemon,
-    saveCdp,
-    resetCdp,
-    detectCdp,
-    reconnect,
+    saveAndConnect,
+    connect,
+    disconnect,
     openOptions,
   };
 }

@@ -2,9 +2,9 @@
 
 [English](09-tools.md) | [中文](09-tools.zh.md)
 
-状态：1.7.0 是当前已发布版本，于 2026-11-16 发布；1.6.0 为上一版本。1.7.0 发布把 MCP 工具面从九个类别 43 个工具扩展到十个类别 62 个工具，包括 `browser_screenshot`、PDF 捕获以及新的 page、input、tab、storage 与 diagnostics 工具。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过；本地 Windows 打包单独通过，已发布产物由 CI 重新构建。标签 `v1.7.0` 的对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向发布提交 `f12930c145c8cac05a50db9702ab3f1ad021c666`；主 CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了产物。读者：工程师、运维与 MCP/REST 客户端作者。
+状态：1.7.0 是当前已发布版本，于 2026-11-16 发布；1.6.0 为上一版本。1.7.0 发布把 MCP 工具面从九个类别 43 个工具扩展到十个类别 62 个工具，包括 `browser_screenshot`、PDF 捕获以及新的 page、input、tab、storage 与 diagnostics 工具。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过；本地 Windows 打包单独通过，已发布产物由 CI 重新构建。标签 `v1.7.0` 的对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向发布提交 `f12930c145c8cac05a50db9702ab3f1ad021c666`；主 CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了产物。分支 `v2.0` 上未发布的 P2 面与本目录分离，见第 11 节。读者：工程师、运维与 MCP/REST 客户端作者。
 
-1.7.0 发布有十个类别 62 个工具；上一版本 1.6.0 为九个类别 43 个工具。
+1.7.0 发布有十个类别 62 个工具；上一版本 1.6.0 为九个类别 43 个工具。未发布的 v2.0 P2 面有十个工具，不属于 1.7.0 目录。
 
 ## 1. MCP 结果信封
 
@@ -358,3 +358,11 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 token 数使用基准的 tokenizer 估算。1.5.0 QA 报告实测：43 个工具的默认简版 `tools/list` 为 20,493 B（数组 20,449 B），完整详情为 37,372 B（数组 37,328 B）；发布说明引用该报告。1.6.0 报告实测 43 工具简版 20,493 B、完整 37,496 B。62 工具 1.7.0 目录实测简版原始正文 31,367 B（含末尾换行 31,368 B）与完整原始 52,328 B（含换行 52,329 B）；简版正文低于 32,000 字节简版预算。
 
 **版本。** 本参考描述 2026-11-16 发布的 Corvus 1.7.0；1.6.0 为上一版本。该发布有十个类别 62 个工具、46 个 CDP 浏览器类工具与 42 个扩展浏览器类工具。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过：25 条结果行上的 263 个 workspace 测试、137 项一致性检查、13 个文件中的 91 个 Vitest 测试、14 文件/537,844 B 的扩展构建与 3 个 Playwright 端到端测试；本地 Windows 打包在独立的 ZIP 上通过 160/160 项检查，该 ZIP 不是已发布产物。已发布产物为 `corvus-1.7.0-windows-x64.zip` 19,159,984 B、`corvus-1.7.0-linux-x86_64.tar.gz` 20,443,563 B 与 `corvus-v1.7.0-SHA256SUMS` 194 B；标签 `v1.7.0` 的对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向 `f12930c145c8cac05a50db9702ab3f1ad021c666`，CI 运行 43795994581 通过八个任务，工作流 43796443828 成功，GitHub 发布 446568768 发布了它们。`page_pdf` 强制 32 MiB 解码上限；实机上限未触及，最大实机 PDF 为 55,891 B。NFR-3 仍未通过，不宣称任何 1.7.0 实机部署。
+
+## 11. v2.0 P2 内部面（未发布）
+
+`v2.0` 分支承载一个恰好十个工具的内部 P2 面，不是 62 工具的 1.7.0 目录：`browser_status`、`tab_list`、`tab_open`、`tab_close`、`page_navigate`、`page_read`、`page_snapshot`、`element_click`、`element_type` 与 `page_screenshot`。P2 未打标签、未发布、未部署；1.7.0 仍是当前已发布版本。
+
+`tools/list` 是动态的，能力变化时在 stdio 上发出 `notifications/tools/list_changed`。group 矩阵为：全部 group 10 个工具，缺 capture 9 个，缺 input 8 个，缺 tabs 7 个，缺 page 5 个，缺 page 与 tabs 2 个，无 group 1 个。节点引用是 `r-<8 个小写十六进制>` 的不透明值。`page_screenshot` 仅视口，在 `<home>/screenshots/` 下写 `shot-<32 个小写十六进制>.<png|jpg>`，解码上限 8 MiB；`full_page` 返回 `CAPABILITY_UNAVAILABLE`，属于 P3。
+
+错误只使用 `BAD_ARGS`、`NOT_FOUND`、`NAVIGATION_FAILED`、`TIMEOUT`、`PROVIDER_LOST`、`CAPABILITY_UNAVAILABLE`、`AMBIGUOUS_BROWSER` 与 `INTERNAL`；MCP 返回 `isError: true` 与单个 `{"error":{"code","message"}}` 块。QA 通过 303/303 项检查、133 个步骤与三个数据库上的 27/27 项录制断言、Rust 321/0/1、13 个文件中的 89 个扩展测试加 1 个端到端测试，无 High 或 Medium 缺陷。证据为 [tests/report/v2.0.0-p2-capability-qa.md](../tests/report/v2.0.0-p2-capability-qa.md)，21,978 B / 253 行 / SHA-256 `59cc8603c6e57532ca1f4755d5ba571daa7d13b88efda44fa872ef199a4d6d23`。P2 是内部且部分的；P3 恢复完整覆盖，且不宣称 NFR-3 或实机部署。

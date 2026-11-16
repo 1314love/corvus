@@ -16,6 +16,7 @@ corvus-mcp.workspace = true
 corvus-record.workspace = true
 corvus-api.workspace = true
 corvus-provider.workspace = true
+corvus-worker.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 futures.workspace = true

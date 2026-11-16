@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProviderSocket, ProviderSocketError, type ProviderSocketOptions } from '../../src/offscreen/provider-socket';
 import { encodeBase64Url } from '../../src/shared/provider/protocol';
 import { TestGateway } from './provider-gateway';
+import { providerCapabilities } from '../../src/background/provider-actions';
 
 const URL = 'ws://127.0.0.1:17330/provider/v2';
 const sockets: ProviderSocket[] = [];
@@ -43,14 +44,14 @@ afterEach(() => {
 });
 
 describe('encrypted provider socket', () => {
-  it('performs a real handshake and round-trips system.info and tabs.read in both directions', async () => {
+  it('performs a real handshake and round-trips system.info and tabs.list in both directions', async () => {
     const gateway = await TestGateway.create();
     gateways.push(gateway);
     const extensionInfo = {
       browser_family: 'Chrome',
       browser_version: '157.0.0.0',
       extension_version: '2.0.0',
-      capabilities: ['system.info', 'tabs.read'],
+      capabilities: ['system.info', 'tabs'],
     };
     const extensionTabs = [
       {
@@ -75,9 +76,35 @@ describe('encrypted provider socket', () => {
     expect(gateway.manifest?.browser).toEqual({ family: 'Chrome', version: '157.0.0.0', profile: 'test' });
 
     await expect(socket.requestSystemInfo()).resolves.toEqual(gateway.systemInfo);
-    await expect(socket.requestTabsList()).resolves.toEqual(gateway.tabs);
+    await expect(socket.invoke('tabs.list')).resolves.toEqual(gateway.tabs);
     await expect(gateway.invoke('system.info.info')).resolves.toEqual(extensionInfo);
-    await expect(gateway.invoke('tabs.read.list')).resolves.toEqual(extensionTabs);
+    await expect(gateway.invoke('tabs.list')).resolves.toEqual(extensionTabs);
+  });
+
+  it('advertises P2 capabilities and reconnects with the same token', async () => {
+    const first = await TestGateway.create();
+    gateways.push(first);
+    const actions = {
+      capabilities: providerCapabilities(),
+      invokeAction: async (action: string) =>
+        action === 'system.info.info' ? { browser_family: 'Chrome', browser_version: '157.0.0.0' } : null,
+    };
+    const initial = openSocket(first, { actions });
+    await initial.connecting;
+    expect(first.manifest?.capabilities).toEqual(providerCapabilities());
+    expect(first.manifest?.limits).toEqual({ max_invoke_bytes: 1048576, max_result_bytes: 8388608 });
+    initial.socket.close();
+    await waitFor(() => initial.socket.state === 'closed');
+
+    const second = await TestGateway.create({ token: first.token });
+    gateways.push(second);
+    const again = openSocket(second, { actions });
+    await again.connecting;
+    expect(again.socket.state).toBe('ready');
+    await expect(second.invoke('system.info.info')).resolves.toEqual({
+      browser_family: 'Chrome',
+      browser_version: '157.0.0.0',
+    });
   });
 
   it('rejects an invalid or missing pairing token before opening a socket', async () => {

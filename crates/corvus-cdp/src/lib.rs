@@ -17,5 +17,8 @@ pub use endpoint::{
     is_loopback_host, validate_descriptor, validate_http_endpoint, validate_ws_endpoint,
 };
 pub use error::CdpError;
-pub use tools::{is_cdp_tool, CDP_TOOL_NAMES};
+pub use tools::{
+    is_cdp_tool, p2_capability_actions, p2_capability_groups, P2ActionError, CDP_TOOL_NAMES,
+    P2_ACTIONS, P2_GROUPS,
+};
 pub use types::{CdpEvent, CdpEvents, CdpStatus, CdpTarget};

@@ -2,30 +2,31 @@
 import { computed, watchEffect } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { NAlert, NButton, NCard, NDescriptions, NDescriptionsItem, NSpace, NTag, NText } from 'naive-ui';
-import { DEFAULT_DAEMON_URL } from '../../shared/storage/daemon-url';
-import { localizedErrorText, policyDeniedText, type PolicyTranslate } from '../shared/policy-denied';
 import { useSessionViewModel } from '../shared/viewmodels/session';
 
 const { t } = useI18n({ useScope: 'global' });
-const { state, status, connected, loading, error, refresh, openOptions } = useSessionViewModel();
+const { state, status, connected, loading, error, browser, refresh, openOptions } = useSessionViewModel();
 
-const statusLabel = computed(() => String(t('status.' + status.value)));
-const daemonUrl = computed(() => state.value?.wsUrl || DEFAULT_DAEMON_URL);
-const browserLabel = computed(() => state.value?.browserId || String(t('common.notConnected')));
-const cdpLabel = computed(() => {
-  const cdp = state.value?.cdp;
-  if (!cdp) return String(t('common.notDetected'));
-  return cdp.available
-    ? cdp.browser || cdp.endpoint || String(t('common.available'))
-    : cdp.reason || String(t('common.unavailable'));
+const statusLabel = computed(() => {
+  const key = 'status.' + status.value;
+  const translated = String(t(key));
+  return translated === key ? status.value : translated;
+});
+const baseUrl = computed(() => state.value?.base_url || 'ws://127.0.0.1:7330');
+const browserLabel = computed(() => {
+  const info = browser.value;
+  if (!info) return String(t('common.notConnected'));
+  return info.family + '/' + info.version;
+});
+const errorText = computed(() => {
+  if (error.value) return error.value;
+  return state.value?.last_error ? state.value.last_error.message : '';
 });
 const versionLabel = computed(() => String(t('app.version', { version: state.value?.version || '' })));
-const translate = t as unknown as PolicyTranslate;
-const policyDeniedMessage = computed(() => policyDeniedText(state.value?.lastPolicyDenied, translate));
-const errorText = computed(() => localizedErrorText(error.value || state.value?.lastError, translate));
-const statusType = computed<'success' | 'warning' | 'default'>(() => {
+const statusType = computed<'success' | 'warning' | 'error' | 'default'>(() => {
   if (connected.value) return 'success';
-  return status.value === 'connecting' ? 'warning' : 'default';
+  if (status.value === 'connecting') return 'warning';
+  return status.value === 'error' ? 'error' : 'default';
 });
 
 watchEffect(() => {
@@ -41,20 +42,16 @@ watchEffect(() => {
 
     <n-space vertical :size="10">
       <n-descriptions label-placement="left" :column="1" size="small" bordered>
-        <n-descriptions-item :label="t('common.daemon')">
-          <n-text code>{{ daemonUrl }}</n-text>
+        <n-descriptions-item :label="t('options.baseUrl')">
+          <n-text code>{{ baseUrl }}</n-text>
         </n-descriptions-item>
-        <n-descriptions-item :label="t('common.browser')">{{ browserLabel }}</n-descriptions-item>
-        <n-descriptions-item :label="t('common.cdp')">{{ cdpLabel }}</n-descriptions-item>
+        <n-descriptions-item :label="t('options.browser')">{{ browserLabel }}</n-descriptions-item>
+        <n-descriptions-item :label="t('options.token')">
+          {{ state?.token_saved ? t('options.tokenPresent') : t('options.tokenMissing') }}
+        </n-descriptions-item>
       </n-descriptions>
 
-      <n-alert v-if="policyDeniedMessage" type="error" :show-icon="false">
-        {{ policyDeniedMessage }}
-      </n-alert>
-
-      <n-alert v-if="errorText" type="warning" :show-icon="false">
-        {{ errorText }}
-      </n-alert>
+      <n-alert v-if="errorText" type="warning" :show-icon="false">{{ errorText }}</n-alert>
 
       <n-space justify="space-between">
         <n-button size="small" @click="openOptions">{{ t('common.settings') }}</n-button>

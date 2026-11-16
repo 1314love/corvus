@@ -32,9 +32,29 @@ pub enum WorkerError {
     /// The requested action is unavailable.
     #[error("worker capability is unavailable: {0}")]
     CapabilityUnavailable(String),
+    /// A requested tab or element does not exist.
+    #[error("worker target was not found: {0}")]
+    NotFound(String),
+    /// The page could not complete the requested navigation.
+    #[error("worker navigation failed: {0}")]
+    NavigationFailed(String),
+    /// The operation failed without a more specific classification.
+    #[error("worker operation failed: {0}")]
+    Internal(String),
     /// A CDP operation failed.
     #[error("worker CDP error: {0}")]
     Cdp(String),
+    /// A typed action failure whose message is already safe to show callers.
+    ///
+    /// Unlike the other variants this message is sent verbatim, so it never
+    /// carries transport details, paths, or internal protocol vocabulary.
+    #[error("{message}")]
+    Action {
+        /// Stable machine code used in results.
+        code: &'static str,
+        /// Safe human-readable description.
+        message: String,
+    },
 }
 
 impl WorkerError {
@@ -46,15 +66,23 @@ impl WorkerError {
             Self::Io(_) => "TRANSPORT_DOWN",
             Self::Timeout(_) => "TIMEOUT",
             Self::ProviderLost => "PROVIDER_LOST",
+            Self::NotFound(_) => "NOT_FOUND",
+            Self::NavigationFailed(_) => "NAVIGATION_FAILED",
+            Self::Internal(_) => "INTERNAL",
             Self::BadArgs(_) => "BAD_ARGS",
             Self::CapabilityUnavailable(_) => "CAPABILITY_UNAVAILABLE",
             Self::Cdp(_) => "CDP_ERROR",
+            Self::Action { code, .. } => code,
         }
     }
 
     /// Whether a retry could reasonably succeed.
     pub fn retryable(&self) -> bool {
-        matches!(self, Self::Io(_) | Self::ProviderLost | Self::Timeout(_))
+        match self {
+            Self::Io(_) | Self::ProviderLost | Self::Timeout(_) => true,
+            Self::Action { code, .. } => matches!(*code, "TIMEOUT" | "PROVIDER_LOST"),
+            _ => false,
+        }
     }
 }
 

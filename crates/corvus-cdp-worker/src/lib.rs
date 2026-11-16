@@ -86,7 +86,7 @@ where
             false,
             Some(WorkerErrorBody {
                 code: "PROVIDER_LOST".into(),
-                message: "CDP endpoint did not connect".into(),
+                message: "the browser endpoint did not connect".into(),
                 retryable: true,
             }),
         )
@@ -107,7 +107,7 @@ where
                 false,
                 Some(WorkerErrorBody {
                     code: "CDP_ERROR".into(),
-                    message: error.to_string(),
+                    message: "the browser did not report its version".into(),
                     retryable: error.retryable(),
                 }),
             )
@@ -211,10 +211,19 @@ async fn write_ack<W: AsyncWrite + Unpin>(
         provider_id: format!("cdp-{worker_id}"),
         ok,
         browser,
-        capabilities: vec!["cdp".into()],
+        capabilities: p2_ack_capabilities(),
         error,
     };
     write_frame(writer, &serde_json::to_value(ack)?).await
+}
+
+fn p2_ack_capabilities() -> Vec<String> {
+    let mut capabilities: Vec<String> = corvus_cdp::P2_GROUPS
+        .iter()
+        .map(|(group, _)| (*group).to_string())
+        .collect();
+    capabilities.extend(corvus_cdp::p2_capability_actions());
+    capabilities
 }
 
 fn browser_from_version(value: &Value) -> WorkerBrowser {
@@ -278,9 +287,14 @@ async fn dispatch(
                 "reconnects": status.reconnects,
             }))
         }
-        _ => Err(WorkerError::BadArgs(format!(
-            "unknown worker action {action}"
-        ))),
+        action if corvus_cdp::P2_ACTIONS.contains(&action) => client
+            .worker_action(action, &args, timeout_ms(deadline, default_timeout))
+            .await
+            .map_err(p2_action_error),
+        _ => Err(WorkerError::Action {
+            code: "BAD_ARGS",
+            message: "unknown action".into(),
+        }),
     }
 }
 
@@ -290,6 +304,13 @@ fn timeout_ms(deadline: Duration, fallback: Duration) -> u64 {
 
 fn cdp_error(error: corvus_cdp::CdpError) -> WorkerError {
     WorkerError::Cdp(error.to_string())
+}
+
+fn p2_action_error(error: corvus_cdp::P2ActionError) -> WorkerError {
+    WorkerError::Action {
+        code: error.code(),
+        message: error.message().to_string(),
+    }
 }
 
 #[cfg(test)]

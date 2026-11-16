@@ -1,366 +1,360 @@
 /**
- * Offscreen document host.
+ * P2 provider-only offscreen host.
  *
- * MV3 service workers are suspended between commands, so this document owns the
- * single daemon WebSocket, the keepalive, the heartbeat and reconnect backoff.
- * The service worker remains the protocol and state owner; this file only moves
- * frames and reports transport state. It never touches chrome.storage: the
- * worker owns settings and forwards corvus.connect with the current URL.
+ * The offscreen document owns exactly one encrypted provider socket. It reads
+ * the loopback base URL and pairing token from chrome.storage.local, performs
+ * the P1 handshake and forwards capability actions to the service worker. No
+ * plaintext bridge, keepalive protocol or debugger endpoint exists here.
  */
+import { providerCapabilities } from '../background/provider-actions';
+import {
+  DAEMON_URL_STORAGE_KEY,
+  PAIRING_TOKEN_STORAGE_KEY,
+  providerBaseFromStorageValue,
+  providerEndpointFromBase,
+} from '../shared/provider/endpoint';
+import { normalizePairingToken } from '../shared/provider/token';
+import { readStorageValue } from '../shared/storage/adapter';
+import {
+  ProviderSocket,
+  ProviderSocketError,
+  type ProviderBrowserInfo,
+  type ProviderConnectionInfo,
+  type ProviderSocketState,
+} from './provider-socket';
 
-import { DEFAULT_DAEMON_URL, normalizeDaemonUrl, readDaemonUrl } from '../shared/storage/daemon-url';
+type HostStatus = 'pairing_required' | 'connecting' | 'connected' | 'disconnected' | 'error';
 
-const PROTOCOL_VERSION = 1;
-const BACKOFF_MIN_MS = 250;
-const BACKOFF_MAX_MS = 8000;
-const SW_KEEPALIVE_MS = 20000;
-const IDLE_PING_MS = 45000;
-const DEAD_SOCKET_MS = 180000;
-const HEALTH_CHECK_MS = 5000;
-const HELLO_TIMEOUT_MS = 5000;
-const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+interface HostState {
+  status: HostStatus;
+  error: { code: string; message: string } | null;
+  base_url: string;
+  provider_id: string | null;
+  server_id: string | null;
+  session_id: string | null;
+  browser: ProviderBrowserInfo | null;
+}
 
-type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+const BACKOFF_MIN_MS = 500;
+const BACKOFF_MAX_MS = 30000;
+const DEFAULT_BASE = 'ws://127.0.0.1:7330';
 
-let socket: WebSocket | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
-let healthTimer: ReturnType<typeof setInterval> | null = null;
+let socket: ProviderSocket | null = null;
+let timer: ReturnType<typeof setTimeout> | null = null;
 let attempt = 0;
-let lastFrameAt = 0;
-let lastPingAt = 0;
-let lastStatus: ConnectionStatus = 'disconnected';
-let lastError: string | null = null;
-let helloInFlight = false;
-let currentUrl = DEFAULT_DAEMON_URL;
+let manualStop = false;
+let connecting = false;
+let state: HostState = {
+  status: 'disconnected',
+  error: null,
+  base_url: DEFAULT_BASE,
+  provider_id: null,
+  server_id: null,
+  session_id: null,
+  browser: null,
+};
 
-function now(): number {
-  return Date.now();
-}
-
-function log(...args: unknown[]): void {
-  console.debug('[corvus:offscreen]', ...args);
-}
-
-function describeError(error: unknown): string {
-  if (!error) return 'unknown error';
-  if (typeof error === 'string') return error;
-  if (error instanceof Error && error.message) return error.message;
+function extensionVersion(): string {
   try {
-    return JSON.stringify(error);
+    if (typeof chrome.runtime.getManifest === 'function') {
+      const manifest = chrome.runtime.getManifest();
+      if (manifest && typeof manifest.version === 'string') return manifest.version;
+    }
   } catch {
-    return String(error);
+    // The offscreen document may not expose the manifest API.
+  }
+  return '2.0.0';
+}
+
+function browserInfo(): ProviderBrowserInfo {
+  const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
+  const family = /Edg\//.test(userAgent) ? 'Edge' : /Chrome\//.test(userAgent) ? 'Chrome' : 'Chromium';
+  const match = /(?:Chrome|Edg|Firefox)\/([0-9.]+)/.exec(userAgent);
+  return { family, version: match ? match[1] : 'unknown', profile: 'default' };
+}
+
+function messageFor(error: unknown): { code: string; message: string } {
+  const code = error instanceof ProviderSocketError ? error.code : 'INTERNAL';
+  switch (code) {
+    case 'AUTHENTICATION':
+      return { code, message: 'Pairing was rejected. Check the token.' };
+    case 'VERSION':
+      return { code, message: 'The local service did not accept the protocol version.' };
+    case 'REPLAY':
+    case 'MALFORMED':
+      return { code, message: 'The encrypted connection failed a security check.' };
+    case 'HANDSHAKE_TIMEOUT':
+    case 'TIMEOUT':
+      return { code, message: 'The local service did not finish connecting in time.' };
+    case 'SIZE':
+      return { code, message: 'The connection exceeded its size limit.' };
+    case 'BAD_ARGS':
+      return { code, message: 'The local URL is invalid.' };
+    default:
+      return { code, message: 'The local service is unavailable.' };
   }
 }
 
-function makeId(): string {
-  let time = now();
-  let out = '';
-  for (let index = 0; index < 10; index += 1) {
-    out = CROCKFORD[time % 32] + out;
-    time = Math.floor(time / 32);
-  }
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  for (const byte of bytes) out += CROCKFORD[byte % 32];
-  return out;
-}
-
-function runtimeSend(message: Record<string, unknown>): Promise<unknown> {
+function publish(next: Partial<HostState>): void {
+  state = {
+    ...state,
+    ...next,
+    base_url: next.base_url ?? state.base_url,
+  };
   try {
-    const result = chrome.runtime.sendMessage(message);
-    return Promise.resolve(result as Promise<unknown> | undefined).catch(() => undefined);
-  } catch (error) {
-    log('message to service worker failed', describeError(error));
-    return Promise.resolve(undefined);
+    void chrome.runtime.sendMessage({
+      source: 'corvus.offscreen',
+      type: 'provider.state',
+      status: state.status,
+      error: state.error,
+      base_url: state.base_url,
+      provider_id: state.provider_id,
+      server_id: state.server_id,
+      session_id: state.session_id,
+      browser: state.browser,
+    });
+  } catch {
+    // The service worker may be restarting.
   }
 }
 
-function post(message: Record<string, unknown>): void {
-  void runtimeSend({ source: 'corvus.offscreen', ...message });
-}
-
-function reportStatus(status: ConnectionStatus, error: string | null): void {
-  lastStatus = status;
-  lastError = error || null;
-  post({ type: 'status', status, lastError, url: currentUrl, at: now() });
-  log('status', status, lastError || '');
-}
-
-function clearReconnectTimer(): void {
-  if (reconnectTimer !== null) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
+function clearTimer(): void {
+  if (timer !== null) {
+    clearTimeout(timer);
+    timer = null;
   }
 }
 
-function nextDelayMs(): number {
-  const exponent = Math.min(attempt, 12);
-  const base = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** exponent);
-  const jitter = 0.75 + Math.random() * 0.5;
-  return Math.max(BACKOFF_MIN_MS, Math.min(BACKOFF_MAX_MS, Math.round(base * jitter)));
+function nextDelay(): number {
+  const base = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** Math.min(attempt, 8));
+  return Math.max(BACKOFF_MIN_MS, Math.round(base * (0.8 + Math.random() * 0.4)));
 }
 
-function scheduleReconnect(reason: string): void {
-  if (reconnectTimer !== null) return;
-  const delay = nextDelayMs();
+function scheduleReconnect(): void {
+  if (manualStop || timer !== null) return;
+  const delay = nextDelay();
   attempt += 1;
-  log('reconnect scheduled in ' + delay + ' ms (' + reason + ')');
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    connect('backoff');
+  timer = setTimeout(() => {
+    timer = null;
+    void connectNow();
   }, delay);
 }
 
-function sendFrame(frame: unknown): boolean {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    log('dropping outbound frame: socket is not open');
-    return false;
-  }
+async function forwardAction(action: string, args: Record<string, unknown>): Promise<unknown> {
+  let reply: unknown;
   try {
-    socket.send(JSON.stringify(frame));
-    return true;
-  } catch (error) {
-    log('socket send failed', describeError(error));
-    return false;
-  }
-}
-
-function connect(reason?: string, url?: string): void {
-  if (typeof url === 'string' && url.trim()) {
-    const normalized = normalizeDaemonUrl(url);
-    if (!normalized) {
-      log('ignoring invalid daemon URL', url);
-      return;
-    }
-    if (normalized !== currentUrl) {
-      currentUrl = normalized;
-      clearReconnectTimer();
-      attempt = 0;
-      if (socket) {
-        const previous = socket;
-        socket = null;
-        try {
-          previous.close(4001, 'daemon URL changed');
-        } catch (error) {
-          log('old socket close failed', describeError(error));
-        }
-      }
-    }
-  }
-
-  const state = socket ? socket.readyState : WebSocket.CLOSED;
-  if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) return;
-
-  clearReconnectTimer();
-  reportStatus('connecting', null);
-
-  let next: WebSocket;
-  try {
-    next = new WebSocket(currentUrl);
-  } catch (error) {
-    reportStatus('disconnected', describeError(error));
-    scheduleReconnect('constructor_failed');
-    return;
-  }
-
-  socket = next;
-
-  next.addEventListener('open', () => {
-    attempt = 0;
-    lastFrameAt = now();
-    lastPingAt = 0;
-    reportStatus('connected', null);
-    post({ type: 'socket_open', at: now() });
-    startTimers();
-    void sendHello();
-  });
-
-  next.addEventListener('message', (event: MessageEvent) => {
-    onSocketMessage(event);
-  });
-
-  next.addEventListener('error', () => {
-    log('socket error');
-  });
-
-  next.addEventListener('close', (event: CloseEvent) => {
-    onSocketClosed(event, next);
-  });
-
-  log('dialing', currentUrl, '(' + (reason || 'manual') + ')');
-}
-
-function onSocketMessage(event: MessageEvent): void {
-  lastFrameAt = now();
-
-  let frame: unknown;
-  try {
-    frame = JSON.parse(String(event.data));
+    reply = await chrome.runtime.sendMessage({
+      source: 'corvus.offscreen',
+      type: 'provider.action',
+      action,
+      args,
+    });
   } catch {
-    log('discarding frame that is not JSON');
-    return;
+    throw new ProviderSocketError('PROVIDER_LOST', 'the service worker did not answer');
   }
-  if (!frame || typeof frame !== 'object') return;
-
-  const record = frame as Record<string, unknown>;
-  if (record.kind === 'ping') {
-    sendFrame({ v: PROTOCOL_VERSION, id: String(record.id || makeId()), kind: 'pong' });
-    return;
+  if (reply && typeof reply === 'object' && (reply as Record<string, unknown>).ok === true) {
+    return (reply as Record<string, unknown>).value;
   }
-  if (record.kind === 'pong') return;
-
-  if (record.kind === 'hello_ack' || record.kind === 'command' || record.kind === 'event') {
-    post({ type: 'frame', frame });
-    return;
+  const error = reply && typeof reply === 'object' ? (reply as Record<string, unknown>).error : null;
+  if (error && typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    throw new ProviderSocketError(
+      typeof record.code === 'string' ? record.code : 'INTERNAL',
+      typeof record.message === 'string' ? record.message : 'provider action failed',
+    );
   }
-
-  log('ignoring inbound frame kind', record.kind);
+  throw new ProviderSocketError('PROVIDER_LOST', 'the service worker did not answer');
 }
 
-function onSocketClosed(event: CloseEvent, closedSocket: WebSocket): void {
-  if (closedSocket !== socket) return;
-  const code = typeof event.code === 'number' ? event.code : 0;
-  const reason = event.reason ? String(event.reason) : '';
-  const detail = code === 0 && !reason ? 'closed' : 'code=' + code + (reason ? ' reason=' + reason : '');
+async function connectNow(baseHint?: string, tokenHint?: string | null): Promise<void> {
+  if (connecting) return;
+  clearTimer();
+  connecting = true;
+  const previous = socket;
   socket = null;
-  stopTimers();
-  reportStatus('disconnected', detail);
-  scheduleReconnect(detail);
-}
+  if (previous) {
+    try {
+      previous.close(1000, 'reconnect');
+    } catch {
+      // The old transport is already gone.
+    }
+  }
 
-async function sendHello(): Promise<void> {
-  if (helloInFlight || !socket || socket.readyState !== WebSocket.OPEN) return;
-  helloInFlight = true;
+  let base = typeof baseHint === 'string' ? providerBaseFromStorageValue(baseHint) : DEFAULT_BASE;
+  let token: string | null = tokenHint !== undefined ? normalizePairingToken(tokenHint) : null;
+  if (baseHint === undefined || tokenHint === undefined) {
+    try {
+      const storedBase = await readStorageValue(DAEMON_URL_STORAGE_KEY);
+      const storedToken = await readStorageValue(PAIRING_TOKEN_STORAGE_KEY);
+      if (baseHint === undefined) base = providerBaseFromStorageValue(storedBase);
+      if (tokenHint === undefined) token = normalizePairingToken(storedToken);
+    } catch {
+      // Storage is unavailable; report a clean pairing state below.
+    }
+  }
+  state.base_url = base;
+  if (!token) {
+    connecting = false;
+    publish({
+      status: 'pairing_required',
+      error: null,
+      provider_id: null,
+      server_id: null,
+      session_id: null,
+      browser: null,
+    });
+    return;
+  }
+  const endpoint = providerEndpointFromBase(base);
+  if (!endpoint) {
+    connecting = false;
+    publish({ status: 'error', error: { code: 'BAD_ARGS', message: 'The local URL is invalid.' } });
+    return;
+  }
 
-  let frame: Record<string, unknown> | null = null;
+  publish({ status: 'connecting', error: null, provider_id: null, server_id: null, session_id: null, browser: null });
+  let current: ProviderSocket;
   try {
-    const reply = await Promise.race([
-      runtimeSend({ source: 'corvus.offscreen', type: 'hello_request' }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), HELLO_TIMEOUT_MS)),
-    ]);
-    if (reply && typeof reply === 'object' && 'frame' in reply) {
-      const candidate = (reply as { frame?: unknown }).frame;
-      if (candidate && typeof candidate === 'object') frame = candidate as Record<string, unknown>;
+    current = new ProviderSocket({
+      url: endpoint,
+      token,
+      browser: browserInfo(),
+      extensionVersion: extensionVersion(),
+      actions: {
+        capabilities: providerCapabilities(),
+        invokeAction: forwardAction,
+      },
+      onClose: (error) => {
+        if (socket !== current) return;
+        socket = null;
+        publish({
+          status: 'disconnected',
+          error: error ? messageFor(error) : null,
+          provider_id: null,
+          server_id: null,
+          session_id: null,
+          browser: null,
+        });
+        scheduleReconnect();
+      },
+    });
+  } catch (failure) {
+    connecting = false;
+    publish({
+      status: 'error',
+      error: messageFor(failure),
+      provider_id: null,
+      server_id: null,
+      session_id: null,
+      browser: null,
+    });
+    scheduleReconnect();
+    return;
+  }
+  socket = current;
+  try {
+    const connection: ProviderConnectionInfo = await current.connect();
+    attempt = 0;
+    connecting = false;
+    if (socket === current) {
+      publish({
+        status: 'connected',
+        error: null,
+        provider_id: connection.provider_id,
+        server_id: connection.server_id,
+        session_id: connection.session_id,
+        browser: connection.browser,
+      });
     }
   } catch (error) {
-    log('hello request failed', describeError(error));
-  }
-
-  helloInFlight = false;
-
-  if (!frame) {
-    const manifest = chrome.runtime.getManifest();
-    frame = {
-      v: PROTOCOL_VERSION,
-      id: makeId(),
-      kind: 'hello',
-      browser: 'unknown:default',
-      args: {
-        profile: 'default',
-        version: manifest.version,
-        capabilities: ['dom', 'scripting', 'debugger'],
-      },
-    };
-    log('service worker did not answer; sending a minimal hello');
-  }
-
-  if (sendFrame(frame)) log('hello sent', frame.id);
-}
-
-function startTimers(): void {
-  stopTimers();
-
-  keepaliveTimer = setInterval(() => {
-    post({ type: 'keepalive', at: now() });
-  }, SW_KEEPALIVE_MS);
-
-  healthTimer = setInterval(() => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    const idleFor = now() - lastFrameAt;
-
-    if (idleFor >= DEAD_SOCKET_MS) {
-      log('socket silent for ' + idleFor + ' ms; forcing a reconnect');
-      try {
-        socket.close(4000, 'heartbeat timeout');
-      } catch (error) {
-        log('socket close failed', describeError(error));
-      }
-      return;
+    connecting = false;
+    if (socket === current) {
+      socket = null;
+      publish({
+        status: 'error',
+        error: messageFor(error),
+        provider_id: null,
+        server_id: null,
+        session_id: null,
+        browser: null,
+      });
     }
+    scheduleReconnect();
+  }
+}
 
-    if (idleFor >= IDLE_PING_MS && now() - lastPingAt >= IDLE_PING_MS) {
-      lastPingAt = now();
-      sendFrame({ v: PROTOCOL_VERSION, id: makeId(), kind: 'ping' });
+function disconnect(): void {
+  manualStop = true;
+  clearTimer();
+  attempt = 0;
+  const current = socket;
+  socket = null;
+  if (current) {
+    try {
+      current.close(1000, 'disconnect');
+    } catch {
+      // The transport is already closed.
     }
-  }, HEALTH_CHECK_MS);
+  }
+  publish({ status: 'disconnected', error: null, provider_id: null, server_id: null, session_id: null, browser: null });
 }
 
-function stopTimers(): void {
-  if (keepaliveTimer !== null) {
-    clearInterval(keepaliveTimer);
-    keepaliveTimer = null;
-  }
-  if (healthTimer !== null) {
-    clearInterval(healthTimer);
-    healthTimer = null;
-  }
-}
-
-interface OffscreenRequest {
-  target?: string;
-  type?: string;
-  frame?: unknown;
-  url?: string;
-  reason?: string;
+function status(): ProviderSocketState | 'pairing_required' {
+  return socket ? socket.state : state.status === 'pairing_required' ? 'pairing_required' : 'closed';
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
-  if (!message || typeof message !== 'object' || (message as OffscreenRequest).target !== 'offscreen') return false;
-  const request = message as OffscreenRequest;
-
-  switch (request.type) {
-    case 'corvus.send':
-      sendResponse({ ok: sendFrame(request.frame) });
-      return false;
-    case 'corvus.connect':
-      connect(request.reason || 'service worker', request.url);
-      sendResponse({ ok: true, status: lastStatus, url: currentUrl });
-      return false;
-    case 'corvus.status_request':
-      sendResponse({ ok: true, status: lastStatus, lastError, attempt, url: currentUrl });
-      return false;
-    default:
-      sendResponse({ ok: false, error: 'unknown offscreen message' });
-      return false;
+  if (!message || typeof message !== 'object' || (message as Record<string, unknown>).target !== 'offscreen')
+    return false;
+  const type = (message as Record<string, unknown>).type;
+  if (type === 'provider.connect') {
+    manualStop = false;
+    attempt = 0;
+    const base =
+      typeof (message as Record<string, unknown>).base_url === 'string'
+        ? ((message as Record<string, unknown>).base_url as string)
+        : undefined;
+    const token =
+      typeof (message as Record<string, unknown>).token === 'string'
+        ? ((message as Record<string, unknown>).token as string)
+        : undefined;
+    void connectNow(base, token)
+      .then(() => sendResponse({ ok: true, status: status() }))
+      .catch((failure) => sendResponse({ ok: false, status: status(), error: String(failure) }));
+    return true;
   }
+  if (type === 'provider.disconnect') {
+    disconnect();
+    sendResponse({ ok: true, status: status() });
+    return false;
+  }
+  if (type === 'provider.status_request') {
+    sendResponse({ ok: true, state });
+    return false;
+  }
+  sendResponse({ ok: false, error: 'unknown offscreen message' });
+  return false;
 });
 
 self.addEventListener('online', () => {
-  log('network is online; dialing immediately');
-  attempt = 0;
-  clearReconnectTimer();
-  connect('network_online');
-});
-
-self.addEventListener('offline', () => {
-  log('network is offline');
-});
-
-async function boot(): Promise<void> {
-  try {
-    currentUrl = await readDaemonUrl();
-  } catch (error) {
-    log('daemon URL read failed', describeError(error));
-    currentUrl = DEFAULT_DAEMON_URL;
+  if (!manualStop) {
+    attempt = 0;
+    void connectNow();
   }
-  connect('offscreen_boot');
-}
+});
 
-post({ type: 'keepalive', at: now() });
-keepaliveTimer = setInterval(() => {
-  post({ type: 'keepalive', at: now() });
-}, SW_KEEPALIVE_MS);
-void boot();
+void (async () => {
+  try {
+    state.base_url = providerBaseFromStorageValue(await readStorageValue(DAEMON_URL_STORAGE_KEY));
+  } catch {
+    state.base_url = DEFAULT_BASE;
+  }
+  const token = normalizePairingToken(await readStorageValue(PAIRING_TOKEN_STORAGE_KEY).catch(() => undefined));
+  if (token) {
+    await connectNow();
+  } else {
+    publish({ status: 'pairing_required', error: null });
+  }
+})();
 
 export {};

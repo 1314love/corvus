@@ -4,7 +4,7 @@
 //! replaces. CDP-only failures use the shared error codes plus a
 //! transport:"cdp" detail block.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -70,6 +70,104 @@ pub const CDP_TOOL_NAMES: &[&str] = &[
 pub fn is_cdp_tool(name: &str) -> bool {
     CDP_TOOL_NAMES.contains(&name)
 }
+
+/// Capability groups and the atomic actions each P2 provider must expose.
+pub const P2_GROUPS: &[(&str, &[&str])] = &[
+    ("tabs", &["tabs.list", "tabs.open", "tabs.close"]),
+    ("page", &["page.navigate", "page.read", "page.snapshot"]),
+    ("input", &["input.click", "input.type"]),
+    ("capture", &["capture.viewport"]),
+];
+
+/// Every action the P2 worker accepts, including the local system query.
+pub const P2_ACTIONS: &[&str] = &[
+    "tabs.list",
+    "tabs.open",
+    "tabs.close",
+    "page.navigate",
+    "page.read",
+    "page.snapshot",
+    "input.click",
+    "input.type",
+    "capture.viewport",
+    "system.info",
+];
+
+/// Capability groups in the JSON shape returned by system.info.
+pub fn p2_capability_groups() -> Vec<Value> {
+    P2_GROUPS
+        .iter()
+        .map(|(group, actions)| {
+            json!({
+                "group": group,
+                "actions": actions,
+            })
+        })
+        .collect()
+}
+
+/// Flat action identifiers advertised in a worker acknowledgement.
+pub fn p2_capability_actions() -> Vec<String> {
+    P2_GROUPS
+        .iter()
+        .flat_map(|(_, actions)| actions.iter().map(|action| (*action).to_string()))
+        .collect()
+}
+
+/// Typed failure of one P2 worker action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum P2ActionError {
+    /// The action or its arguments are invalid.
+    BadArgs(String),
+    /// The requested tab, element or reference does not exist.
+    NotFound(String),
+    /// The page could not complete the requested navigation.
+    NavigationFailed(String),
+    /// The operation exceeded its deadline.
+    Timeout(String),
+    /// The browser connection was lost.
+    ProviderLost(String),
+    /// The browser cannot perform this action.
+    CapabilityUnavailable(String),
+    /// The browser returned an unusable result.
+    Internal(String),
+}
+
+impl P2ActionError {
+    /// Stable machine code used in worker results.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::BadArgs(_) => "BAD_ARGS",
+            Self::NotFound(_) => "NOT_FOUND",
+            Self::NavigationFailed(_) => "NAVIGATION_FAILED",
+            Self::Timeout(_) => "TIMEOUT",
+            Self::ProviderLost(_) => "PROVIDER_LOST",
+            Self::CapabilityUnavailable(_) => "CAPABILITY_UNAVAILABLE",
+            Self::Internal(_) => "INTERNAL",
+        }
+    }
+
+    /// Human-readable message that never includes transport details.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::BadArgs(message)
+            | Self::NotFound(message)
+            | Self::NavigationFailed(message)
+            | Self::Timeout(message)
+            | Self::ProviderLost(message)
+            | Self::CapabilityUnavailable(message)
+            | Self::Internal(message) => message,
+        }
+    }
+}
+
+impl std::fmt::Display for P2ActionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl std::error::Error for P2ActionError {}
 
 impl CdpClient {
     /// Execute one CDP-backed tool.
@@ -2401,6 +2499,627 @@ impl CdpClient {
         Ok(result.as_bool().unwrap_or(false))
     }
 
+    /// Execute one P2 provider action with the frozen argument contract.
+    pub async fn worker_action(
+        &self,
+        action: &str,
+        args: &Value,
+        timeout_ms: u64,
+    ) -> Result<Value, P2ActionError> {
+        let timeout = timeout_ms.clamp(1, 120_000);
+        match action {
+            "tabs.list" => self.p2_tabs_list(args, timeout).await,
+            "tabs.open" => self.p2_tabs_open(args, timeout).await,
+            "tabs.close" => self.p2_tabs_close(args, timeout).await,
+            "page.navigate" => self.p2_page_navigate(args, timeout).await,
+            "page.read" => self.p2_page_read(args, timeout).await,
+            "page.snapshot" => self.p2_page_snapshot(args, timeout).await,
+            "input.click" => self.p2_input_click(args, timeout).await,
+            "input.type" => self.p2_input_type(args, timeout).await,
+            "capture.viewport" => self.p2_capture_viewport(args, timeout).await,
+            "system.info" => self.p2_system_info(args, timeout).await,
+            _ => Err(P2ActionError::BadArgs("unknown action".into())),
+        }
+    }
+
+    async fn p2_tabs_list(&self, args: &Value, timeout: u64) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &[])?;
+        let active = self.default_target_id();
+        let mut rows: Vec<(u64, String, Value)> = Vec::new();
+        for target in self.targets() {
+            let window_id = self
+                .p2_window_id(&target.target_id, timeout.min(5_000))
+                .await;
+            rows.push((
+                window_id,
+                target.target_id.clone(),
+                json!({
+                    "tab_id": target.target_id,
+                    "window_id": window_id,
+                    "title": target.title,
+                    "url": target.url,
+                    "active": active.as_deref() == Some(target.target_id.as_str()),
+                }),
+            ));
+        }
+        rows.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        let tabs: Vec<Value> = rows.into_iter().take(200).map(|row| row.2).collect();
+        Ok(json!({ "tabs": tabs, "count": tabs.len() }))
+    }
+
+    async fn p2_tabs_open(&self, args: &Value, timeout: u64) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &["url", "active"])?;
+        let url = p2_string(args, "url")?;
+        if !p2_valid_url(&url) {
+            return Err(P2ActionError::BadArgs(
+                "url must be an http, https or about:blank address".into(),
+            ));
+        }
+        let active = p2_bool(args, "active", true)?;
+        let response = self
+            .send(
+                "Target.createTarget",
+                json!({ "url": "about:blank", "background": !active }),
+                None,
+                None,
+                Some(timeout),
+            )
+            .await
+            .map_err(p2_error)?;
+        let tab_id = response
+            .get("targetId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| P2ActionError::Internal("the browser did not open a tab".into()))?
+            .to_string();
+        self.remember_page_target(&tab_id, "about:blank");
+        if active {
+            let _ = self
+                .send(
+                    "Target.activateTarget",
+                    json!({ "targetId": tab_id }),
+                    None,
+                    None,
+                    Some(timeout.min(10_000)),
+                )
+                .await;
+            let _ = self.set_active_target(&tab_id);
+        }
+        let (session, _) = self
+            .page(&p2_page_args(Some(tab_id.as_str())), timeout)
+            .await
+            .map_err(p2_error)?;
+        let loaded_url = if url == "about:blank" {
+            "about:blank".to_string()
+        } else {
+            let page = self
+                .p2_navigate_page(&session, &url, "load", timeout)
+                .await?;
+            page.get("url")
+                .and_then(Value::as_str)
+                .unwrap_or(&url)
+                .to_string()
+        };
+        self.remember_page_target(&tab_id, &loaded_url);
+        let window_id = self.p2_window_id(&tab_id, timeout.min(5_000)).await;
+        Ok(json!({
+            "tab_id": tab_id,
+            "window_id": window_id,
+            "url": loaded_url,
+            "active": active,
+        }))
+    }
+
+    async fn p2_tabs_close(&self, args: &Value, timeout: u64) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &["tab_id"])?;
+        let tab_id = p2_string(args, "tab_id")?;
+        if !self.is_page_target(&tab_id) {
+            return Err(P2ActionError::NotFound(
+                "the requested tab was not found".into(),
+            ));
+        }
+        self.send(
+            "Target.closeTarget",
+            json!({ "targetId": tab_id }),
+            None,
+            None,
+            Some(timeout),
+        )
+        .await
+        .map_err(p2_error)?;
+        self.forget_target(&tab_id);
+        Ok(json!({ "tab_id": tab_id, "closed": true }))
+    }
+
+    async fn p2_page_navigate(&self, args: &Value, timeout: u64) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &["url", "tab_id", "wait_until", "timeout_ms"])?;
+        let url = p2_string(args, "url")?;
+        if !p2_valid_url(&url) {
+            return Err(P2ActionError::BadArgs(
+                "url must be an http, https or about:blank address".into(),
+            ));
+        }
+        let tab_id = p2_optional_string(args, "tab_id")?;
+        let wait_until =
+            p2_optional_string(args, "wait_until")?.unwrap_or_else(|| "load".to_string());
+        if wait_until != "load" && wait_until != "domcontentloaded" {
+            return Err(P2ActionError::BadArgs(
+                "wait_until must be load or domcontentloaded".into(),
+            ));
+        }
+        let requested = p2_integer(args, "timeout_ms", 30_000, 1_000, 60_000)?;
+        let navigation_timeout = timeout.min(requested);
+        let (session, target_id) = self
+            .page(&p2_page_args(tab_id.as_deref()), timeout)
+            .await
+            .map_err(p2_error)?;
+        let page = self
+            .p2_navigate_page(&session, &url, &wait_until, navigation_timeout)
+            .await?;
+        self.remember_page_target(
+            &target_id,
+            page.get("url").and_then(Value::as_str).unwrap_or(&url),
+        );
+        let mut result = page;
+        result["tab_id"] = json!(target_id);
+        Ok(result)
+    }
+
+    async fn p2_page_read(&self, args: &Value, timeout: u64) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &["tab_id", "mode", "selector", "max_chars"])?;
+        let tab_id = p2_optional_string(args, "tab_id")?;
+        let mode = p2_optional_string(args, "mode")?.unwrap_or_else(|| "text".to_string());
+        if mode != "text" && mode != "html" {
+            return Err(P2ActionError::BadArgs("mode must be text or html".into()));
+        }
+        let selector = p2_optional_string(args, "selector")?;
+        let max_chars = p2_integer(args, "max_chars", 20_000, 1_000, 200_000)? as usize;
+        let (session, target_id) = self
+            .page(&p2_page_args(tab_id.as_deref()), timeout)
+            .await
+            .map_err(p2_error)?;
+        let expression = if let Some(selector) = selector.as_deref() {
+            let selector = js_string(selector);
+            if mode == "text" {
+                format!(
+                    "(() => {{ const node = document.querySelector({selector}); if (!node) return null; return {{ url: location.href, content: (node.innerText ?? node.textContent ?? '') }}; }})()"
+                )
+            } else {
+                format!(
+                    "(() => {{ const node = document.querySelector({selector}); if (!node) return null; return {{ url: location.href, content: (node.outerHTML ?? '') }}; }})()"
+                )
+            }
+        } else if mode == "text" {
+            "(() => ({ url: location.href, content: (document.body ? (document.body.innerText ?? '') : '') }))()".to_string()
+        } else {
+            "(() => ({ url: location.href, content: (document.documentElement ? document.documentElement.outerHTML : '') }))()".to_string()
+        };
+        let value = self
+            .eval_value(&session, &expression, false)
+            .await
+            .map_err(p2_error)?;
+        if value.is_null() {
+            return Err(P2ActionError::NotFound(
+                "the selector did not match an element".into(),
+            ));
+        }
+        let content = value
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let (content, truncated) = truncate(content, max_chars);
+        let url = value
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        Ok(json!({
+            "tab_id": target_id,
+            "url": url,
+            "mode": mode,
+            "content": content,
+            "truncated": truncated,
+        }))
+    }
+
+    async fn p2_page_snapshot(&self, args: &Value, timeout: u64) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &["tab_id", "max_nodes", "include_hidden"])?;
+        let tab_id = p2_optional_string(args, "tab_id")?;
+        let max_nodes = p2_integer(args, "max_nodes", 500, 50, 2_000)? as usize;
+        let include_hidden = p2_bool(args, "include_hidden", false)?;
+        let mut snapshot_args = json!({
+            "format": "json",
+            "mode": "full",
+            "include_bbox": true,
+            "max_nodes": max_nodes,
+        });
+        if let Some(tab_id) = tab_id.as_deref() {
+            snapshot_args["tab_id"] = json!(tab_id);
+        }
+        let snapshot = self.snapshot_tool(&snapshot_args).await.map_err(p2_error)?;
+        let mut truncated = snapshot
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut nodes: Vec<Value> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for node in snapshot
+            .get("nodes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let Some(reference) = node.get("ref").and_then(Value::as_str) else {
+                continue;
+            };
+            seen.insert(reference.to_string());
+            let mut item = json!({
+                "ref": reference,
+                "role": node.get("role").cloned().unwrap_or_else(|| json!("")),
+                "name": node.get("name").cloned().unwrap_or_else(|| json!("")),
+            });
+            if let Some(value) = node.get("value").and_then(Value::as_str) {
+                if !value.is_empty() {
+                    item["value"] = json!(value);
+                }
+            }
+            if let Some(bbox) = node.get("bbox") {
+                item["bbox"] = bbox.clone();
+            }
+            nodes.push(item);
+            if nodes.len() >= max_nodes {
+                if snapshot
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .is_some_and(|all| all.len() > nodes.len())
+                {
+                    truncated = true;
+                }
+                break;
+            }
+        }
+        if include_hidden {
+            let (session, _) = self
+                .page(&p2_page_args(tab_id.as_deref()), timeout)
+                .await
+                .map_err(p2_error)?;
+            let ax = self
+                .send(
+                    "Accessibility.getFullAXTree",
+                    json!({}),
+                    Some(&session),
+                    None,
+                    Some(timeout),
+                )
+                .await
+                .map_err(p2_error)?;
+            for node in ax
+                .get("nodes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                if nodes.len() >= max_nodes {
+                    truncated = true;
+                    break;
+                }
+                if !node
+                    .get("ignored")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let Some(backend_id) = node.get("backendDOMNodeId").and_then(Value::as_i64) else {
+                    continue;
+                };
+                let reference = format!("@c{backend_id}");
+                if !seen.insert(reference.clone()) {
+                    continue;
+                }
+                let role = node
+                    .pointer("/role/value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if role == "script" || role == "style" {
+                    continue;
+                }
+                let name = node
+                    .pointer("/name/value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let value = node
+                    .pointer("/value/value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if name.is_empty() && value.is_empty() {
+                    continue;
+                }
+                let mut item = json!({ "ref": reference, "role": role, "name": name });
+                if !value.is_empty() {
+                    item["value"] = json!(value);
+                }
+                nodes.push(item);
+            }
+        }
+        let url = snapshot
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let tab_id = snapshot
+            .get("tab_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        Ok(json!({
+            "tab_id": tab_id,
+            "url": url,
+            "nodes": nodes,
+            "truncated": truncated,
+        }))
+    }
+
+    async fn p2_input_click(&self, args: &Value, timeout: u64) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &["ref", "tab_id"])?;
+        let reference = p2_string(args, "ref")?;
+        let tab_id = p2_optional_string(args, "tab_id")?;
+        let (_, target_id) = self
+            .page(&p2_page_args(tab_id.as_deref()), timeout)
+            .await
+            .map_err(p2_error)?;
+        let click_args = json!({ "target": reference, "tab_id": target_id });
+        self.click_tool(&click_args).await.map_err(p2_error)?;
+        Ok(json!({
+            "tab_id": target_id,
+            "ref": reference,
+            "clicked": true,
+        }))
+    }
+
+    async fn p2_input_type(&self, args: &Value, timeout: u64) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &["ref", "text", "clear", "submit", "tab_id"])?;
+        let reference = p2_string(args, "ref")?;
+        let text = args
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| P2ActionError::BadArgs("text must be a string".into()))?
+            .to_string();
+        if text.encode_utf16().count() > 20_000 {
+            return Err(P2ActionError::BadArgs(
+                "text must be at most 20000 UTF-16 code units".into(),
+            ));
+        }
+        let clear = p2_bool(args, "clear", true)?;
+        let submit = p2_bool(args, "submit", false)?;
+        let tab_id = p2_optional_string(args, "tab_id")?;
+        let (session, target_id) = self
+            .page(&p2_page_args(tab_id.as_deref()), timeout)
+            .await
+            .map_err(p2_error)?;
+        let typed_chars = text.encode_utf16().count();
+        let type_args = json!({
+            "target": reference,
+            "text": text,
+            "clear": clear,
+            "tab_id": target_id,
+        });
+        self.type_tool(&type_args).await.map_err(p2_error)?;
+        let mut submitted = false;
+        if submit {
+            for event in ["keyDown", "keyUp"] {
+                self.send(
+                    "Input.dispatchKeyEvent",
+                    json!({
+                        "type": event,
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13,
+                    }),
+                    Some(&session),
+                    None,
+                    Some(timeout.min(10_000)),
+                )
+                .await
+                .map_err(p2_error)?;
+            }
+            submitted = true;
+        }
+        Ok(json!({
+            "tab_id": target_id,
+            "ref": reference,
+            "typed_chars": typed_chars,
+            "submitted": submitted,
+        }))
+    }
+
+    async fn p2_capture_viewport(
+        &self,
+        args: &Value,
+        timeout: u64,
+    ) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &["tab_id", "format", "quality"])?;
+        let tab_id = p2_optional_string(args, "tab_id")?;
+        let format = p2_optional_string(args, "format")?.unwrap_or_else(|| "png".to_string());
+        if format != "png" && format != "jpeg" {
+            return Err(P2ActionError::BadArgs("format must be png or jpeg".into()));
+        }
+        let quality = p2_integer(args, "quality", 80, 1, 100)?;
+        let budget = timeout.min(15_000);
+        let (session, target_id) = self
+            .page(&p2_page_args(tab_id.as_deref()), budget)
+            .await
+            .map_err(p2_error)?;
+        let url = self
+            .eval_value(&session, "location.href", false)
+            .await
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let mut params = json!({
+            "format": format,
+            "fromSurface": true,
+            "captureBeyondViewport": false,
+        });
+        if format != "png" {
+            params["quality"] = json!(quality);
+        }
+        let captured = self
+            .send(
+                "Page.captureScreenshot",
+                params,
+                Some(&session),
+                None,
+                Some(budget),
+            )
+            .await
+            .map_err(p2_error)?;
+        let data = captured
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| P2ActionError::Internal("the browser returned no image".into()))?
+            .to_string();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&data)
+            .map_err(|_| P2ActionError::Internal("the browser returned an invalid image".into()))?;
+        if bytes.len() > 8_388_608 {
+            return Err(P2ActionError::Internal(
+                "the screenshot exceeds the size limit".into(),
+            ));
+        }
+        let (width, height) = p2_image_dimensions(&format, &bytes).ok_or_else(|| {
+            P2ActionError::Internal("the screenshot dimensions are unavailable".into())
+        })?;
+        let mime_type = if format == "png" {
+            "image/png"
+        } else {
+            "image/jpeg"
+        };
+        Ok(json!({
+            "tab_id": target_id,
+            "url": url,
+            "format": format,
+            "mime_type": mime_type,
+            "width": width,
+            "height": height,
+            "data": data,
+        }))
+    }
+
+    async fn p2_system_info(&self, args: &Value, timeout: u64) -> Result<Value, P2ActionError> {
+        p2_check_args(args, &[])?;
+        let version = self
+            .send(
+                "Browser.getVersion",
+                json!({}),
+                None,
+                None,
+                Some(timeout.min(5_000)),
+            )
+            .await
+            .map_err(p2_error)?;
+        let product = version
+            .get("product")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let (family, browser_version) = product.split_once('/').unwrap_or((product, "unknown"));
+        Ok(json!({
+            "browser_family": family,
+            "browser_version": browser_version,
+            "capabilities": p2_capability_groups(),
+            "limits": {
+                "max_invoke_bytes": 1_048_576,
+                "max_result_bytes": 8_388_608,
+            },
+        }))
+    }
+
+    async fn p2_window_id(&self, target_id: &str, timeout: u64) -> u64 {
+        self.send(
+            "Browser.getWindowForTarget",
+            json!({ "targetId": target_id }),
+            None,
+            None,
+            Some(timeout),
+        )
+        .await
+        .ok()
+        .and_then(|value| value.get("windowId").and_then(Value::as_u64))
+        .unwrap_or(0)
+    }
+
+    async fn p2_navigate_page(
+        &self,
+        session: &str,
+        url: &str,
+        wait_until: &str,
+        timeout: u64,
+    ) -> Result<Value, P2ActionError> {
+        let response = self
+            .send(
+                "Page.navigate",
+                json!({ "url": url }),
+                Some(session),
+                None,
+                Some(timeout),
+            )
+            .await
+            .map_err(p2_navigation_error)?;
+        if response
+            .get("errorText")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty())
+        {
+            return Err(P2ActionError::NavigationFailed(
+                "page navigation failed".into(),
+            ));
+        }
+        let state = "(() => ({ readyState: document.readyState, url: location.href, title: document.title }))()";
+        let deadline = Instant::now() + Duration::from_millis(timeout);
+        loop {
+            match self.eval_value(session, state, false).await {
+                Ok(value) => {
+                    let ready = value
+                        .get("readyState")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let complete = if wait_until == "domcontentloaded" {
+                        ready == "interactive" || ready == "complete"
+                    } else {
+                        ready == "complete"
+                    };
+                    if complete {
+                        let final_url = value
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .unwrap_or(url)
+                            .to_string();
+                        let title = value
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let mut result = json!({ "url": final_url, "status": "loaded" });
+                        if !title.is_empty() {
+                            result["title"] = json!(title);
+                        }
+                        return Ok(result);
+                    }
+                }
+                Err(error) if is_transient_context_error(&error) => {}
+                Err(error) => return Err(p2_navigation_error(error)),
+            }
+            if Instant::now() >= deadline {
+                return Err(P2ActionError::Timeout("page navigation timed out".into()));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     async fn page(&self, args: &Value, timeout: u64) -> Result<(String, String), CdpError> {
         if !self.is_connected() {
             return Err(CdpError::NotConnected);
@@ -3769,6 +4488,201 @@ fn is_transient_context_error(error: &CdpError) -> bool {
         }
         _ => false,
     }
+}
+
+fn p2_check_args(args: &Value, allowed: &[&str]) -> Result<(), P2ActionError> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| P2ActionError::BadArgs("arguments must be an object".into()))?;
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(P2ActionError::BadArgs("unknown argument".into()));
+    }
+    Ok(())
+}
+
+fn p2_string(args: &Value, key: &str) -> Result<String, P2ActionError> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| P2ActionError::BadArgs(format!("{key} must be a non-empty string")))
+}
+
+fn p2_optional_string(args: &Value, key: &str) -> Result<Option<String>, P2ActionError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.clone())),
+        Some(_) => Err(P2ActionError::BadArgs(format!(
+            "{key} must be a non-empty string"
+        ))),
+    }
+}
+
+fn p2_bool(args: &Value, key: &str, default: bool) -> Result<bool, P2ActionError> {
+    match args.get(key) {
+        None => Ok(default),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(P2ActionError::BadArgs(format!("{key} must be a boolean"))),
+    }
+}
+
+fn p2_integer(
+    args: &Value,
+    key: &str,
+    default: u64,
+    minimum: u64,
+    maximum: u64,
+) -> Result<u64, P2ActionError> {
+    let value = match args.get(key) {
+        None => return Ok(default),
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| P2ActionError::BadArgs(format!("{key} must be an integer")))?,
+    };
+    if value < minimum || value > maximum {
+        return Err(P2ActionError::BadArgs(format!(
+            "{key} must be between {minimum} and {maximum}"
+        )));
+    }
+    Ok(value)
+}
+
+fn p2_valid_url(url: &str) -> bool {
+    if url == "about:blank" {
+        return true;
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    if rest.is_empty()
+        || rest
+            .chars()
+            .any(|value| value.is_whitespace() || value.is_control())
+    {
+        return false;
+    }
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    !rest[..host_end].is_empty()
+}
+
+fn p2_page_args(tab_id: Option<&str>) -> Value {
+    tab_id.map_or_else(|| json!({}), |tab_id| json!({ "tab_id": tab_id }))
+}
+
+fn p2_navigation_error(error: CdpError) -> P2ActionError {
+    match error {
+        CdpError::InvalidArgument(_) => P2ActionError::BadArgs("the argument is not valid".into()),
+        CdpError::Timeout(_) => P2ActionError::Timeout("page navigation timed out".into()),
+        CdpError::Transport(_) | CdpError::NotConnected => {
+            P2ActionError::ProviderLost("browser connection is unavailable".into())
+        }
+        _ => P2ActionError::NavigationFailed("page navigation failed".into()),
+    }
+}
+
+fn p2_error(error: CdpError) -> P2ActionError {
+    match error {
+        CdpError::InvalidArgument(_) => P2ActionError::BadArgs("the argument is not valid".into()),
+        CdpError::InvalidEndpoint(_) => {
+            P2ActionError::BadArgs("the browser endpoint is not usable".into())
+        }
+        CdpError::TargetNotFound(_) | CdpError::DialogNotFound => {
+            P2ActionError::NotFound("the requested element or tab was not found".into())
+        }
+        CdpError::NotInteractable(_) => {
+            P2ActionError::NotFound("the element cannot receive input".into())
+        }
+        CdpError::Timeout(_) => P2ActionError::Timeout("browser operation timed out".into()),
+        CdpError::Transport(_) | CdpError::NotConnected => {
+            P2ActionError::ProviderLost("browser connection is unavailable".into())
+        }
+        CdpError::Unsupported(_) => {
+            P2ActionError::CapabilityUnavailable("the browser cannot perform this action".into())
+        }
+        CdpError::Protocol(_) | CdpError::Remote { .. } => {
+            P2ActionError::Internal("browser operation failed".into())
+        }
+    }
+}
+
+fn p2_image_dimensions(format: &str, bytes: &[u8]) -> Option<(u32, u32)> {
+    match format {
+        "png" => p2_png_dimensions(bytes),
+        "jpeg" => p2_jpeg_dimensions(bytes),
+        _ => None,
+    }
+}
+
+fn p2_png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[0..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some((width, height))
+}
+
+fn p2_jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return None;
+    }
+    let mut index = 2;
+    while index + 4 <= bytes.len() {
+        if bytes[index] != 0xFF {
+            index += 1;
+            continue;
+        }
+        let mut marker_index = index + 1;
+        while marker_index < bytes.len() && bytes[marker_index] == 0xFF {
+            marker_index += 1;
+        }
+        if marker_index >= bytes.len() {
+            return None;
+        }
+        let marker = bytes[marker_index];
+        index = marker_index + 1;
+        if marker == 0xD8 || marker == 0xD9 || (0xD0..=0xD7).contains(&marker) {
+            continue;
+        }
+        if index + 2 > bytes.len() {
+            return None;
+        }
+        let length = u16::from_be_bytes([bytes[index], bytes[index + 1]]) as usize;
+        if length < 2 || index + length > bytes.len() {
+            return None;
+        }
+        if matches!(
+            marker,
+            0xC0 | 0xC1
+                | 0xC2
+                | 0xC3
+                | 0xC5
+                | 0xC6
+                | 0xC7
+                | 0xC9
+                | 0xCA
+                | 0xCB
+                | 0xCD
+                | 0xCE
+                | 0xCF
+        ) && index + 7 <= bytes.len()
+        {
+            let height = u16::from_be_bytes([bytes[index + 3], bytes[index + 4]]) as u32;
+            let width = u16::from_be_bytes([bytes[index + 5], bytes[index + 6]]) as u32;
+            if width > 0 && height > 0 {
+                return Some((width, height));
+            }
+            return None;
+        }
+        index += length;
+    }
+    None
 }
 
 fn required_string(args: &Value, key: &str) -> Result<String, CdpError> {

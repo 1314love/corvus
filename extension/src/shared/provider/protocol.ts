@@ -545,5 +545,5 @@ export function parseProviderSystemInfo(value: unknown): ProviderSystemInfo {
 }
 
 export function parseProviderTabs(value: unknown): ProviderTab[] {
-  return parseValue(providerTabsSchema, value, 'tabs.read result');
+  return parseValue(providerTabsSchema, value, 'tabs.list result');
 }

@@ -1,56 +1,38 @@
-/** Typed UI Port RPC shared by popup, options and the background worker. */
-
-import type { CdpProbeResult } from '../cdp-endpoint';
+/** Typed UI Port RPC shared by popup, options and the provider-only service worker. */
 
 export const UI_PORT_NAME = 'corvus.ui';
 
-export interface CdpUiState {
-  available: boolean;
-  endpoint: string | null;
-  webSocketDebuggerUrl: string | null;
-  browser: string | null;
-  browserFamily: string | null;
-  expectedBrowserFamily: string | null;
-  familyMatch: boolean | null;
-  protocolVersion: string | null;
-  source: 'auto' | 'configured';
-  reason: string | null;
-  detected_at: number | null;
+export interface ProviderUiCapability {
+  id: string;
+  version: number;
+  actions: string[];
 }
 
-export interface DebuggerChannelState {
-  managed: true;
-  attached_tabs: string[];
-}
-
-export interface PolicyDeniedUiState {
-  code: 'POLICY_DENIED';
-  reason: string | null;
-}
-
-export interface UiState {
-  status: string;
-  connected: boolean;
-  browserId: string | null;
-  daemonVersion: string | null;
-  lastError: string | null;
-  lastPolicyDenied?: PolicyDeniedUiState | null;
-  wsUrl: string;
-  cdpEndpoint: string;
-  cdp: CdpUiState | null;
+export interface ProviderUiBrowser {
+  family: string;
   version: string;
-  capabilities: string[];
-  debuggerChannel: DebuggerChannelState;
+  profile: string;
+}
+
+export interface ProviderUiState {
+  status: 'pairing_required' | 'connecting' | 'connected' | 'disconnected' | 'error';
+  connected: boolean;
+  base_url: string;
+  token_saved: boolean;
+  provider_id: string | null;
+  server_id: string | null;
+  session_id: string | null;
+  browser: ProviderUiBrowser | null;
+  last_error: { code: string; message: string } | null;
+  version: string;
+  capabilities: ProviderUiCapability[];
 }
 
 export interface UiRequestPayloads {
   'corvus.get_state': Record<string, never>;
-  'corvus.cdp_refresh': Record<string, never>;
-  'corvus.cdp_save': { endpoint: string };
-  'corvus.cdp_reset': Record<string, never>;
-  'corvus.daemon_save': { url: string };
-  'corvus.daemon_reset': Record<string, never>;
-  'corvus.reconnect': Record<string, never>;
+  'corvus.save_and_connect': { base_url: string; token?: string };
+  'corvus.connect': Record<string, never>;
+  'corvus.disconnect': Record<string, never>;
 }
 
 export type UiRequestType = keyof UiRequestPayloads;
@@ -61,13 +43,8 @@ export interface UiPortRequest<K extends UiRequestType = UiRequestType> {
   payload: UiRequestPayloads[K];
 }
 
-export type UiReply = { ok: true; state: UiState } | { ok: false; error: string };
+export type UiReply = { ok: true; state: ProviderUiState } | { ok: false; error: string };
 
 export type UiPortResponse = ({ id: string } & UiReply) | { id: string; ok: false; error: string };
 
 export type UiMethod = keyof UiRequestPayloads;
-
-export type CdpDescriptor = Pick<CdpProbeResult, 'available' | 'endpoint' | 'browser' | 'source' | 'reason'> & {
-  webSocketDebuggerUrl: string | null;
-  familyMatch: boolean | null;
-};

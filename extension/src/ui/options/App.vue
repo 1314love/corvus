@@ -14,7 +14,6 @@ import {
   NText,
 } from 'naive-ui';
 import { changeLocale, type LocaleCode } from '../shared/i18n';
-import { localizedErrorText, policyDeniedText, type PolicyTranslate } from '../shared/policy-denied';
 import { useSessionViewModel } from '../shared/viewmodels/session';
 
 const { t, locale } = useI18n({ useScope: 'global' });
@@ -22,48 +21,44 @@ const {
   state,
   status,
   connected,
-  cdpAvailable,
   loading,
   error,
-  daemonDraft,
-  cdpDraft,
-  daemonError,
-  cdpError,
+  tokenSaved,
+  browser,
+  baseDraft,
+  tokenDraft,
+  baseError,
   notice,
   busy,
-  daemonDefault,
-  cdpDefault,
-  saveDaemon,
-  resetDaemon,
-  saveCdp,
-  resetCdp,
-  detectCdp,
-  reconnect,
+  baseDefault,
+  refresh,
+  saveAndConnect,
+  connect,
+  disconnect,
 } = useSessionViewModel();
 
-const cdp = computed(() => state.value?.cdp || null);
-const capabilities = computed(() => state.value?.capabilities || []);
-const statusLabel = computed(() => String(t('status.' + status.value)));
-const statusType = computed<'success' | 'warning' | 'default'>(() => {
-  if (connected.value) return 'success';
-  return status.value === 'connecting' ? 'warning' : 'default';
-});
-const familyLabel = computed(() => {
-  if (!cdp.value) return String(t('family.unknown'));
-  if (cdp.value.familyMatch === null) return String(t('family.unknown'));
-  return String(t(cdp.value.familyMatch ? 'family.match' : 'family.mismatch'));
-});
-const sourceLabel = computed(() => {
-  const source = cdp.value?.source;
-  if (!source) return String(t('source.unknown'));
-  const key = 'source.' + source;
+const statusLabel = computed(() => {
+  const key = 'status.' + status.value;
   const translated = String(t(key));
-  return translated === key ? source : translated;
+  return translated === key ? status.value : translated;
+});
+const statusType = computed<'success' | 'warning' | 'error' | 'default'>(() => {
+  if (connected.value) return 'success';
+  if (status.value === 'connecting') return 'warning';
+  return status.value === 'error' ? 'error' : 'default';
+});
+const browserLabel = computed(() => {
+  const info = browser.value;
+  if (!info) return String(t('common.notConnected'));
+  return info.family + '/' + info.version;
+});
+const baseErrorText = computed(() => {
+  if (!baseError.value) return '';
+  const key = baseError.value;
+  const translated = String(t(key));
+  return translated === key ? baseError.value : translated;
 });
 const versionLabel = computed(() => String(t('app.version', { version: state.value?.version || '' })));
-const translate = t as unknown as PolicyTranslate;
-const policyDeniedMessage = computed(() => policyDeniedText(state.value?.lastPolicyDenied, translate));
-const errorText = computed(() => localizedErrorText(error.value, translate));
 
 async function selectLocale(next: LocaleCode): Promise<void> {
   await changeLocale(next);
@@ -82,10 +77,7 @@ watchEffect(() => {
       </template>
 
       <n-space vertical :size="16">
-        <n-alert v-if="policyDeniedMessage" type="error" :show-icon="false">
-          {{ policyDeniedMessage }}
-        </n-alert>
-        <n-alert v-if="errorText" type="error" :show-icon="false">{{ errorText }}</n-alert>
+        <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
         <n-alert v-if="notice" type="success" :show-icon="false">{{ t(notice) }}</n-alert>
 
         <section>
@@ -113,78 +105,35 @@ watchEffect(() => {
         <n-divider />
 
         <section>
-          <h2>{{ t('options.daemonConnection') }}</h2>
-          <n-text depth="3">
-            {{ t('options.daemonHelpBefore') }}
-            <n-text code>{{ daemonDefault }}</n-text>
-            {{ t('options.daemonHelpAfter') }}
-          </n-text>
+          <h2>{{ t('options.pairing') }}</h2>
+          <n-text depth="3"
+            >{{ t('options.pairingHelp') }} <n-text code>{{ baseDefault }}</n-text></n-text
+          >
           <n-space vertical :size="8" class="form">
             <n-input
-              v-model:value="daemonDraft"
-              placeholder="ws://127.0.0.1:7330"
-              :status="daemonError ? 'error' : undefined"
-              @keyup.enter="saveDaemon"
+              v-model:value="baseDraft"
+              :placeholder="baseDefault"
+              :status="baseError ? 'error' : undefined"
+              @keyup.enter="saveAndConnect"
             />
-            <n-text v-if="daemonError" type="error">{{ t(daemonError) }}</n-text>
-            <n-space>
-              <n-button type="primary" :loading="busy" @click="saveDaemon">{{ t('common.save') }}</n-button>
-              <n-button :disabled="busy" @click="resetDaemon">{{ t('common.resetToDefault') }}</n-button>
-              <n-button :disabled="busy" @click="reconnect">{{ t('common.reconnect') }}</n-button>
-            </n-space>
-          </n-space>
-        </section>
-
-        <n-divider />
-
-        <section>
-          <h2>{{ t('options.browserCdpEndpoint') }}</h2>
-          <n-text depth="3">
-            {{ t('options.cdpHelpBefore') }}
-            <n-text code>auto</n-text>
-            {{ t('options.cdpHelpMid') }}
-            <n-text code>/json/version</n-text>
-            {{ t('options.cdpHelpAfter') }}
-          </n-text>
-          <n-space vertical :size="8" class="form">
             <n-input
-              v-model:value="cdpDraft"
-              :placeholder="cdpDefault"
-              :status="cdpError ? 'error' : undefined"
-              @keyup.enter="saveCdp"
+              v-model:value="tokenDraft"
+              type="password"
+              show-password-on="click"
+              :placeholder="tokenSaved ? t('options.tokenSaved') : t('options.tokenPlaceholder')"
+              :status="baseError === 'validation.token' ? 'error' : undefined"
+              autocomplete="off"
+              @keyup.enter="saveAndConnect"
             />
-            <n-text v-if="cdpError" type="error">{{ t(cdpError) }}</n-text>
+            <n-text v-if="baseErrorText" type="error">{{ baseErrorText }}</n-text>
             <n-space>
-              <n-button type="primary" :loading="busy" @click="saveCdp">{{ t('common.save') }}</n-button>
-              <n-button :disabled="busy" @click="resetCdp">{{ t('common.resetToAuto') }}</n-button>
-              <n-button :disabled="busy" :loading="busy" @click="detectCdp">{{ t('common.detectNow') }}</n-button>
+              <n-button type="primary" :loading="busy" @click="saveAndConnect">{{
+                t('common.saveAndConnect')
+              }}</n-button>
+              <n-button :disabled="busy" @click="connect">{{ t('common.connect') }}</n-button>
+              <n-button :disabled="busy" @click="disconnect">{{ t('common.disconnect') }}</n-button>
             </n-space>
           </n-space>
-
-          <n-descriptions v-if="cdp" class="detected" label-placement="left" :column="1" size="small" bordered>
-            <n-descriptions-item :label="t('common.available')">
-              <n-tag size="small" :type="cdpAvailable ? 'success' : 'default'">
-                {{ cdpAvailable ? t('common.yes') : t('common.no') }}
-              </n-tag>
-            </n-descriptions-item>
-            <n-descriptions-item :label="t('options.endpoint')">
-              {{ cdp.endpoint || t('common.none') }}
-            </n-descriptions-item>
-            <n-descriptions-item :label="t('common.browser')">
-              {{ cdp.browser || t('common.unknown') }}
-            </n-descriptions-item>
-            <n-descriptions-item :label="t('options.protocol')">
-              {{ cdp.protocolVersion || t('common.unknown') }}
-            </n-descriptions-item>
-            <n-descriptions-item :label="t('options.source')">{{ sourceLabel }}</n-descriptions-item>
-            <n-descriptions-item :label="t('options.browserFamily')">
-              {{ cdp.browserFamily || t('common.unknown') }} / {{ t('common.expected') }}
-              {{ cdp.expectedBrowserFamily || t('common.unknown') }} ({{ familyLabel }})
-            </n-descriptions-item>
-            <n-descriptions-item :label="t('options.reason')">
-              {{ cdp.reason || t('common.none') }}
-            </n-descriptions-item>
-          </n-descriptions>
         </section>
 
         <n-divider />
@@ -192,29 +141,27 @@ watchEffect(() => {
         <section>
           <h2>{{ t('options.status') }}</h2>
           <n-descriptions label-placement="left" :column="1" size="small" bordered>
-            <n-descriptions-item :label="t('options.daemonUrl')">
-              <n-text code>{{ state?.wsUrl || daemonDefault }}</n-text>
+            <n-descriptions-item :label="t('options.baseUrl')">
+              <n-text code>{{ state?.base_url || baseDefault }}</n-text>
             </n-descriptions-item>
-            <n-descriptions-item :label="t('options.browserId')">
-              {{ state?.browserId || t('common.notConnected') }}
+            <n-descriptions-item :label="t('options.browser')">{{ browserLabel }}</n-descriptions-item>
+            <n-descriptions-item :label="t('options.token')">
+              {{ tokenSaved ? t('options.tokenPresent') : t('options.tokenMissing') }}
             </n-descriptions-item>
-            <n-descriptions-item :label="t('options.daemonVersion')">
-              {{ state?.daemonVersion || t('common.unknown') }}
-            </n-descriptions-item>
-            <n-descriptions-item :label="t('options.capabilities')">
-              {{ capabilities.length ? capabilities.join(', ') : t('common.none') }}
+            <n-descriptions-item :label="t('options.service')">
+              {{ state?.provider_id || t('common.notConnected') }}
             </n-descriptions-item>
             <n-descriptions-item :label="t('options.lastError')">
-              {{ state?.lastError || t('common.none') }}
+              {{ state?.last_error ? state.last_error.message : t('common.none') }}
             </n-descriptions-item>
           </n-descriptions>
         </section>
 
         <n-space justify="space-between">
           <n-text depth="3" style="font-size: 12px">{{ versionLabel }}</n-text>
-          <n-button size="small" secondary :loading="loading" @click="detectCdp">
-            {{ t('common.refreshStatus') }}
-          </n-button>
+          <n-button size="small" secondary :loading="loading" @click="refresh">{{
+            t('common.refreshStatus')
+          }}</n-button>
         </n-space>
       </n-space>
     </n-card>
@@ -234,8 +181,5 @@ h2 {
 }
 .form {
   margin-top: 10px;
-}
-.detected {
-  margin-top: 12px;
 }
 </style>

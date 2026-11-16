@@ -9,19 +9,7 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": [
-    "tabs",
-    "activeTab",
-    "scripting",
-    "storage",
-    "debugger",
-    "webRequest",
-    "downloads",
-    "alarms",
-    "offscreen",
-    "unlimitedStorage",
-    "tabGroups"
-  ],
+  "permissions": ["tabs", "activeTab", "scripting", "storage", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {

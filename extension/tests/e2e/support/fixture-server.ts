@@ -6,6 +6,25 @@ export interface FixtureServer {
   close: () => Promise<void>;
 }
 
+function p2Page(): string {
+  return [
+    '<!doctype html>',
+    '<html><body style="margin:0">',
+    '<h1 id="title">P2 fixture</h1>',
+    '<button id="action" style="position:absolute;left:10px;top:80px;width:140px;height:32px">Run action</button>',
+    '<input id="field" name="field" aria-label="Message" style="position:absolute;left:10px;top:130px;width:200px;height:24px">',
+    '<input id="secret" name="secret" type="password" aria-label="Secret" value="hunter2" style="position:absolute;left:10px;top:170px;width:200px;height:24px">',
+    '<div id="shadow-host" style="position:absolute;left:10px;top:220px;width:200px;height:40px"></div>',
+    '<script>',
+    "  document.getElementById('action').addEventListener('click', function () { this.dataset.clicked = 'yes'; });",
+    "  var shadow = document.getElementById('shadow-host').attachShadow({ mode: 'open' });",
+    '  shadow.innerHTML = \'<button id="shadow-action" style="position:absolute;left:20px;top:0;width:160px;height:32px">Shadow action</button>\';',
+    "  shadow.getElementById('shadow-action').addEventListener('click', function () { this.dataset.clicked = 'yes'; });",
+    '</script>',
+    '</body></html>',
+  ].join('\n');
+}
+
 function topPage(crossOrigin: string): string {
   return [
     '<!doctype html>',
@@ -53,6 +72,11 @@ export async function startFixtureServer(port: number): Promise<FixtureServer> {
     if (request.url === '/frames.html') {
       response.setHeader('content-type', 'text/html; charset=utf-8');
       response.end(html);
+      return;
+    }
+    if (new URL(request.url ?? '/', origin).pathname === '/p2') {
+      response.setHeader('content-type', 'text/html; charset=utf-8');
+      response.end(p2Page());
       return;
     }
     if (request.url === '/frame.html') {

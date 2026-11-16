@@ -1,0 +1,16 @@
+import { McpClient, waitForToolCount } from './mcp-client.mjs';
+import { connectProvider, loadToken } from './provider-client.mjs';
+const c = new McpClient('http://127.0.0.1:29373/mcp');
+const token = loadToken('C:/Users/Administrator/AppData/Local/Temp/corvus-v2-p2-qa/evidence/pairing-token.txt');
+await c.initialize();
+await waitForToolCount(c, 1);
+const p = await connectProvider({ url: 'ws://127.0.0.1:29373/provider/v2', token, browser: { family: 'chrome', version: '157.0.8103.78', profile: 'qa' } });
+await waitForToolCount(c, 10);
+const status = await c.call('browser_status', {});
+const tools = await c.tools();
+const required = Object.fromEntries(tools.map((t) => [t.name, t.inputSchema.required ?? null]));
+const nav = await c.call('page_navigate', { url: 'http://127.0.0.1:8835/second', tab_id: '2', wait_until: 'domcontentloaded', timeout_ms: 5000 });
+const invoke = p.invokes.find((m) => m.action === 'page.navigate') || null;
+console.log(JSON.stringify({ status: status.value, required, navigate: nav.value, navigateInvokeArgs: invoke && invoke.args }, null, 2));
+p.stopped = true; p.channel.close();
+process.exit(0);

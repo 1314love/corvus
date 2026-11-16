@@ -1,32 +1,22 @@
 import { vi } from 'vitest';
-import type { UiReply, UiState } from '../../src/shared/contracts/ui';
+import type { ProviderUiState, UiReply } from '../../src/shared/contracts/ui';
 
-export function sampleState(overrides: Partial<UiState> = {}): UiState {
+export function sampleState(overrides: Partial<ProviderUiState> = {}): ProviderUiState {
   return {
     status: 'connected',
     connected: true,
-    browserId: 'chromium:test',
-    daemonVersion: 'e2e-daemon',
-    lastError: null,
-    lastPolicyDenied: null,
-    wsUrl: 'ws://127.0.0.1:29330',
-    cdpEndpoint: 'auto',
-    cdp: {
-      available: true,
-      endpoint: 'http://127.0.0.1:9222',
-      webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test',
-      browser: 'Chrome/157.0.0.0',
-      browserFamily: 'chrome',
-      expectedBrowserFamily: 'chrome',
-      familyMatch: true,
-      protocolVersion: '1.3',
-      source: 'auto',
-      reason: null,
-      detected_at: 1,
-    },
+    base_url: 'ws://127.0.0.1:29330',
+    token_saved: true,
+    provider_id: 'provider-test',
+    server_id: 'server-test',
+    session_id: 's-test',
+    browser: { family: 'Chrome', version: '157.0.0.0', profile: 'default' },
+    last_error: null,
     version: '1.7.0',
-    capabilities: ['dom', 'scripting', 'debugger', 'cdp'],
-    debuggerChannel: { managed: true, attached_tabs: [] },
+    capabilities: [
+      { id: 'system.info', version: 1, actions: ['info'] },
+      { id: 'tabs', version: 1, actions: ['list', 'open', 'close'] },
+    ],
     ...overrides,
   };
 }
@@ -61,8 +51,14 @@ export function installFakeUiPort(
       messages.push(message);
       const reply = handler
         ? handler(message)
-        : message.type === 'corvus.daemon_save'
-          ? { ok: true as const, state: sampleState({ wsUrl: String(message.payload.url) }) }
+        : message.type === 'corvus.save_and_connect'
+          ? {
+              ok: true as const,
+              state: sampleState({
+                base_url: String(message.payload.base_url),
+                token_saved: Boolean(message.payload.token),
+              }),
+            }
           : { ok: true as const, state: sampleState() };
       queueMicrotask(() => {
         for (const listener of listeners) listener({ id: message.id, ...reply });
@@ -98,10 +94,7 @@ interface FakeStorageHarness {
   remove: ReturnType<typeof vi.fn>;
 }
 
-/**
- * Attach an in-memory chrome.storage.local to the chrome object installed by
- * installFakeUiPort. Keeps UI tests independent of a real extension profile.
- */
+/** Attach an in-memory chrome.storage.local to the chrome object installed by installFakeUiPort. */
 export function installFakeChromeStorage(initial: Record<string, unknown> = {}): FakeStorageHarness {
   const values: Record<string, unknown> = { ...initial };
   const get = vi.fn(async (keys?: string | string[] | Record<string, unknown> | null) => {

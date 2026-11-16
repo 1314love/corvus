@@ -1,10 +1,10 @@
-/** Read-only Pinia projection of the background worker state. */
+/** Read-only Pinia projection of the provider service worker state. */
 
 import { defineStore } from 'pinia';
-import type { CdpUiState, UiState } from '../../../shared/contracts/ui';
+import type { ProviderUiState } from '../../../shared/contracts/ui';
 
 interface SessionState {
-  snapshot: UiState | null;
+  snapshot: ProviderUiState | null;
   loading: boolean;
   error: string | null;
 }
@@ -18,16 +18,14 @@ export const useSessionStore = defineStore('session', {
   getters: {
     status: (state): string => state.snapshot?.status || 'unknown',
     connected: (state): boolean => state.snapshot?.connected === true,
-    daemonUrl: (state): string => state.snapshot?.wsUrl || 'ws://127.0.0.1:7330',
-    browserId: (state): string | null => state.snapshot?.browserId ?? null,
-    daemonVersion: (state): string | null => state.snapshot?.daemonVersion ?? null,
-    cdp: (state): CdpUiState | null => state.snapshot?.cdp ?? null,
-    cdpAvailable: (state): boolean => state.snapshot?.cdp?.available === true,
-    capabilities: (state): string[] => state.snapshot?.capabilities || [],
+    baseUrl: (state): string => state.snapshot?.base_url || 'ws://127.0.0.1:7330',
+    browser: (state): ProviderUiState['browser'] => state.snapshot?.browser ?? null,
+    tokenSaved: (state): boolean => state.snapshot?.token_saved === true,
+    capabilities: (state): ProviderUiState['capabilities'] => state.snapshot?.capabilities || [],
     version: (state): string => state.snapshot?.version || '',
   },
   actions: {
-    setSnapshot(snapshot: UiState): void {
+    setSnapshot(snapshot: ProviderUiState): void {
       this.snapshot = snapshot;
       this.error = null;
     },

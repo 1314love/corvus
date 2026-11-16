@@ -59,7 +59,7 @@ function manifest(): Record<string, unknown> {
     browser: { family: 'Chrome', version: '157.0.0.0', profile: 'default' },
     capabilities: [
       { id: 'system.info', version: 1, actions: ['info'] },
-      { id: 'tabs.read', version: 1, actions: ['list'] },
+      { id: 'tabs', version: 1, actions: ['list'] },
     ],
     subscriptions: ['tabs.updated'],
     limits: { max_invoke_bytes: 1048576, max_result_bytes: 8388608 },

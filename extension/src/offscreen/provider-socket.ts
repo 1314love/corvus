@@ -1,9 +1,9 @@
 /**
- * Corvus v2 encrypted provider socket (P1).
+ * Corvus encrypted provider transport.
  *
- * Library only. The legacy offscreen plaintext socket is untouched and this
- * class is not imported by any runtime entry point yet. P2 will wire it to the
- * generic proxy.
+ * Hosted by the provider-only offscreen runtime. The service worker owns command
+ * dispatch and UI state; this class owns the encrypted WebSocket session, the
+ * frozen P1 handshake, and the protocol v2 frame sequence.
  *
  * Responsibilities:
  * - perform the plaintext server_hello/client_hello exchange;
@@ -11,8 +11,14 @@
  * - enforce strictly increasing AES-GCM frame sequences in both directions;
  * - reject replayed, gapped, tampered or oversized frames with the frozen
  *   WebSocket close codes;
- * - serve system.info.info and tabs.read.list invokes from the gateway;
- * - expose matching request helpers for tests and future callers.
+ * - dispatch gateway invokes through the configured provider action bridge; the
+ *   runtime serves system.info.info and the frozen P2 actions tabs.list,
+ *   tabs.open, tabs.close, page.navigate, page.read, page.snapshot,
+ *   input.click, input.type and capture.viewport;
+ * - expose invoke() for outbound provider requests.
+ *
+ * Without a configured action bridge, the built-in fallback used by standalone
+ * tests handles only system.info.info and tabs.list.
  */
 import {
   MAX_HANDSHAKE_FRAME_BYTES,
@@ -83,9 +89,17 @@ export interface ProviderBrowserInfo {
   profile: string;
 }
 
+export interface ProviderCapability {
+  id: string;
+  version: number;
+  actions: string[];
+}
+
 export interface ProviderActionHandlers {
-  systemInfo: () => ProviderSystemInfo | Promise<ProviderSystemInfo>;
-  tabsList: () => ProviderTab[] | Promise<ProviderTab[]>;
+  systemInfo?: () => ProviderSystemInfo | Promise<ProviderSystemInfo>;
+  tabsList?: () => ProviderTab[] | Promise<ProviderTab[]>;
+  invokeAction?: (action: string, args: Record<string, unknown>) => unknown | Promise<unknown>;
+  capabilities?: ProviderCapability[];
 }
 
 export interface ProviderEvent {
@@ -109,7 +123,7 @@ export interface ProviderSocketOptions {
   handshakeTimeoutMs?: number;
   browser?: ProviderBrowserInfo;
   extensionVersion?: string;
-  actions?: Partial<ProviderActionHandlers>;
+  actions?: ProviderActionHandlers;
   socketFactory?: ProviderWebSocketFactory;
   onEvent?: (event: ProviderEvent) => void;
   onClose?: (error: ProviderSocketError | null) => void;
@@ -199,6 +213,11 @@ function codeForClose(closeCode: number): string {
   }
 }
 
+/**
+ * Encrypted provider session used by the provider-only offscreen host.
+ * Capabilities and invokeAction are supplied by the runtime; the built-in
+ * fallback keeps standalone transport tests usable without a bridge.
+ */
 export class ProviderSocket {
   private readonly options: ProviderSocketOptions;
   private readonly browser: ProviderBrowserInfo;
@@ -273,10 +292,6 @@ export class ProviderSocket {
 
   async requestSystemInfo(deadlineMs: number = PROVIDER_REQUEST_TIMEOUT_MS): Promise<ProviderSystemInfo> {
     return parseProviderSystemInfo(await this.invoke('system.info.info', {}, deadlineMs));
-  }
-
-  async requestTabsList(deadlineMs: number = PROVIDER_REQUEST_TIMEOUT_MS): Promise<ProviderTab[]> {
-    return parseProviderTabs(await this.invoke('tabs.read.list', {}, deadlineMs));
   }
 
   invoke(
@@ -640,7 +655,9 @@ export class ProviderSocket {
     }
   }
 
-  private async runAction(action: string, _args: Record<string, unknown>): Promise<unknown> {
+  private async runAction(action: string, args: Record<string, unknown>): Promise<unknown> {
+    const generic = this.options.actions?.invokeAction;
+    if (generic) return generic(action, args);
     const separator = action.lastIndexOf('.');
     if (separator <= 0 || separator === action.length - 1) {
       throw new ProviderSocketError('BAD_ARGS', 'invalid provider action');
@@ -651,7 +668,7 @@ export class ProviderSocket {
       if (operation !== 'info') throw new ProviderSocketError('BAD_ARGS', 'invalid provider action');
       return this.collectSystemInfo();
     }
-    if (capability === 'tabs.read') {
+    if (capability === 'tabs') {
       if (operation !== 'list') throw new ProviderSocketError('BAD_ARGS', 'invalid provider action');
       return this.collectTabs();
     }
@@ -666,7 +683,7 @@ export class ProviderSocket {
           browser_family: this.browser.family,
           browser_version: this.browser.version,
           extension_version: this.extensionVersion,
-          capabilities: ['system.info', 'tabs.read'],
+          capabilities: ['system.info', 'tabs'],
         };
     return parseProviderSystemInfo(value);
   }
@@ -680,10 +697,17 @@ export class ProviderSocket {
 
   private actionFailure(error: unknown): { code: string; message: string } {
     if (error instanceof ProviderSocketError) {
-      if (error.code === 'BAD_ARGS') return { code: 'BAD_ARGS', message: error.message };
-      if (error.code === 'CAPABILITY_UNAVAILABLE') {
-        return { code: 'CAPABILITY_UNAVAILABLE', message: error.message };
-      }
+      const allowed = new Set([
+        'BAD_ARGS',
+        'NOT_FOUND',
+        'NAVIGATION_FAILED',
+        'TIMEOUT',
+        'PROVIDER_LOST',
+        'CAPABILITY_UNAVAILABLE',
+        'AMBIGUOUS_BROWSER',
+        'INTERNAL',
+      ]);
+      if (allowed.has(error.code)) return { code: error.code, message: error.message };
     }
     return { code: 'INTERNAL', message: 'provider action failed' };
   }
@@ -702,15 +726,23 @@ export class ProviderSocket {
   }
 
   private buildManifest(): ProviderManifest {
+    const configured = this.options.actions?.capabilities;
+    const capabilities = (
+      configured ?? [
+        { id: 'system.info', version: 1, actions: ['info'] },
+        { id: 'tabs', version: 1, actions: ['list'] },
+      ]
+    ).map((capability) => ({
+      id: capability.id,
+      version: capability.version,
+      actions: capability.actions.slice(),
+    }));
     return {
       kind: 'manifest',
       provider_id: this.providerId,
       version: '2.0.0',
       browser: { ...this.browser },
-      capabilities: [
-        { id: 'system.info', version: 1, actions: ['info'] },
-        { id: 'tabs.read', version: 1, actions: ['list'] },
-      ],
+      capabilities,
       subscriptions: ['tabs.updated'],
       limits: { max_invoke_bytes: 1048576, max_result_bytes: 8388608 },
     };

@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：1.7.0 是当前已发布版本，于 2026-11-16 从标签 `v1.7.0` 发布；1.6.0 为上一版本。1.7.0 发布保留端口与适配器后端，并把 MCP 工具面扩展为 10 个类别 62 个工具，包括 `browser_screenshot`、PDF 捕获以及新的 page、input、tab、storage 与 diagnostics 工具，并保留可选的守护策略。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过；本地 Windows 打包单独通过，已发布产物由 CI 重新构建。标签对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向 `f12930c145c8cac05a50db9702ab3f1ad021c666`；主 CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了产物。1.6.0 发布证据记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)。读者：工程师。
+状态：1.7.0 是当前已发布版本，于 2026-11-16 从标签 `v1.7.0` 发布；1.6.0 为上一版本。1.7.0 发布保留端口与适配器后端，并把 MCP 工具面扩展为 10 个类别 62 个工具，包括 `browser_screenshot`、PDF 捕获以及新的 page、input、tab、storage 与 diagnostics 工具，并保留可选的守护策略。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过；本地 Windows 打包单独通过，已发布产物由 CI 重新构建。标签对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向 `f12930c145c8cac05a50db9702ab3f1ad021c666`；主 CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了产物。1.6.0 发布证据记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)。分支 `v2.0` 上的内部 v2.0 P2 里程碑尚未发布：它不是标签、发布或部署，1.7.0 仍是当前已发布版本。读者：工程师。
 
 ## 1. 约束设计的硬条件
 
@@ -317,9 +317,21 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 
 **批量与验证。** `browser_batch` 保留类别允许清单（page、input、tabs、network、files、cdp、diagnostics），并按名称排除十个工具：`browser_batch`、`browser_channel`、`metrics`、`logs_tail`、`page_pdf`、`tab_group`、`tab_duplicate`、`window_new`、`health` 与 `version`；`storage`、`sessions` 与 `help` 不可批量，故可批量工具为 42 个。只读注解覆盖 `health`、`version`、`page_links`、`page_forms`、`page_accessibility`、`window_list`、`storage_get`、`page_pdf` 与 `browser_highlight`。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过；本地 Windows 打包单独通过。标签 `v1.7.0` 的对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向 `f12930c145c8cac05a50db9702ab3f1ad021c666`；CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了 Windows、Linux 与合并产物。`page_pdf` 强制 32 MiB 解码上限；实机上限未触及，最大实机 PDF 为 55,891 B。1.6.0 为包含 43 个工具的上一版本。
 
+### 5.12 v2.0 P2 内部能力面（未发布）
+
+`v2.0` 分支承载一个内部 P2 垂直切片；它不是发布、标签或部署，1.7.0 仍是当前已发布版本。P2 以恰好十个工具替代旧的 62 工具 AI 面：`browser_status`、`tab_list`、`tab_open`、`tab_close`、`page_navigate`、`page_read`、`page_snapshot`、`element_click`、`element_type` 与 `page_screenshot`。路径为 AI -> MCP 工具 -> Rust 网关能力路由 -> 加密 provider 动作 -> 浏览器执行 -> AI 可见 JSON。AI 不会在工具名、描述、initialize instructions 或错误消息中看到 provider、extension、plugin、WebSocket、CDP、worker 或 channel 的实现细节；公开错误只使用下列冻结错误码。
+
+网关拥有状态、路由、组合、校验、录制、脱敏与工具语义；provider 只执行原子动作。扩展是 provider-only：恰好五项权限（`tabs`、`activeTab`、`scripting`、`storage`、`offscreen`），没有 debugger 权限，通过加密 `/provider/v2` 使用 P-256 ECDH、HKDF-SHA256 与 AES-256-GCM 配对，offscreen 文档持有套接字，service worker 持有命令与状态。Rust CDP 路径是独立的受监督 `corvus-cdp-worker` 子进程，使用 stdio 帧；`CORVUS_V2_SURFACE=1` 与 `CORVUS_V2_WORKER=1` 激活该面与 worker。provider 注册表在内存中。
+
+由 provider、group 与 action 组成的能力图决定暴露。四个 group 为 `tabs`、`page`、`input` 与 `capture`；只有所需动作齐全时工具才出现，`browser_status` 始终存在，`tools/list` 与 `notifications/tools/list_changed` 在连接、断开与动作变化时重算。冻结矩阵为：全部 group 10 个工具，缺 capture 9 个，缺 input 8 个，缺 tabs 7 个，缺 page 5 个，缺 page 与 tabs 2 个，无 group 1 个。`input` 还要求 `page`。provider 按工具选择：tabs、page 与 input 优先扩展，capture 优先 CDP；断开后列表不变则不发送通知。
+
+节点引用是不透明的 `r-<8 个小写十六进制>` 值；`element_click` 与 `element_type` 接受这些引用，未知引用返回 `NOT_FOUND`。`page_screenshot` 仅视口，在 `<home>/screenshots/` 下写 `shot-<32 个小写十六进制>.<png|jpg>`，解码上限 8 MiB；`full_page` 返回 `CAPABILITY_UNAVAILABLE`，属于 P3。错误为 MCP `isError: true` 加单个 `{"error":{"code","message"}}` 文本块，只使用 `BAD_ARGS`、`NOT_FOUND`、`NAVIGATION_FAILED`、`TIMEOUT`、`PROVIDER_LOST`、`CAPABILITY_UNAVAILABLE`、`AMBIGUOUS_BROWSER` 与 `INTERNAL`。
+
+QA 通过七个矩阵的 303/303 项检查、133 个步骤与三个数据库上的 27/27 项录制断言、Rust 321/0/1，以及 13 个文件中的 89 个扩展测试加 1 个端到端测试；没有 High 或 Medium 缺陷残留。证据为 [tests/report/v2.0.0-p2-capability-qa.md](../tests/report/v2.0.0-p2-capability-qa.md)，21,978 B / 253 行 / SHA-256 `59cc8603c6e57532ca1f4755d5ba571daa7d13b88efda44fa872ef199a4d6d23`。P2 是内部且部分的；P3 恢复完整覆盖，且不宣称 NFR-3 或实机部署。
+
 ## 6. 扩展设计
 
-三个运行时上下文与两个小型界面，源码都在 `extension/src`，由三次 Vite 构建输出到 `extension/build/extension`：
+本节描述已发布的 1.7.0 扩展；v2.0 P2 分支的扩展是 provider-only，见 5.12 节。三个运行时上下文与两个小型界面，源码都在 `extension/src`，由三次 Vite 构建输出到 `extension/build/extension`：
 
 1. **Service Worker**：命令分发、tabs API、scripting、debugger 挂载/卸载、下载。
 2. **内容脚本**：DOM 快照、点击与输入合成、等待、变更观察。

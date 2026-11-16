@@ -1,5 +1,4 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { extname, relative, resolve } from 'node:path';
 
 const root = process.cwd();
@@ -14,6 +13,19 @@ const required = [
   'offscreen.html',
   '_locales/en/messages.json',
   '_locales/zh_CN/messages.json',
+];
+const expectedPermissions = ['tabs', 'activeTab', 'scripting', 'storage', 'offscreen'];
+const providerActions = [
+  'system.info.info',
+  'tabs.list',
+  'tabs.open',
+  'tabs.close',
+  'page.navigate',
+  'page.read',
+  'page.snapshot',
+  'input.click',
+  'input.type',
+  'capture.viewport',
 ];
 const failures = [];
 
@@ -47,31 +59,16 @@ try {
 if (manifest) {
   if (manifest.manifest_version !== 3) failures.push('manifest_version is not 3');
   if (manifest.version !== '1.7.0') failures.push('manifest version is not 1.7.0');
-  if (!Array.isArray(manifest.permissions) || manifest.permissions.length !== 11)
-    failures.push('permissions must contain exactly 11 entries');
-  const expectedPermissions = [
-    'tabs',
-    'activeTab',
-    'scripting',
-    'storage',
-    'debugger',
-    'webRequest',
-    'downloads',
-    'alarms',
-    'offscreen',
-    'unlimitedStorage',
-    'tabGroups',
-  ];
-  for (const permission of expectedPermissions) {
-    if (!manifest.permissions.includes(permission)) failures.push('missing permission ' + permission);
+  if (!Array.isArray(manifest.permissions)) failures.push('permissions must be an array');
+  else if (JSON.stringify(manifest.permissions) !== JSON.stringify(expectedPermissions)) {
+    failures.push(
+      'permissions must be exactly ' + expectedPermissions.join(',') + '; found ' + manifest.permissions.join(','),
+    );
   }
-  if (
-    !manifest.background ||
-    manifest.background.service_worker !== 'background.js' ||
-    manifest.background.type !== 'module'
-  ) {
-    failures.push('background must be an ESM service worker');
-  }
+  if (manifestText.includes('debugger')) failures.push('manifest must not mention debugger');
+  if (!manifest.background || manifest.background.service_worker !== 'background.js')
+    failures.push('background must be background.js');
+  if (manifest.background && manifest.background.type !== 'module') failures.push('background must be an ES module');
   if (!manifest.host_permissions || manifest.host_permissions[0] !== '<all_urls>')
     failures.push('host_permissions must include <all_urls>');
   if (!manifest.content_scripts || manifest.content_scripts[0].js[0] !== 'content.js')
@@ -102,7 +99,6 @@ for (const name of localeNames) {
     failures.push('_locales/' + name + '/messages.json is missing or invalid: ' + error.message);
   }
 }
-
 if (manifest) {
   const placeholders = [...new Set([...manifestText.matchAll(/__MSG_([A-Za-z0-9_]+)__/g)].map((match) => match[1]))];
   if (placeholders.length === 0) failures.push('manifest does not reference any __MSG_*__ placeholders');
@@ -114,7 +110,6 @@ if (manifest) {
     }
   }
 }
-
 const enKeys = localeCatalogs.en ? Object.keys(localeCatalogs.en).sort() : [];
 const zhKeys = localeCatalogs.zh_CN ? Object.keys(localeCatalogs.zh_CN).sort() : [];
 if (enKeys.length && zhKeys.length && JSON.stringify(enKeys) !== JSON.stringify(zhKeys))
@@ -130,134 +125,60 @@ const files = (() => {
 for (const file of files) {
   if (extname(file) === '.map') failures.push('source map shipped: ' + relative(out, file));
 }
-const background = (() => {
+const read = (name) => {
   try {
-    return readFileSync(resolve(out, 'background.js'), 'utf8');
+    return readFileSync(resolve(out, name), 'utf8');
   } catch {
     return '';
   }
-})();
+};
+const background = read('background.js');
+const content = read('content.js');
+const jsFiles = files.filter((file) => extname(file) === '.js');
+const allJs = jsFiles.map((file) => readFileSync(file, 'utf8')).join('\n');
 if (!/^import |^const |^var |^function |^class /m.test(background))
   failures.push('background.js does not look like an ES module');
-const content = (() => {
-  try {
-    return readFileSync(resolve(out, 'content.js'), 'utf8');
-  } catch {
-    return '';
-  }
-})();
 if (/^import\s/m.test(content)) failures.push('content.js must be standalone IIFE output');
-
-const extensionTools = [
-  'browser_navigate',
-  'page_snapshot',
-  'browser_click',
-  'browser_type',
-  'page_text',
-  'page_html',
-  'page_find',
-  'browser_hover',
-  'browser_press',
-  'browser_scroll',
-  'browser_select',
-  'browser_eval',
-  'browser_wait',
-  'browser_history',
-  'tab_list',
-  'tab_new',
-  'tab_close',
-  'tab_switch',
-  'net_capture',
-  'net_log',
-  'net_clear',
-  'net_intercept',
-  'download_list',
-  'download_wait',
-  'upload_file',
-  'browser_screenshot',
-  'page_pdf',
-  'page_links',
-  'page_forms',
-  'page_accessibility',
-  'browser_drag',
-  'browser_focus',
-  'browser_highlight',
-  'tab_group',
-  'tab_duplicate',
-  'window_list',
-  'window_new',
-  'cookie_set',
-  'cookie_clear',
-  'storage_get',
-  'storage_set',
-  'storage_clear',
-];
-if (extensionTools.length !== 42)
-  failures.push('expected exactly 42 extension handlers, found ' + extensionTools.length);
-if (new Set(extensionTools).size !== extensionTools.length) failures.push('extension handler list contains duplicates');
-for (const name of extensionTools) {
-  if (!background.includes(name)) failures.push('background.js is missing tool ' + name);
+if (/\bdebugger\b/.test(allJs)) failures.push('built JavaScript must not mention debugger');
+if (/Page\.captureScreenshot|Accessibility\.getFullAXTree|Network\.setCookie/.test(allJs))
+  failures.push('built JavaScript must not use the debugger protocol');
+if (/browser_screenshot|page_pdf|schema-snapshot\.v1\.7\.0/.test(allJs))
+  failures.push('built JavaScript still contains a legacy 1.x runtime name');
+for (const action of providerActions) {
+  if (!background.includes(action)) failures.push('background.js is missing provider action ' + action);
 }
 
-const expectedSnapshotHash = '0763eee9256bae1942c1480317fc6a80375257d44b3674261b689ae1f3844114';
-const expectedToolCount = 62;
-const snapshot = resolve(root, '..', 'tests', 'conformance', 'schema-snapshot.v1.7.0.json');
-const snapshotBytes = readFileSync(snapshot);
-const snapshotHash = createHash('sha256').update(snapshotBytes).digest('hex');
-if (snapshotHash !== expectedSnapshotHash)
-  failures.push('schema snapshot hash is ' + snapshotHash + ', expected ' + expectedSnapshotHash);
-let snapshotTools = [];
+let offscreenHtml = '';
 try {
-  snapshotTools = JSON.parse(snapshotBytes.toString('utf8'));
-} catch (error) {
-  failures.push('schema snapshot is not valid JSON: ' + error.message);
+  offscreenHtml = readFileSync(resolve(out, 'offscreen.html'), 'utf8');
+} catch {
+  failures.push('missing offscreen.html');
 }
-if (!Array.isArray(snapshotTools)) {
-  failures.push('schema snapshot must be an array');
-  snapshotTools = [];
-} else if (snapshotTools.length !== expectedToolCount) {
-  failures.push('schema snapshot must contain exactly ' + expectedToolCount + ' tools, found ' + snapshotTools.length);
-}
-const snapshotNames = snapshotTools.map((tool) => tool && tool.name);
-if (snapshotNames.some((name) => typeof name !== 'string' || name === ''))
-  failures.push('schema snapshot contains an invalid tool name');
-for (const name of extensionTools) {
-  if (!snapshotNames.includes(name)) failures.push('extension handler is not in the tool catalogue: ' + name);
-}
-const generated = readFileSync(resolve(root, 'src', 'shared', 'contracts', 'tools.generated.ts'), 'utf8');
-if (!generated.includes('schema-snapshot.v1.7.0.json')) failures.push('generated contracts do not name the snapshot');
-const generatedMatch = generated.match(/export const TOOL_NAMES = \[([\s\S]*?)\] as const;/);
-let generatedNames = [];
-if (!generatedMatch) {
-  failures.push('generated contracts do not declare TOOL_NAMES');
-} else {
+const offscreenMatch = /src="\.\/(assets\/[^"]+\.js)"/.exec(offscreenHtml);
+let offscreenAsset = '';
+let offscreenText = '';
+if (!offscreenMatch) failures.push('offscreen.html does not load a bundled script');
+else {
+  offscreenAsset = offscreenMatch[1];
   try {
-    generatedNames = JSON.parse('[' + generatedMatch[1] + ']');
-  } catch (error) {
-    failures.push('generated TOOL_NAMES is not valid JSON: ' + error.message);
+    offscreenText = readFileSync(resolve(out, offscreenAsset), 'utf8');
+  } catch {
+    failures.push('offscreen bundle is missing: ' + offscreenAsset);
   }
 }
-if (generatedNames.length !== expectedToolCount)
-  failures.push(
-    'generated contracts must contain exactly ' + expectedToolCount + ' tools, found ' + generatedNames.length,
-  );
-else if (JSON.stringify(generatedNames) !== JSON.stringify(snapshotNames))
-  failures.push('generated contracts do not match the schema snapshot tool names and order');
+if (offscreenText && !offscreenText.includes('/provider/v2'))
+  failures.push('offscreen bundle does not use the provider endpoint path');
 
 const permissionCount = manifest && Array.isArray(manifest.permissions) ? manifest.permissions.length : 0;
 const sizes = {};
-for (const name of ['background.js', 'content.js']) {
-  try {
-    sizes[name] = statSync(resolve(out, name)).size;
-  } catch {
-    sizes[name] = 0;
-  }
-}
+for (const name of ['background.js', 'content.js']) sizes[name] = statSync(resolve(out, name)).size;
+if (offscreenAsset) sizes[offscreenAsset] = offscreenText.length;
 const assets = files
   .filter((file) => file.includes('assets'))
   .map((file) => ({ path: relative(out, file), bytes: statSync(file).size }));
+
 if (failures.length) {
-  console.error(JSON.stringify({ ok: false, failures, sizes, snapshotHash }, null, 2));
+  console.error(JSON.stringify({ ok: false, failures, sizes }, null, 2));
   process.exit(1);
 }
 process.stdout.write(
@@ -265,12 +186,11 @@ process.stdout.write(
     {
       ok: true,
       files: files.length,
-      tools: snapshotNames.length,
-      handlers: extensionTools.length,
       permissions: permissionCount,
+      provider_actions: providerActions.length,
+      offscreen_bundle: offscreenAsset,
       sizes,
       assets,
-      snapshotHash,
     },
     null,
     2,

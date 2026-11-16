@@ -2,7 +2,7 @@
 
 [English](10-project-state.md) | [中文](10-project-state.zh.md)
 
-置信度：以下事实均读自仓库、1.7.0、1.6.0、1.5.0 与 1.4.0 验收报告以及已发布页面。引用本页前请核对 `git log -1` 与发布页。1.7.0 是当前已发布版本，发布于 2026-11-16；1.6.0 为上一版本。1.7.0 发布有十类 62 个工具；QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过，本地 Windows 打包单独通过。62 条目 schema 快照与一致性测量描述冻结的 62 工具树；标签、CI 与已发布产物记录于下文。读者：维护者与评审者。
+置信度：以下事实均读自仓库、1.7.0、1.6.0、1.5.0 与 1.4.0 验收报告以及已发布页面。引用本页前请核对 `git log -1` 与发布页。1.7.0 是当前已发布版本，发布于 2026-11-16；1.6.0 为上一版本。1.7.0 发布有十类 62 个工具；QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过，本地 Windows 打包单独通过。62 条目 schema 快照与一致性测量描述冻结的 62 工具树；标签、CI 与已发布产物记录于下文。分支 `v2.0` 上的内部 v2.0 P2 里程碑尚未发布，不在已发布的 1.7.0 证据内；其 QA 报告记录于第 10 节。读者：维护者与评审者。
 
 ## 1. 当前版本：1.7.0
 
@@ -117,3 +117,11 @@ M1 至 M4 的验收手册与报告模板描述的是 JavaScript 扩展与 0.1.0 
 - `pnpm --dir extension build` 重新构建可加载的扩展。
 - `git log -1 --oneline` 显示本页读取时的提交。
 - `cargo test -p corvusd guardrails` 覆盖策略解析、优先级与门禁。
+
+## 10. v2.0 P2 内部里程碑（未发布）
+
+`v2.0` 分支承载一个内部 P2 垂直切片，它不是标签、发布或部署；1.7.0 仍是当前已发布版本。P2 暴露恰好十个工具：`browser_status`、`tab_list`、`tab_open`、`tab_close`、`page_navigate`、`page_read`、`page_snapshot`、`element_click`、`element_type` 与 `page_screenshot`。它使用动态 `tools/list` 与 `notifications/tools/list_changed`、10/9/8/7/5/2/1 的 group 矩阵、不透明的 `r-<8 个小写十六进制>` 引用，以及仅视口、解码上限 8 MiB 的 `page_screenshot`；`full_page` 属于 P3。
+
+provider-only 扩展恰好五项权限（`tabs`、`activeTab`、`scripting`、`storage`、`offscreen`），没有 debugger，内容脚本保持 `all_frames: false`，包版本仍为 1.7.0。它通过加密 `/provider/v2` 使用 P-256 ECDH、HKDF-SHA256 与 AES-256-GCM 配对；offscreen 文档持有套接字，service worker 持有状态。Rust 拥有网关、能力路由与语义；受监督的 `corvus-cdp-worker` 子进程使用 stdio 帧，`CORVUS_V2_SURFACE=1` 与 `CORVUS_V2_WORKER=1` 激活该面。provider 注册表在内存中。
+
+QA 通过七个矩阵的 303/303 项功能检查、133 个步骤与三个数据库上的 27/27 项录制断言、Rust 321 通过/0 失败/1 忽略，以及 13 个文件中的 89 个扩展测试加 1 个端到端测试；没有 High 或 Medium 缺陷。报告为 [tests/report/v2.0.0-p2-capability-qa.md](../tests/report/v2.0.0-p2-capability-qa.md)，21,978 B / 253 行 / SHA-256 `59cc8603c6e57532ca1f4755d5ba571daa7d13b88efda44fa872ef199a4d6d23`。QA 冻结产物的 SHA-256 为 `corvusd.exe` `7c64029846bb3c4fbf1d2a50f4a001a10d074f8e128dcdcd55926bf8a4437e92`、`corvus-cdp-worker.exe` `18807f4cf7f6b406da626a4597126c39086cece8a6f18d5197b698de3eb43542`、扩展 `manifest.json` `61f13fff4c4fac655334c8a74f36b4cac508c55de116c1639d54c9e3bf40d6c8`、`background.js` `b21b8ef525e4b49d536c3fca9758f0e8b47ea3b9bc6bdb10f1cef8feffcb7d7e` 与 `content.js` `46265ee19831fb4b253c15d0bcb9228f2d83d2d7673a84616f4c9a706abd81f0`。P2 是部分的；`page_pdf` 与 62 工具面不在 P2，旧 1.x 未复测，测试浏览器为 Chrome 157 headless，跨源 iframe 与 shadow DOM 支持为尽力而为，且不宣称 NFR-3 或实机部署。P3 恢复完整覆盖。

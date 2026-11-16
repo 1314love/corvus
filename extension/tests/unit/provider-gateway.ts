@@ -156,7 +156,7 @@ export class TestGateway {
       browser_family: 'unknown',
       browser_version: 'unknown',
       extension_version: '2.0.0',
-      capabilities: ['system.info', 'tabs.read'],
+      capabilities: ['system.info', 'tabs'],
     };
     this.tabs = options.tabs ?? [
       {
@@ -391,7 +391,7 @@ export class TestGateway {
     try {
       let value: unknown;
       if (message.action === 'system.info.info') value = this.systemInfo;
-      else if (message.action === 'tabs.read.list') value = this.tabs;
+      else if (message.action === 'tabs.list') value = this.tabs;
       else {
         await this.sendEncrypted({
           kind: 'result',

@@ -1,17 +1,14 @@
-/** Service-worker entry: legacy runtime owner plus the typed UI Port RPC. */
+/** Service-worker entry: provider-only runtime owner plus the typed UI Port RPC. */
 
-import { handleUiMessage } from './runtime';
-import { UI_PORT_NAME, type UiPortRequest, type UiReply } from '../shared/contracts/ui';
+import { handleProviderUiRequest, installProviderRuntime, type ProviderUiReply } from './provider-runtime';
+import { UI_PORT_NAME, type UiPortRequest } from '../shared/contracts/ui';
 import { describeError } from '../shared/errors';
 
 const UI_REQUEST_TYPES = new Set<string>([
   'corvus.get_state',
-  'corvus.cdp_refresh',
-  'corvus.cdp_save',
-  'corvus.cdp_reset',
-  'corvus.daemon_save',
-  'corvus.daemon_reset',
-  'corvus.reconnect',
+  'corvus.save_and_connect',
+  'corvus.connect',
+  'corvus.disconnect',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -25,10 +22,12 @@ function isUiRequest(value: unknown): value is UiPortRequest {
   return value.payload === undefined || isRecord(value.payload);
 }
 
-function dispatch(request: UiPortRequest): Promise<UiReply> {
+function dispatch(request: UiPortRequest): Promise<ProviderUiReply> {
   const payload = isRecord(request.payload) ? request.payload : {};
-  return handleUiMessage({ ...payload, type: request.type }) as Promise<UiReply>;
+  return handleProviderUiRequest({ kind: request.type.replace('corvus.', ''), ...payload });
 }
+
+installProviderRuntime();
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== UI_PORT_NAME) return;

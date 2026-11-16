@@ -6,6 +6,21 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
+## 2.0.0 - Unreleased
+
+Internal P2 milestone on branch `v2.0`; v2.0 is not released, tagged or deployed, and 1.7.0 remains the current published release. P2 restores only ten tools, adds dynamic `tools/list` and `notifications/tools/list_changed` on stdio, and uses opaque `r-<8 lowercase hex>` refs. QA PASS: 303/303 functional checks across seven matrices, 27/27 recording assertions over 133 steps in three databases, Rust 321 passed/0 failed/1 ignored, extension 89 tests in 13 files plus 1 E2E, and no High or Medium defect open. The QA report is `tests/report/v2.0.0-p2-capability-qa.md`, 21,978 B / 253 lines / SHA-256 `59cc8603c6e57532ca1f4755d5ba571daa7d13b88efda44fa872ef199a4d6d23`.
+
+### Added
+
+- Clean-break ten-tool P2 AI surface: `browser_status`, `tab_list`, `tab_open`, `tab_close`, `page_navigate`, `page_read`, `page_snapshot`, `element_click`, `element_type`, `page_screenshot`.
+- Encrypted provider-only extension path: `/provider/v2` with P-256 ECDH, HKDF-SHA256 and AES-256-GCM; exactly five permissions (`tabs`, `activeTab`, `scripting`, `storage`, `offscreen`), no `debugger`; offscreen owns the socket and the service worker owns state.
+- Supervised Rust `corvus-cdp-worker` over stdio frames; gateway capability graph and in-memory provider registry; activation via `CORVUS_V2_SURFACE=1` and `CORVUS_V2_WORKER=1`.
+
+### Changed
+
+- P2 exposes tools only when all required actions are available; the group matrix is 10/9/8/7/5/2/1. `page_screenshot` is viewport-only with an 8 MiB decoded cap; `full_page` and `page_pdf` are not P2.
+- Limits remain: P2-only; legacy 1.x not retested; Chrome 157 headless only; cross-origin iframe and shadow DOM best effort; in-memory registry; no NFR-3 or live claim.
+
 ## 1.7.0 - 2026-11-16
 
 1.7.0 was released on 2026-11-16 from annotated tag `v1.7.0` at commit `f12930c`; 1.6.0 is the previous release. The release rescopes the MCP surface to 62 tools in ten categories and adds 18 tools. QA acceptance passed on the frozen 62-tool tree: 263 Rust tests on 25 result lines, 137 conformance checks, 91 Vitest tests in 13 files, a 14-file/537,844-byte extension build and 3 Playwright E2E tests; local Windows packaging passed 160/160 checks on ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e`. Main CI run 43795994581 passed eight jobs, release workflow 43796443828 succeeded and GitHub Release 446568768 published Windows ZIP 19,159,984 B, Linux tarball 20,443,563 B and combined `SHA256SUMS` 194 B.
@@ -240,6 +255,21 @@ First public release.
 ---
 
 ## 中文
+
+## 2.0.0 - 未发布
+
+`v2.0` 分支上的内部 P2 里程碑；v2.0 未发布、未打标签、未部署，1.7.0 仍是当前已发布版本。P2 仅恢复十个工具，在 stdio 上新增动态 `tools/list` 与 `notifications/tools/list_changed`，并使用不透明的 `r-<8 个小写十六进制>` 引用。QA 通过：七个矩阵的 303/303 项功能检查、三个数据库中 133 个步骤上的 27/27 项录制断言、Rust 321 通过/0 失败/1 忽略、13 个文件中的 89 个扩展测试加 1 个端到端测试，且没有 High 或 Medium 缺陷。QA 报告为 `tests/report/v2.0.0-p2-capability-qa.md`，21,978 B / 253 行 / SHA-256 `59cc8603c6e57532ca1f4755d5ba571daa7d13b88efda44fa872ef199a4d6d23`。
+
+### 新增
+
+- 干净断代的十工具 P2 AI 面：`browser_status`、`tab_list`、`tab_open`、`tab_close`、`page_navigate`、`page_read`、`page_snapshot`、`element_click`、`element_type`、`page_screenshot`。
+- 加密的 provider-only 扩展路径：`/provider/v2` 使用 P-256 ECDH、HKDF-SHA256 与 AES-256-GCM；恰好五项权限（`tabs`、`activeTab`、`scripting`、`storage`、`offscreen`），没有 `debugger`；offscreen 持有套接字，service worker 持有状态。
+- 受监督的 Rust `corvus-cdp-worker` 使用 stdio 帧；网关能力图与内存 provider 注册表；通过 `CORVUS_V2_SURFACE=1` 与 `CORVUS_V2_WORKER=1` 激活。
+
+### 变更
+
+- P2 仅在所需动作全部可用时暴露工具；group 矩阵为 10/9/8/7/5/2/1。`page_screenshot` 仅视口且解码上限 8 MiB；`full_page` 与 `page_pdf` 不在 P2。
+- 限制不变：仅 P2；旧 1.x 未复测；仅 Chrome 157 headless；跨源 iframe 与 shadow DOM 为尽力而为；注册表在内存；不宣称 NFR-3 或实机部署。
 
 ## 1.7.0 - 2026-11-16
 

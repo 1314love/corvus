@@ -9,12 +9,10 @@ export function request<K extends UiRequestType>(type: K, payload: UiRequestPayl
 
 export const uiService = {
   getState: () => request('corvus.get_state', {}),
-  refreshCdp: () => request('corvus.cdp_refresh', {}),
-  saveCdp: (endpoint: string) => request('corvus.cdp_save', { endpoint }),
-  resetCdp: () => request('corvus.cdp_reset', {}),
-  saveDaemon: (url: string) => request('corvus.daemon_save', { url }),
-  resetDaemon: () => request('corvus.daemon_reset', {}),
-  reconnect: () => request('corvus.reconnect', {}),
+  saveAndConnect: (baseUrl: string, token?: string) =>
+    request('corvus.save_and_connect', token ? { base_url: baseUrl, token } : { base_url: baseUrl }),
+  connect: () => request('corvus.connect', {}),
+  disconnect: () => request('corvus.disconnect', {}),
 };
 
 export function errorMessage(error: unknown): string {

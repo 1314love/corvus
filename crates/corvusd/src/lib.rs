@@ -8,6 +8,7 @@ pub mod guardrails;
 pub mod home;
 pub mod logging;
 pub mod logs;
+pub mod p2;
 pub mod pdf;
 pub mod provider_gateway;
 pub mod screenshot;
@@ -140,6 +141,9 @@ pub struct DaemonConfig {
     pub auth: AuthSettings,
     /// Optional guardrails policy file.
     pub guardrails: Option<PathBuf>,
+    /// Override the CORVUS_V2_SURFACE activation decision.
+    /// `None` reads the environment; tests use an explicit value.
+    pub v2_surface: Option<bool>,
 }
 
 impl Default for DaemonConfig {
@@ -157,6 +161,7 @@ impl Default for DaemonConfig {
             allow_no_auth: false,
             auth: AuthSettings::default(),
             guardrails: None,
+            v2_surface: None,
         }
     }
 }
@@ -1594,6 +1599,7 @@ pub struct Daemon {
     metrics: Arc<Metrics>,
     channel: Arc<ChannelState>,
     provider: Arc<provider_gateway::ProviderGateway>,
+    p2: Option<Arc<p2::P2Runtime>>,
     home: home::HomeLayout,
     recorder: Recorder,
     ws_addr: SocketAddr,
@@ -1698,18 +1704,43 @@ impl Daemon {
             shutdown_receiver.clone(),
         );
 
-        let backend: Arc<dyn ToolBackend> = Arc::new(RouterBackend::new(
-            Arc::clone(&router),
-            Arc::clone(&registry),
-            Arc::clone(&store),
-            Arc::clone(&metrics),
-            Arc::clone(&cdp),
-            Arc::clone(&channel),
-            recorder.sink(),
-            guardrails.clone(),
-            layout.screenshots_dir(),
-            layout.pdf_dir(),
-        ));
+        let surface_mode = config.v2_surface.unwrap_or_else(|| {
+            std::env::var("CORVUS_V2_SURFACE")
+                .ok()
+                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes"))
+        });
+        let p2_runtime = if surface_mode {
+            Some(
+                p2::P2Runtime::new(
+                    Arc::clone(&provider),
+                    Arc::clone(&cdp),
+                    layout.root().to_path_buf(),
+                    recorder.sink(),
+                    guardrails.clone(),
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let backend: Arc<dyn ToolBackend> = match &p2_runtime {
+            Some(runtime) => Arc::new(p2::P2Backend::new(Arc::clone(runtime))),
+            None => Arc::new(RouterBackend::new(
+                Arc::clone(&router),
+                Arc::clone(&registry),
+                Arc::clone(&store),
+                Arc::clone(&metrics),
+                Arc::clone(&cdp),
+                Arc::clone(&channel),
+                recorder.sink(),
+                guardrails.clone(),
+                layout.screenshots_dir(),
+                layout.pdf_dir(),
+            )),
+        };
+        let graph_task = p2_runtime
+            .as_ref()
+            .map(|runtime| runtime.spawn_graph_task(shutdown_receiver.clone()));
         let http_addr_slot = Arc::new(std::sync::OnceLock::<SocketAddr>::new());
         let health_registry = Arc::clone(&registry);
         let health_store = Arc::clone(&store);
@@ -1778,8 +1809,13 @@ impl Daemon {
         } else {
             None
         };
+        let mut mcp_builder = McpServer::new(Arc::clone(&backend));
+        if let Some(runtime) = &p2_runtime {
+            mcp_builder =
+                mcp_builder.with_surface(Arc::clone(runtime) as Arc<dyn corvus_mcp::ToolSurface>);
+        }
         let mcp = Arc::new(
-            McpServer::new(Arc::clone(&backend))
+            mcp_builder
                 .with_store(
                     Arc::clone(&store) as Arc<dyn corvus_application::ports::SessionRecording>
                 )
@@ -1794,7 +1830,11 @@ impl Daemon {
                 store: Arc::clone(&store),
             }),
             Arc::clone(&backend),
-            Arc::new(McpCatalog),
+            match &p2_runtime {
+                Some(runtime) => Arc::new(p2::P2Catalog::new(Arc::clone(runtime)))
+                    as Arc<dyn corvus_application::ports::ToolCatalog>,
+                None => Arc::new(McpCatalog),
+            },
             Arc::clone(&health),
             auth,
             env!("CARGO_PKG_VERSION").to_string(),
@@ -1876,6 +1916,7 @@ impl Daemon {
             metrics,
             channel,
             provider,
+            p2: p2_runtime,
             home: layout,
             recorder,
             ws_addr,
@@ -1884,6 +1925,7 @@ impl Daemon {
             tasks: {
                 let mut tasks = vec![router_task, ws_task, http_task];
                 tasks.extend(discovery_task);
+                tasks.extend(graph_task);
                 tasks
             },
         })
@@ -1944,6 +1986,11 @@ impl Daemon {
         &self.provider
     }
 
+    /// The v2 capability runtime when capability mode is active.
+    pub fn p2(&self) -> Option<&Arc<p2::P2Runtime>> {
+        self.p2.as_ref()
+    }
+
     /// The recording database path.
     pub fn db_path(&self) -> &std::path::Path {
         self.store.path()
@@ -1966,6 +2013,7 @@ impl Daemon {
             tasks,
             mcp,
             recorder,
+            p2,
             ..
         } = self;
         let _ = shutdown.send(true);
@@ -1976,6 +2024,9 @@ impl Daemon {
             {
                 tracing::debug!("background task shutdown timed out");
             }
+        }
+        if let Some(runtime) = p2 {
+            runtime.shutdown().await;
         }
         mcp.close_all_sessions("closed");
         recorder.shutdown().await;
