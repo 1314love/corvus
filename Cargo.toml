@@ -11,6 +11,9 @@ members = [
   "crates/corvus-api",
   "crates/corvusd",
   "crates/corvus",
+  "crates/corvus-provider",
+  "crates/corvus-worker",
+  "crates/corvus-cdp-worker",
 ]
 
 [workspace.package]
@@ -30,11 +33,19 @@ corvus-mcp = { path = "crates/corvus-mcp" }
 corvus-record = { path = "crates/corvus-record" }
 corvus-api = { path = "crates/corvus-api" }
 corvusd = { path = "crates/corvusd" }
+corvus-provider = { path = "crates/corvus-provider" }
+corvus-worker = { path = "crates/corvus-worker" }
+corvus-cdp-worker = { path = "crates/corvus-cdp-worker" }
+ring = "0.17"
+hkdf = "0.12"
+aes-gcm = "0.10"
+zeroize = { version = "=1.8.1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time", "io-std", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time", "io-std", "io-util", "process"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"

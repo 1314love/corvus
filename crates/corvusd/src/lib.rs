@@ -9,6 +9,7 @@ pub mod home;
 pub mod logging;
 pub mod logs;
 pub mod pdf;
+pub mod provider_gateway;
 pub mod screenshot;
 pub mod signals;
 
@@ -1592,6 +1593,7 @@ pub struct Daemon {
     store: Arc<Store>,
     metrics: Arc<Metrics>,
     channel: Arc<ChannelState>,
+    provider: Arc<provider_gateway::ProviderGateway>,
     home: home::HomeLayout,
     recorder: Recorder,
     ws_addr: SocketAddr,
@@ -1659,6 +1661,9 @@ impl Daemon {
         layout
             .ensure()
             .map_err(|error| std::io::Error::other(format!("corvus home: {error}")))?;
+        let provider_token = corvus_provider::token::pairing_token_from_env_or_home(layout.root())
+            .map_err(|error| std::io::Error::other(format!("provider pairing token: {error}")))?;
+        let provider = Arc::new(provider_gateway::ProviderGateway::new(provider_token));
         let store = Store::open(&db_path)
             .map_err(|error| std::io::Error::other(format!("recording store: {error}")))?;
         let store = Arc::new(store);
@@ -1795,10 +1800,13 @@ impl Daemon {
             env!("CARGO_PKG_VERSION").to_string(),
         );
 
+        let extra_router = corvus_api::router(api_state).merge(
+            provider_gateway::ProviderGateway::router(Arc::clone(&provider)),
+        );
         let http = McpHttpServer::bind_with(
             SocketAddr::new(config.bind, config.http_port),
             Arc::clone(&mcp),
-            corvus_api::router(api_state),
+            extra_router,
         )
         .await?;
         let http_addr = http.local_addr();
@@ -1867,6 +1875,7 @@ impl Daemon {
             store,
             metrics,
             channel,
+            provider,
             home: layout,
             recorder,
             ws_addr,
@@ -1928,6 +1937,11 @@ impl Daemon {
     /// The browser channel state.
     pub fn channel(&self) -> &Arc<ChannelState> {
         &self.channel
+    }
+
+    /// The encrypted provider gateway.
+    pub fn provider_gateway(&self) -> &Arc<provider_gateway::ProviderGateway> {
+        &self.provider
     }
 
     /// The recording database path.

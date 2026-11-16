@@ -33,7 +33,7 @@ const MAX_TIMEOUT_MS: u64 = 60_000;
 enum Command {
     SetEndpoint(String),
     ClearEndpoint,
-    Send { text: String },
+    Send { id: u64, text: String },
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +108,17 @@ impl Inner {
         };
         for (_, sender) in pending.drain() {
             let _ = sender.send(Err(error.clone()));
+        }
+    }
+
+    /// Fail one request that was queued but can no longer be written.
+    fn reject_pending(&self, id: u64, error: CdpError) {
+        let mut pending = match self.pending.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(sender) = pending.remove(&id) {
+            let _ = sender.send(Err(error));
         }
     }
 
@@ -349,10 +360,20 @@ impl CdpClient {
     /// Set or replace the browser-level endpoint and start connecting.
     pub fn connect(&self, endpoint: &str) -> Result<(), CdpError> {
         let endpoint = validate_ws_endpoint(endpoint)?;
+        let same_endpoint = self
+            .inner
+            .endpoint
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .as_deref()
+            == Some(endpoint.as_str());
         if let Ok(mut guard) = self.inner.endpoint.lock() {
             *guard = Some(endpoint.clone());
         }
-        self.inner.mark_disconnected("endpoint changed");
+        if !same_endpoint {
+            self.inner.mark_disconnected("endpoint changed");
+        }
         self.commands
             .try_send(Command::SetEndpoint(endpoint))
             .map_err(|error| CdpError::Transport(error.to_string()))
@@ -724,6 +745,7 @@ impl CdpClient {
         if self
             .commands
             .send(Command::Send {
+                id,
                 text: message.to_string(),
             })
             .await
@@ -765,22 +787,40 @@ fn apply_control(inner: &Inner, endpoint: &mut Option<String>, command: Command)
             *endpoint = None;
             true
         }
-        Command::Send { .. } => false,
+        Command::Send { id, .. } => {
+            inner.reject_pending(id, CdpError::NotConnected);
+            false
+        }
     }
 }
 
+/// One drained command that still has to be written to a socket.
+struct DrainedControls {
+    changed: bool,
+    send: Option<(u64, String)>,
+}
+
 /// Drain queued control commands without blocking. A full command channel must
-/// never pin the supervisor to an obsolete endpoint.
+/// never pin the supervisor to an obsolete endpoint. A queued send stops the
+/// drain and is returned to the caller so its request can be answered instead
+/// of disappearing with the command.
 fn drain_controls(
     inner: &Inner,
     commands: &mut mpsc::Receiver<Command>,
     endpoint: &mut Option<String>,
-) -> bool {
+) -> DrainedControls {
     let mut changed = false;
+    let mut send = None;
     while let Ok(command) = commands.try_recv() {
-        changed |= apply_control(inner, endpoint, command);
+        match command {
+            Command::Send { id, text } => {
+                send = Some((id, text));
+                break;
+            }
+            command => changed |= apply_control(inner, endpoint, command),
+        }
     }
-    changed
+    DrainedControls { changed, send }
 }
 
 /// Sleep before a reconnect attempt, but wake immediately for a new endpoint.
@@ -797,7 +837,10 @@ async fn wait_backoff(
         tokio::select! {
             _ = &mut sleep => return Some(false),
             command = commands.recv() => match command {
-                Some(Command::Send { .. }) => continue,
+                Some(Command::Send { id, .. }) => {
+                    inner.reject_pending(id, CdpError::NotConnected);
+                    continue;
+                }
                 Some(command) => {
                     apply_control(inner, endpoint, command);
                     return Some(true);
@@ -821,12 +864,18 @@ async fn supervise(inner: Arc<Inner>, mut commands: mpsc::Receiver<Command>) {
                 backoff = MIN_BACKOFF;
             }
         }
-        if drain_controls(&inner, &mut commands, &mut endpoint) {
+        let drained = drain_controls(&inner, &mut commands, &mut endpoint);
+        if drained.changed {
             backoff = MIN_BACKOFF;
+        }
+        if let Some((id, _)) = drained.send {
+            inner.reject_pending(id, CdpError::NotConnected);
         }
         let Some(url) = endpoint.clone() else {
             match commands.recv().await {
-                Some(Command::Send { .. }) => {}
+                Some(Command::Send { id, .. }) => {
+                    inner.reject_pending(id, CdpError::NotConnected);
+                }
                 Some(command) => {
                     apply_control(&inner, &mut endpoint, command);
                     backoff = MIN_BACKOFF;
@@ -854,8 +903,11 @@ async fn supervise(inner: Arc<Inner>, mut commands: mpsc::Receiver<Command>) {
                     Ok(()) => "connection closed".to_string(),
                     Err(error) => error.to_string(),
                 });
-                let switched = drain_controls(&inner, &mut commands, &mut endpoint)
-                    || endpoint.as_deref() != Some(url.as_str());
+                let drained = drain_controls(&inner, &mut commands, &mut endpoint);
+                if let Some((id, _)) = drained.send {
+                    inner.reject_pending(id, CdpError::NotConnected);
+                }
+                let switched = drained.changed || endpoint.as_deref() != Some(url.as_str());
                 if endpoint.is_none() || switched {
                     backoff = MIN_BACKOFF;
                     continue;
@@ -869,8 +921,11 @@ async fn supervise(inner: Arc<Inner>, mut commands: mpsc::Receiver<Command>) {
             Err(error) => {
                 inner.set_error(format!("connect failed: {error}"));
                 inner.state_notify.notify_waiters();
-                let switched = drain_controls(&inner, &mut commands, &mut endpoint)
-                    || endpoint.as_deref() != Some(url.as_str());
+                let drained = drain_controls(&inner, &mut commands, &mut endpoint);
+                if let Some((id, _)) = drained.send {
+                    inner.reject_pending(id, CdpError::NotConnected);
+                }
+                let switched = drained.changed || endpoint.as_deref() != Some(url.as_str());
                 if switched && endpoint.is_some() {
                     backoff = MIN_BACKOFF;
                     continue;
@@ -970,12 +1025,37 @@ async fn run_connection(
         tokio::select! {
             command = commands.recv() => {
                 match command {
-                    Some(command @ Command::SetEndpoint(_))
-                    | Some(command @ Command::ClearEndpoint) => {
-                        apply_control(inner, endpoint, command);
+                    Some(Command::SetEndpoint(next)) => {
+                        // connect() publishes inner.endpoint before queueing the
+                        // command, so the supervisor may already be connected to
+                        // this endpoint when the stale command arrives.
+                        if endpoint.as_deref() == Some(next.as_str()) {
+                            continue;
+                        }
+                        let current = inner
+                            .endpoint
+                            .lock()
+                            .ok()
+                            .and_then(|guard| guard.clone());
+                        if current.as_deref() != Some(next.as_str()) {
+                            continue;
+                        }
+                        apply_control(inner, endpoint, Command::SetEndpoint(next));
                         return Ok(());
                     }
-                    Some(Command::Send { text }) => {
+                    Some(Command::ClearEndpoint) => {
+                        let cleared = inner
+                            .endpoint
+                            .lock()
+                            .map(|guard| guard.is_none())
+                            .unwrap_or(true);
+                        if !cleared {
+                            continue;
+                        }
+                        apply_control(inner, endpoint, Command::ClearEndpoint);
+                        return Ok(());
+                    }
+                    Some(Command::Send { text, .. }) => {
                         sink.send(Message::Text(text.into()))
                             .await
                             .map_err(|error| CdpError::Transport(error.to_string()))?;
@@ -1027,6 +1107,7 @@ mod tests {
     struct MockOptions {
         close_first: bool,
         close_on_eval: bool,
+        upgrade_delay_ms: u64,
         dialog_not_showing: bool,
         attach_not_found: bool,
         create_targets: bool,
@@ -1080,6 +1161,9 @@ mod tests {
     }
 
     async fn serve_mock(stream: tokio::net::TcpStream, connection: usize, options: MockOptions) {
+        if options.upgrade_delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(options.upgrade_delay_ms)).await;
+        }
         let Ok(socket) = tokio_tungstenite::accept_async(stream).await else {
             return;
         };
@@ -1740,6 +1824,126 @@ mod tests {
             "wait tool swallowed the transport failure until its deadline"
         );
         client.disconnect();
+    }
+
+    #[tokio::test]
+    async fn a_stale_same_endpoint_command_does_not_close_a_fresh_connection() {
+        let (endpoint, _, _) = mock_cdp_with(MockOptions {
+            upgrade_delay_ms: 150,
+            ..MockOptions::default()
+        })
+        .await;
+        let client = CdpClient::new();
+        client.connect(&endpoint).expect("connect");
+        assert!(client.wait_connected(Duration::from_secs(5)).await);
+        // connect() publishes the endpoint before the command reaches the
+        // supervisor. Re-queue the same endpoint to force the old ordering.
+        client
+            .commands
+            .try_send(Command::SetEndpoint(endpoint.clone()))
+            .expect("queue stale endpoint");
+        let value = client
+            .send("Browser.getVersion", json!({}), None, None, Some(2000))
+            .await
+            .expect("first request after connect");
+        assert_eq!(
+            value.get("product").and_then(Value::as_str),
+            Some("MockChrome/1.0")
+        );
+        client.disconnect();
+    }
+
+    #[tokio::test]
+    async fn duplicate_same_endpoint_connects_do_not_lose_the_first_request() {
+        let (endpoint, _, _) = mock_cdp_with(MockOptions {
+            upgrade_delay_ms: 250,
+            ..MockOptions::default()
+        })
+        .await;
+        let client = CdpClient::new();
+        client.connect(&endpoint).expect("first connect");
+        client.connect(&endpoint).expect("duplicate connect");
+        assert!(client.wait_connected(Duration::from_secs(5)).await);
+        client
+            .commands
+            .try_send(Command::SetEndpoint(endpoint.clone()))
+            .expect("queue duplicate endpoint");
+        let value = client
+            .send("Browser.getVersion", json!({}), None, None, Some(2000))
+            .await
+            .expect("request after duplicate connect");
+        assert_eq!(
+            value.get("product").and_then(Value::as_str),
+            Some("MockChrome/1.0")
+        );
+        client.disconnect();
+    }
+
+    #[tokio::test]
+    async fn immediate_connect_and_send_survives_a_hundred_cycles() {
+        let (endpoint, _) = mock_cdp(false).await;
+        for cycle in 0..100 {
+            let client = CdpClient::new();
+            client.connect(&endpoint).expect("connect");
+            assert!(
+                client.wait_connected(Duration::from_secs(5)).await,
+                "cycle {cycle} did not connect"
+            );
+            client
+                .commands
+                .try_send(Command::SetEndpoint(endpoint.clone()))
+                .expect("queue stale endpoint");
+            let value = client
+                .send("Browser.getVersion", json!({}), None, None, Some(2000))
+                .await
+                .unwrap_or_else(|error| panic!("cycle {cycle} request failed: {error}"));
+            assert_eq!(
+                value.get("product").and_then(Value::as_str),
+                Some("MockChrome/1.0")
+            );
+            client.disconnect();
+        }
+    }
+
+    #[tokio::test]
+    async fn send_while_disconnected_fails_without_hanging() {
+        let client = CdpClient::new();
+        let started = Instant::now();
+        let error = tokio::time::timeout(
+            Duration::from_millis(500),
+            client.send("Browser.getVersion", json!({}), None, None, Some(1000)),
+        )
+        .await
+        .expect("send must not wait for a connection")
+        .expect_err("send without an endpoint must fail");
+        assert!(matches!(error, CdpError::NotConnected), "{error:?}");
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn queued_send_without_an_endpoint_is_rejected_not_dropped() {
+        let client = CdpClient::new();
+        let id = client.inner.next_id();
+        let (sender, receiver) = oneshot::channel();
+        client
+            .inner
+            .pending
+            .lock()
+            .expect("pending")
+            .insert(id, sender);
+        client
+            .commands
+            .send(Command::Send {
+                id,
+                text: json!({ "id": id, "method": "Browser.getVersion", "params": {} }).to_string(),
+            })
+            .await
+            .expect("queue send");
+        let result = tokio::time::timeout(Duration::from_secs(1), receiver)
+            .await
+            .expect("queued send must be answered")
+            .expect("response sender");
+        assert!(matches!(result, Err(CdpError::NotConnected)), "{result:?}");
     }
 }
 
