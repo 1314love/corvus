@@ -41,7 +41,7 @@ tracing-appender = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 axum = { version = "0.8", features = ["ws"] }
 futures = "0.3"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 base64 = "0.22"
 sha2 = "0.10"
 rusqlite = { version = "0.40", features = ["bundled"] }
