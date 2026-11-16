@@ -6,9 +6,9 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
-## 1.7.0 - Unreleased
+## 1.7.0 - 2026-11-16
 
-The 1.7.0 working tree rescopes the MCP surface to 62 tools in ten categories and adds 18 tools; the published 1.6.0 release had 43 in nine. No 1.7.0 tag, CI run, published package or published asset exists. QA acceptance and local Windows packaging passed on the re-frozen 62-tool tree, but no 1.7.0 CI run, published package or published asset exists; the earlier 44-tool report and local Windows package are superseded, and every CI, published-package and release evidence row is Pending.
+1.7.0 was released on 2026-11-16 from annotated tag `v1.7.0` at commit `f12930c`; 1.6.0 is the previous release. The release rescopes the MCP surface to 62 tools in ten categories and adds 18 tools. QA acceptance passed on the frozen 62-tool tree: 263 Rust tests on 25 result lines, 137 conformance checks, 91 Vitest tests in 13 files, a 14-file/537,844-byte extension build and 3 Playwright E2E tests; local Windows packaging passed 160/160 checks on ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e`. Main CI run 43795994581 passed eight jobs, release workflow 43796443828 succeeded and GitHub Release 446568768 published Windows ZIP 19,159,984 B, Linux tarball 20,443,563 B and combined `SHA256SUMS` 194 B.
 
 ### Added
 
@@ -19,11 +19,11 @@ The 1.7.0 working tree rescopes the MCP surface to 62 tools in ten categories an
 
 The catalogue grows from 44 to 62 tools across ten categories: page 15, input 10, tabs 8, network 5, storage 5, files 3, cdp 5, sessions 4, diagnostics 6 and help 1. CDP serves 46 browser-facing tools, the extension 42 and 12 are daemon-local; `tab_group`, `tab_duplicate`, `window_list` and `window_new` are extension-only, and forced CDP returns `CAPABILITY_UNAVAILABLE`.
 `browser_batch` allows 42 tools and excludes ten by name (`browser_batch`, `browser_channel`, `metrics`, `logs_tail`, `page_pdf`, `tab_group`, `tab_duplicate`, `window_new`, `health`, `version`); `storage`, `sessions` and `help` are not batchable. The extension declares 11 permissions including `tabGroups`, runs 42 handlers and keeps `all_frames: false`.
-`browser_screenshot` and `page_pdf` are read-only for guardrails but their pixels and PDF bytes are not redacted or boundary-wrapped. Recording redacts `cookie_set.value` and `storage_set` entry values, and guardrails redact `storage_get` entry values. The schema snapshot on disk is the complete 62-entry file; conformance passed 137 checks with 0 failed and 0 skipped on the frozen 62-tool binary. QA acceptance passed with 263 Rust tests on 25 result lines, 91 Vitest tests in 13 files and 3 Playwright E2E tests; local Windows packaging passed 160/160 checks on ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e`. CI, published-package and release evidence is Pending.
+`browser_screenshot` and `page_pdf` are read-only for guardrails but their pixels and PDF bytes are not redacted or boundary-wrapped. Recording redacts `cookie_set.value` and `storage_set` entry values, and guardrails redact `storage_get` entry values. The schema snapshot on disk is the complete 62-entry file; conformance passed 137 checks with 0 failed and 0 skipped on the frozen 62-tool binary. QA acceptance passed with 263 Rust tests on 25 result lines, 91 Vitest tests in 13 files and 3 Playwright E2E tests; local Windows packaging passed 160/160 checks on ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e`. Main CI run 43795994581 passed eight jobs, release workflow 43796443828 succeeded, and GitHub Release 446568768 published the assets: Windows ZIP 19,159,984 B SHA-256 `3269ea25a916687c0d638b4798965e24d32dc4adbd5cd9490352afc21076e5e1`, Linux tarball 20,443,563 B SHA-256 `f0e90a7a8d338cdbe3bcee251739567c03186395071457d1a08b064c2733b4c1` and combined `SHA256SUMS` 194 B SHA-256 `7d7163ea9ceabbd9f27018e9510ba6c4cdc96e939bea7e664e5cc62e0bfd6fea`.
 
 ## 1.6.0 - 2026-11-15
 
-1.6.0 was released on 2026-11-15 from annotated tag `v1.6.0` and is the current release; 1.5.0 is the previous release. Formal QA acceptance passed on the working tree at HEAD `61ca85f`: 237 workspace tests on 25 result lines, 137 conformance checks, 55 Vitest tests in ten files, a 14-file/490,393-byte extension build and Playwright 1/1. It adds optional daemon guardrails but no MCP tool; the surface remains 43 tools in nine categories. Main CI run 43716832915 passed eight jobs, release workflow 43717236667 succeeded and GitHub Release 446071476 published the assets.
+1.6.0 was released on 2026-11-15 from annotated tag `v1.6.0` and is the previous release; 1.5.0 is the release before it. Formal QA acceptance passed on the working tree at HEAD `61ca85f`: 237 workspace tests on 25 result lines, 137 conformance checks, 55 Vitest tests in ten files, a 14-file/490,393-byte extension build and Playwright 1/1. It adds optional daemon guardrails but no MCP tool; the surface remains 43 tools in nine categories. Main CI run 43716832915 passed eight jobs, release workflow 43717236667 succeeded and GitHub Release 446071476 published the assets.
 
 ### Added
 
@@ -40,7 +40,7 @@ The catalogue grows from 44 to 62 tools across ten categories: page 15, input 10
 
 ## 1.5.0 - 2026-11-15
 
-1.5.0 was released on 2026-11-15 and is the current release; 1.4.0 is the previous release. The MCP surface is unchanged at 43 tools in nine categories. QA acceptance and Windows installer acceptance passed on the frozen tree; main CI run 43702442120 passed all eight jobs and GitHub Release 445967405 published the Windows, Linux and combined checksum assets.
+1.5.0 was released on 2026-11-15; 1.4.0 is the release before it. The MCP surface is unchanged at 43 tools in nine categories. QA acceptance and Windows installer acceptance passed on the frozen tree; main CI run 43702442120 passed all eight jobs and GitHub Release 445967405 published the Windows, Linux and combined checksum assets.
 
 ### Added
 
@@ -241,9 +241,9 @@ First public release.
 
 ## 中文
 
-## 1.7.0 - 未发布
+## 1.7.0 - 2026-11-16
 
-1.7.0 工作树把 MCP 工具面重划为十类 62 个工具并新增 18 个工具；已发布的 1.6.0 为九类 43 个。不存在 1.7.0 标签、CI 运行、已发布包或已发布产物。QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过，但不存在 1.7.0 CI 运行、已发布包或已发布产物；此前的 44 工具报告与本地 Windows 包已被取代，所有 CI、已发布包与发布证据行均为 Pending。
+1.7.0 于 2026-11-16 由附注标签 `v1.7.0` 在提交 `f12930c` 发布；1.6.0 为上一版本。该发布把 MCP 工具面重划为十类 62 个工具并新增 18 个工具。QA 验收在冻结的 62 工具树上通过：25 条结果行上的 263 个 Rust 测试、137 项一致性检查、13 个文件中的 91 个 Vitest 测试、14 个文件/537,844 B 的扩展构建与 3 个 Playwright 端到端测试；本地 Windows 打包在 ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e` 上通过 160/160 项检查。主 CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了 Windows ZIP 19,159,984 B、Linux tar 包 20,443,563 B 与合并 `SHA256SUMS` 194 B。
 
 ### 新增
 
@@ -254,11 +254,11 @@ First public release.
 
 目录从 44 个增至十类 62 个工具：page 15、input 10、tabs 8、network 5、storage 5、files 3、cdp 5、sessions 4、diagnostics 6 与 help 1。CDP 提供 46 个浏览器类工具，扩展提供 42 个，12 个为守护进程本地；`tab_group`、`tab_duplicate`、`window_list` 与 `window_new` 仅扩展可用，强制 CDP 返回 `CAPABILITY_UNAVAILABLE`。
 `browser_batch` 允许 42 个工具，按名称排除十个（`browser_batch`、`browser_channel`、`metrics`、`logs_tail`、`page_pdf`、`tab_group`、`tab_duplicate`、`window_new`、`health`、`version`）；`storage`、`sessions` 与 `help` 不可批量。扩展声明 11 项权限（含 `tabGroups`）、运行 42 个处理器并保持 `all_frames: false`。
-`browser_screenshot` 与 `page_pdf` 对守护策略是只读的，但像素与 PDF 字节不脱敏、不包裹边界。录制脱敏 `cookie_set.value` 与 `storage_set` 条目值，守护策略脱敏 `storage_get` 条目值。磁盘上的 schema 快照已完成为 62 条目文件；冻结的 62 工具二进制上一致性检查通过 137 项、0 失败、0 跳过。QA 验收通过：25 条结果行上的 263 个 Rust 测试、13 个文件中的 91 个 Vitest 测试与 3 个 Playwright 端到端测试；本地 Windows 打包在 ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e` 上通过 160/160 项检查。CI、已发布包与发布证据仍为 Pending。
+`browser_screenshot` 与 `page_pdf` 对守护策略是只读的，但像素与 PDF 字节不脱敏、不包裹边界。录制脱敏 `cookie_set.value` 与 `storage_set` 条目值，守护策略脱敏 `storage_get` 条目值。磁盘上的 schema 快照已完成为 62 条目文件；冻结的 62 工具二进制上一致性检查通过 137 项、0 失败、0 跳过。QA 验收通过：25 条结果行上的 263 个 Rust 测试、13 个文件中的 91 个 Vitest 测试与 3 个 Playwright 端到端测试；本地 Windows 打包在 ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e` 上通过 160/160 项检查。主 CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了产物：Windows ZIP 19,159,984 B SHA-256 `3269ea25a916687c0d638b4798965e24d32dc4adbd5cd9490352afc21076e5e1`、Linux tar 包 20,443,563 B SHA-256 `f0e90a7a8d338cdbe3bcee251739567c03186395071457d1a08b064c2733b4c1` 与合并 `SHA256SUMS` 194 B SHA-256 `7d7163ea9ceabbd9f27018e9510ba6c4cdc96e939bea7e664e5cc62e0bfd6fea`。
 
 ## 1.6.0 - 2026-11-15
 
-1.6.0 于 2026-11-15 由附注标签 `v1.6.0` 发布，为当前版本；1.5.0 为上一版本。正式 QA 验收在 HEAD `61ca85f` 的工作树上通过：25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个文件/490,393 B 的扩展构建与 Playwright 1/1。它新增可选守护进程策略，但不新增 MCP 工具；工具面仍为九个类别中的 43 个工具。主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了产物。
+1.6.0 于 2026-11-15 由附注标签 `v1.6.0` 发布，为上一版本；1.5.0 为其前一版本。正式 QA 验收在 HEAD `61ca85f` 的工作树上通过：25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个文件/490,393 B 的扩展构建与 Playwright 1/1。它新增可选守护进程策略，但不新增 MCP 工具；工具面仍为九个类别中的 43 个工具。主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了产物。
 
 ### 新增
 
@@ -275,7 +275,7 @@ First public release.
 
 ## 1.5.0 - 2026-11-15
 
-1.5.0 于 2026-11-15 发布，为当前版本；1.4.0 为上一版本。MCP 面保持 43 个工具、九个类别不变。QA 验收与 Windows 安装包验收在冻结的工作树上通过；主 CI 运行 43702442120 的八个任务全部通过，GitHub 发布 445967405 已发布 Windows、Linux 与合并校验和产物。
+1.5.0 于 2026-11-15 发布；1.4.0 为其前一版本。MCP 面保持 43 个工具、九个类别不变。QA 验收与 Windows 安装包验收在冻结的工作树上通过；主 CI 运行 43702442120 的八个任务全部通过，GitHub 发布 445967405 已发布 Windows、Linux 与合并校验和产物。
 
 ### 新增
 

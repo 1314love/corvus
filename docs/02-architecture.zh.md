@@ -2,7 +2,7 @@
 
 [English](02-architecture.md) | [中文](02-architecture.zh.md)
 
-状态：1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。1.6.0 发布延续端口与适配器后端、43 工具 MCP 面与可选守护进程策略。工作树新增未发布的 1.7.0 工作，把 MCP 面扩展到 10 个类别共 62 个工具，包括 `browser_screenshot`、PDF 捕获，以及新的 page、input、标签页、storage 与 diagnostics 工具。QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过；不存在 1.7.0 CI 运行、已发布包或已发布产物，因此所有 CI 与发布行均为 Pending。标签对象 `c5daf98eb03b0fac310e53c3a59edfa77874f919` 指向 `b420c3787a8f240c60514ac8c745e67474f1c1fd`；主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了产物。1.6.0 的 QA PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，基于 HEAD `61ca85f` 的工作树。读者：工程实现者。
+状态：1.7.0 是当前已发布版本，于 2026-11-16 从标签 `v1.7.0` 发布；1.6.0 为上一版本。1.7.0 发布保留端口与适配器后端，并把 MCP 工具面扩展为 10 个类别 62 个工具，包括 `browser_screenshot`、PDF 捕获以及新的 page、input、tab、storage 与 diagnostics 工具，并保留可选的守护策略。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过；本地 Windows 打包单独通过，已发布产物由 CI 重新构建。标签对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向 `f12930c145c8cac05a50db9702ab3f1ad021c666`；主 CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了产物。1.6.0 发布证据记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)。读者：工程师。
 
 ## 1. 约束设计的硬条件
 
@@ -132,7 +132,7 @@ M2 第一波冻结的工具面共 18 个。`browser_navigate`、`page_snapshot`�
 | `browser_eval` | `expression`；`world?`（`main` 或 `isolated` 默认；经 CDP `Runtime.evaluate` 执行）；`tab_id?` | `ok: true`、`value`；或 `ok: false`、`error`（含 `name`、`message`） |
 | `browser_wait` | `tab_id?`；`selector?`、`text?`、`url_contains?` 至少一个；`timeout_ms?` 100..120000 默认 10000 | `matched: true`、`waited_ms`、`url` |
 | `browser_history` | `action`（`back`、`forward`、`reload`；back/forward 移动一个条目）；`tab_id?` | `action`、最终 `url`、`loaded` |
-| `browser_screenshot`（1.7.0 工作树） | `target?` 默认 `viewport`（`viewport`、`full_page`、`element`）；`element` 必填 `ref?`（CDP 用 `@cN`，扩展用 `@eN`）；`format?` 默认 `webp`；`quality?` 1..100 默认 80；`inline?` 默认 false；`tab_id?` | `format`、`mime_type`、`target`、`tab_id`、`url`、`inline`、`width`、`height`、`bytes`、`sha256`、`path`、`summary`；`bbox` 仅 `element`；`image` 仅 `inline` |
+| `browser_screenshot`（1.7.0 发布） | `target?` 默认 `viewport`（`viewport`、`full_page`、`element`）；`element` 必填 `ref?`（CDP 用 `@cN`，扩展用 `@eN`）；`format?` 默认 `webp`；`quality?` 1..100 默认 80；`inline?` 默认 false；`tab_id?` | `format`、`mime_type`、`target`、`tab_id`、`url`、`inline`、`width`、`height`、`bytes`、`sha256`、`path`、`summary`；`bbox` 仅 `element`；`image` 仅 `inline` |
 | `tab_list` | 无 | `tabs[]`，元素含 `tab_id`、`index`、`active`、`url`、`title`、`status` |
 | `tab_new` | `url?`；`active?` 默认 true | `tab_id`、`url`、`loaded`、`previous_tab_id` |
 | `tab_close` | `tab_id` | `closed: true`、`tab_id`、`next_tab_id?` |
@@ -252,7 +252,7 @@ v1.2.0 新增十个工具，工具面达到 42 个；v1.3.0 再新增 `browser_b
 
 v1.3.0 保持混合传输并降低默认上下文开销。`page_snapshot` 在两个通道上都默认 `format: "compact"`，返回一棵文本树；`format: "json"` 保留对象形式。紧凑行在扩展通道为 `@eN 角色 "名称" [状态] value="..." bbox=x,y,w,h`，在 CDP 通道为 `@c<backendNodeId>`，文本节点使用 `# "文本"` 行。`max_nodes` 默认 300，可选 `viewport_only` 与 `include_bbox` 用于收窄或标注树。引用只在产生它的快照内有效。
 
-`browser_batch` 在守护进程本地一次执行最多 20 个 `{tool,args}` 步骤，默认在首个失败步骤停止（`stop_on_error: true`），并拒绝递归与守护进程控制类工具；1.7.0 的允许清单留下 42 个可批量工具。工具发现默认精简：62 工具版本的 1.7.0 简版与完整版 `tools/list` 正文测得原始 31,367 与 52,328 字节（含末尾换行 31,368 与 52,329 字节）；已发布的 1.6.0 测得简版 20,493 字节、完整版 37,496 字节。成功的 `tools/call` 只返回一个紧凑 JSON 文本块，不含 `structuredContent`，客户端解析 `content[0].text`。1.7.0 的唯一例外仍是内联截图，它会追加一个 MCP 图像块。强制 CDP 在 1.7.0 工作树覆盖 46 个浏览器类工具；已发布的 1.6.0 为 33 个。
+`browser_batch` 在守护进程本地一次执行最多 20 个 `{tool,args}` 步骤，默认在首个失败步骤停止（`stop_on_error: true`），并拒绝递归与守护进程控制类工具；1.7.0 的允许清单留下 42 个可批量工具。工具发现默认精简：62 工具版本的 1.7.0 简版与完整版 `tools/list` 正文测得原始 31,367 与 52,328 字节（含末尾换行 31,368 与 52,329 字节）；已发布的 1.6.0 测得简版 20,493 字节、完整版 37,496 字节。成功的 `tools/call` 只返回一个紧凑 JSON 文本块，不含 `structuredContent`，客户端解析 `content[0].text`。1.7.0 的唯一例外仍是内联截图，它会追加一个 MCP 图像块。强制 CDP 在 1.7.0 发布覆盖 46 个浏览器类工具；上一版 1.6.0 为 33 个。
 
 ### 5.8 端口适配器后端与 REST API（v1.4.0）
 
@@ -301,13 +301,13 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 
 1.6.0 发布在 `crates/corvusd/src/guardrails.rs` 新增可选守护策略。严格的 version 1 JSON 文档可以强制只读、允许或拒绝工具、把 `browser_navigate` 与 `tab_new` 限制到允许主机并复查 `browser_navigate`、`tab_new` 与 `browser_history` 的结果 URL、阻止字面私有网络主机、脱敏 cookie 值，并把 `page_text`、`page_html` 与紧凑 `page_snapshot` 文本包裹在不可信内容标记中。非法策略会中止启动。`RouterBackend::call` 在派发前检查策略；`browser_batch` 逐步骤检查，`session_replay` 跳过被拒绝步骤。拒绝使用 `POLICY_DENIED`，REST 返回 403。这不是网络沙箱：不解析 DNS，被允许的页面仍可请求其他源。正式 QA PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，基于 HEAD `61ca85f` 工作树：237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个构建文件（490,393 B）与 Playwright 1/1；一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium。见 [11-guardrails.zh.md](11-guardrails.zh.md)。
 
-### 5.11 工具扩展与视觉感知（1.7.0 工作树）
+### 5.11 工具扩展与视觉感知（1.7.0 发布）
 
-1.7.0 工作树把 MCP 工具面从 9 个类别 43 个工具扩展为 10 个类别 62 个工具。新增 18 个工具：四个 page 工具（`page_pdf`、`page_links`、`page_forms`、`page_accessibility`）、三个 input 工具（`browser_drag`、`browser_focus`、`browser_highlight`）、四个标签页与窗口工具（`tab_group`、`tab_duplicate`、`window_list`、`window_new`）、五个 `storage` 工具（`cookie_set`、`cookie_clear`、`storage_get`、`storage_set`、`storage_clear`）与两个 diagnostics 工具（`health`、`version`）。`browser_screenshot` 仍是第 44 个工具，page 类别现在有 15 个。原有 44 个名称与 schema 不变。不新增 REST 路由、录制 schema 或 crate；`crates/corvus-application/src/spec.rs` 从 33 条规格增至 49 条，`crates/corvus-cdp/src/tools.rs` 从 34 个名称增至 46 个，`crates/corvus-mcp/src/tools.rs` 从 44 个增至 62 个。
+1.7.0 发布把 MCP 工具面从 9 个类别 43 个工具扩展为 10 个类别 62 个工具。新增 18 个工具：四个 page 工具（`page_pdf`、`page_links`、`page_forms`、`page_accessibility`）、三个 input 工具（`browser_drag`、`browser_focus`、`browser_highlight`）、四个标签页与窗口工具（`tab_group`、`tab_duplicate`、`window_list`、`window_new`）、五个 `storage` 工具（`cookie_set`、`cookie_clear`、`storage_get`、`storage_set`、`storage_clear`）与两个 diagnostics 工具（`health`、`version`）。`browser_screenshot` 仍是第 44 个工具，page 类别现在有 15 个。原有 44 个名称与 schema 不变。不新增 REST 路由、录制 schema 或 crate；`crates/corvus-application/src/spec.rs` 从 33 条规格增至 49 条，`crates/corvus-cdp/src/tools.rs` 从 34 个名称增至 46 个，`crates/corvus-mcp/src/tools.rs` 从 44 个增至 62 个。
 
 **通道。** 守护进程本地工具从 10 个增至 12 个，新增 `health` 与 `version`。CDP 提供 50 个浏览器类工具中的 46 个；扩展提供 42 个。38 个工具在两个通道都可用，8 个仍仅 CDP，`tab_group`、`tab_duplicate`、`window_list` 与 `window_new` 仅扩展可用，因此强制 `cdp` 会为它们返回 `CAPABILITY_UNAVAILABLE`。扩展为每个浏览器工具保留一个基于 debugger 的处理器：处理器从 26 个增至 42 个，权限清单从 10 项增至 11 项并加入 `tabGroups`，`all_frames` 仍为 false。
 
-**browser_screenshot。** 1.7.0 工作树新增 `browser_screenshot`，它是由守护进程最终处理的捕获工具，不新增 crate：MCP schema 位于 `crates/corvus-mcp/src/tools.rs`，CDP 捕获位于 `crates/corvus-cdp/src/tools.rs`，扩展捕获位于 `extension/src/background/screenshot.ts`，`crates/corvusd/src/lib.rs` 的 `finalize_screenshot_result` 处理所有通道。`target` 为 `viewport`、`full_page` 或 `element`。CDP 使用 `Page.captureScreenshot`；`full_page` 读取布局尺寸并捕获视口之外的内容，`element` 从 `page_snapshot` 解析 `@c<backendNodeId>` 包围盒。扩展使用现有 debugger 通道与 `@e<number>` 引用，只有活动标签页的 PNG 视口才回退到 `chrome.tabs.captureVisibleTab`。来自错误通道的引用返回类型化 `BAD_ARGS`。`format` 为 `webp`、`png` 或 `jpeg`；`quality` 对 webp/jpeg 取 1..100，png 忽略。
+**browser_screenshot。** 1.7.0 发布新增 `browser_screenshot`，它是由守护进程最终处理的捕获工具，不新增 crate：MCP schema 位于 `crates/corvus-mcp/src/tools.rs`，CDP 捕获位于 `crates/corvus-cdp/src/tools.rs`，扩展捕获位于 `extension/src/background/screenshot.ts`，`crates/corvusd/src/lib.rs` 的 `finalize_screenshot_result` 处理所有通道。`target` 为 `viewport`、`full_page` 或 `element`。CDP 使用 `Page.captureScreenshot`；`full_page` 读取布局尺寸并捕获视口之外的内容，`element` 从 `page_snapshot` 解析 `@c<backendNodeId>` 包围盒。扩展使用现有 debugger 通道与 `@e<number>` 引用，只有活动标签页的 PNG 视口才回退到 `chrome.tabs.captureVisibleTab`。来自错误通道的引用返回类型化 `BAD_ARGS`。`format` 为 `webp`、`png` 或 `jpeg`；`quality` 对 webp/jpeg 取 1..100，png 忽略。
 
 **截图存储与信封。** `crates/corvusd/src/screenshot.rs` 把解码后的图像限制在 8 MiB，解码前拒绝明显超大的编码载荷，校验解码尺寸，并在 `<home>/screenshots/` 下写入 `screenshot-<unix-millis>-<uuid8>.<ext>`，不覆盖已有文件。结果携带 `width`、`height`、`bytes`、`sha256`、`path`、`summary` 与 `inline`，不再携带 base64。`inline: true` 追加第二个 MCP 图像内容块；`browser_batch` 在派发前以 `BAD_ARGS` 拒绝该形式，每个成功截图都只经共享派发路径最终处理一次。截图对守护策略是 `readOnly`，但像素不会被脱敏或包裹边界。
 
@@ -315,7 +315,7 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 
 **页面、输入与存储工具。** `page_links`、`page_forms` 与 `page_accessibility` 是只读 page 工具。Links 扫描顶层文档与开放 shadow root，不扫描同源 iframe；Forms 在相应字段未启用 `include_values` 时绝不返回值，也绝不返回密码值；Accessibility 通过 CDP 或扩展 debugger 使用 `Accessibility.getFullAXTree`，没有 debugger 时返回 `CAPABILITY_UNAVAILABLE`。`browser_drag`、`browser_focus` 与 `browser_highlight` 是 input 工具；highlight 为只读，且只接受 `ref` 或 `selector` 之一。新增的 `storage` 类别包含 `cookie_set`、`cookie_clear`、`storage_get`、`storage_set` 与 `storage_clear`；存储操作要求 http(s) 页面源，`cookie_set` 与 `storage_set` 绝不回显值，录制会脱敏 `cookie_set.value` 与每个存储条目的值。守护策略还会把每个 `storage_get` 结果值替换为 `[redacted]` 并添加 `redacted: true`。`tab_group`、`tab_duplicate`、`window_list` 与 `window_new` 仅扩展可用；`tab_group` 需要新增的 `tabGroups` 权限。
 
-**批量与验证。** `browser_batch` 保留类别允许清单（page、input、tabs、network、files、cdp、diagnostics），并按名称排除十个工具：`browser_batch`、`browser_channel`、`metrics`、`logs_tail`、`page_pdf`、`tab_group`、`tab_duplicate`、`window_new`、`health` 与 `version`；`storage`、`sessions` 与 `help` 不可批量，故可批量工具为 42 个。只读注解覆盖 `health`、`version`、`page_links`、`page_forms`、`page_accessibility`、`window_list`、`storage_get`、`page_pdf` 与 `browser_highlight`。QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过；不存在 1.7.0 CI 运行、已发布包或已发布产物，因此 CI 与发布行仍为 Pending，1.6.0 仍是包含 43 个工具的当前已发布版本。
+**批量与验证。** `browser_batch` 保留类别允许清单（page、input、tabs、network、files、cdp、diagnostics），并按名称排除十个工具：`browser_batch`、`browser_channel`、`metrics`、`logs_tail`、`page_pdf`、`tab_group`、`tab_duplicate`、`window_new`、`health` 与 `version`；`storage`、`sessions` 与 `help` 不可批量，故可批量工具为 42 个。只读注解覆盖 `health`、`version`、`page_links`、`page_forms`、`page_accessibility`、`window_list`、`storage_get`、`page_pdf` 与 `browser_highlight`。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过；本地 Windows 打包单独通过。标签 `v1.7.0` 的对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向 `f12930c145c8cac05a50db9702ab3f1ad021c666`；CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了 Windows、Linux 与合并产物。`page_pdf` 强制 32 MiB 解码上限；实机上限未触及，最大实机 PDF 为 55,891 B。1.6.0 为包含 43 个工具的上一版本。
 
 ## 6. 扩展设计
 
@@ -413,7 +413,7 @@ OpenAPI JSON 位于 `/api-docs/openapi.json`，Swagger UI 位于 `/docs`，两�
 - CI 矩阵：windows-latest、macos-latest、ubuntu-latest，各自运行 `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace`。
 - 已发布 1.6.0 的打包任务：`scripts/package-linux.sh` 构建 x86_64 tar.gz 并校验 systemd 单元；Docker 任务构建镜像、检查版本与 `/health`，并断言工具面为 43 个。
 - 扩展：TypeScript 与 Vue 3 源码位于 `extension/src`，由三次 Vite 构建输出到 `extension/build/extension`（`pnpm install && pnpm build`）。已发布的 1.6.0 中，Vitest 在八个文件中覆盖 41 个单元、契约与组件测试，Playwright 运行隔离端到端套件；manifest key 固定，保证扩展 id 跨机器稳定。
-- 1.7.0 工作树把工具数改为 62、扩展权限改为 11 项、处理器改为 42 个；冻结工作树的 QA 与本地打包已通过，CI 与发布证据仍为 Pending。
+- 1.7.0 发布有 62 个工具、11 项扩展权限与 42 个处理器；QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过，本地打包单独通过，CI 运行 43795994581、发布工作流 43796443828 与 GitHub 发布 446568768 发布了产物。
 - REST、OpenAPI 与认证：路由器与认证测试纳入 workspace 测试；`/api-docs/openapi.json` 与 `/docs` 由 API 测试覆盖。
 - 发布：平台安装包附 `SHA256SUMS`；1.5.0 不提供 macOS 安装包。
 

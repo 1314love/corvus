@@ -2,7 +2,7 @@
 
 [English](11-guardrails.md) | [中文](11-guardrails.zh.md)
 
-状态：v1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。1.7.0 工作树把 MCP 工具面重划为十类 62 个工具并新增 18 个工具；`browser_screenshot` 与 `page_pdf` 对守护策略是只读的，但像素与 PDF 字节不脱敏、不包裹边界也不被检查。扩展声明 11 项权限（含 `tabGroups`）、42 个基于 debugger 的处理器与 `all_frames: false`；四个标签页与窗口工具仅扩展可用。QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过；此前的 44 工具 v1.7.0 结果早于本次重划，且不存在 1.7.0 CI 运行、已发布包或已发布产物，因此 CI 与发布证据仍为 Pending。守护策略实现在 1.6.0 的 HEAD `61ca85f` 工作树上通过正式 QA（237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试与 Playwright 1/1；一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium）。主 CI 运行 `43716832915` 通过八个任务，发布工作流 `43717236667` 成功，GitHub 发布 `446071476` 发布了产物。读者：运维人员与 MCP/REST 客户端作者。
+状态：v1.7.0 是当前已发布版本，于 2026-11-16 从标签 `v1.7.0` 发布；1.6.0 为上一版本。1.7.0 发布将 MCP 工具面扩展为 10 个类别共 62 个工具并新增 18 个工具；`browser_screenshot` 与 `page_pdf` 对守护策略是只读的，但其像素与 PDF 字节不会被脱敏、边界包裹或检查。扩展声明 11 项权限（含 `tabGroups`）、42 个基于 debugger 的处理器与 `all_frames: false`；四个标签页与窗口工具仅扩展可用。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过；本地 Windows 打包单独通过，已发布产物由 CI 重新构建。标签 `v1.7.0` 的对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向 `f12930c145c8cac05a50db9702ab3f1ad021c666`；主 CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了产物。守护策略实现在 1.6.0 工作树 HEAD `61ca85f` 上通过正式 QA（237 个 workspace 测试、137 项一致性检查、十个文件中的 55 个 Vitest 测试与 Playwright 1/1；一个低危 `browser_type` 通道发现，无高危或中危）。读者：运维与 MCP/REST 客户端作者。
 
 ## 1. 概览
 
@@ -25,7 +25,7 @@ Corvus 可在守护进程启动时加载一个可选的本地策略文件。该�
 | `redact_secrets` | 布尔 | `false` | 对 `browser_cookies` 与 `storage_get` 结果中的值脱敏。 |
 | `content_boundary` | 布尔 | `false` | 用标记行包裹不可信页面文本与 HTML。 |
 
-空的 `allow_tools` 表示不设允许列表限制；空的 `allowed_hosts` 表示不设主机限制。工具名必须存在于 1.7.0 工作树的十类 62 工具目录中；已发布的 1.6.0 为 43 个。未知名称会拒绝启动。同一个名称不能同时出现在 `allow_tools` 与 `deny_tools` 中。
+空的 `allow_tools` 表示不限制允许列表。空的 `allowed_hosts` 表示不限制主机。工具名必须存在于 1.7.0 发布的 62 工具、10 类别目录中；上一版本 1.6.0 为 43 个。未知名称会拒绝启动。同一名称不得同时出现在 `allow_tools` 与 `deny_tools` 中。
 
 主机条目要么是精确的小写主机（例如 `example.com`），要么是前导通配后缀（例如 `*.example.com`）。模式拒绝空白、`/`、`:`、`?`、`#`、`@`、内嵌 `*`、前导或尾随点以及双点；字符仅限 ASCII 字母、数字、点、连字符与下划线。端口被忽略。`*.example.com` 匹配裸域 `example.com` 及其子域，但不匹配 `api.example.com.evil.test`。
 
@@ -168,11 +168,11 @@ Cookie 与存储脱敏刻意保持狭窄：`browser_cookies` 只处理顶层 `co
 - `details.policy` 会在守护进程响应中暴露本地策略路径。扩展界面会隐藏它，但直连 MCP/REST 客户端会收到。
 - 被拒的 `browser_batch` 步骤是错误，默认会停止批次；`session_replay` 会把被拒步骤记录为跳过而非执行。
 - 只读是目录分类。依赖某工具前请查阅 [09-tools.zh.md](09-tools.zh.md) 中该工具的当前分类。
-- 不宣称任何 v1.6.0 实机部署，NFR-3 仍未通过。1.7.0 工作树重划为十类 62 个工具；`browser_screenshot` 与 `page_pdf` 对守护策略是只读的，但截图像素与 PDF 字节不脱敏、不包裹边界也不被检查。四个标签页与窗口工具仅扩展可用。QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过；1.7.0 的所有 CI 与发布行均为 Pending。
+- 不宣称任何 1.7.0 实机部署，NFR-3 仍未通过。1.7.0 发布有 10 个类别共 62 个工具；`browser_screenshot` 与 `page_pdf` 对守护策略是只读的，但截图像素与 PDF 字节不会被脱敏、边界包裹或检查。四个标签页与窗口工具仅扩展可用。QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过；本地 Windows 打包单独通过，所有已发布产物与 CI 结果记录在发布说明中。`page_pdf` 强制 32 MiB 解码上限；实机上限未触及，最大实机 PDF 为 55,891 B。
 
 ## 10. 相关文档
 
 - [09-tools.zh.md](09-tools.zh.md)：工具输入、结果与错误码。
 - [02-architecture.zh.md](02-architecture.zh.md)：执行点与守护进程结构。
 - [05-deployment.zh.md](05-deployment.zh.md)：服务配置与健康检查。
-- [release-notes/v1.6.0.zh.md](release-notes/v1.6.0.zh.md)：1.6.0 发布证据；[release-notes/v1.7.0.zh.md](release-notes/v1.7.0.zh.md)：未发布的 1.7.0 工作树。
+- [release-notes/v1.6.0.md](release-notes/v1.6.0.md) 记录 1.6.0 发布证据，[release-notes/v1.7.0.md](release-notes/v1.7.0.md) 记录 1.7.0 发布。

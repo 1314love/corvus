@@ -2,7 +2,7 @@
 
 [English](11-guardrails.md) | [中文](11-guardrails.zh.md)
 
-Status: v1.6.0 is the current published release, released on 2026-11-15 from tag `v1.6.0`; 1.5.0 is the previous release. The 1.7.0 working tree rescopes the MCP surface to 62 tools in ten categories and adds 18 tools; `browser_screenshot` and `page_pdf` are read-only for guardrails, but their pixels and PDF bytes are not redacted, boundary-wrapped or inspected. The extension declares 11 permissions including `tabGroups`, 42 debugger-based handlers and `all_frames: false`; four tab and window tools are extension-only. QA acceptance and local Windows packaging passed on the re-frozen 62-tool tree; the earlier 44-tool v1.7.0 results predate the rescope, while no 1.7.0 CI run, published package or published asset exists, so CI and published-release evidence is Pending. The guardrails implementation passed formal QA on the 1.6.0 working tree at HEAD `61ca85f` (237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files and Playwright 1/1; one Low `browser_type` channel finding, no High or Medium). Main CI run `43716832915` passed eight jobs, release workflow `43717236667` succeeded, and GitHub Release `446071476` published the assets. Audience: operators and MCP/REST client authors.
+Status: v1.7.0 is the current published release, released on 2026-11-16 from tag `v1.7.0`; 1.6.0 is the previous release. The 1.7.0 release rescopes the MCP surface to 62 tools in ten categories and adds 18 tools; `browser_screenshot` and `page_pdf` are read-only for guardrails, but their pixels and PDF bytes are not redacted, boundary-wrapped or inspected. The extension declares 11 permissions including `tabGroups`, 42 debugger-based handlers and `all_frames: false`; four tab and window tools are extension-only. QA acceptance passed at HEAD `d804c33` before release commit `f12930c`; local Windows packaging passed separately, and the published assets are CI rebuilds. Tag `v1.7.0` object `84d7c086147e96ff58531198b6ead55c65ff116f` targets `f12930c145c8cac05a50db9702ab3f1ad021c666`; main CI run 43795994581 passed eight jobs, release workflow 43796443828 succeeded, and GitHub Release 446568768 published the assets. The guardrails implementation passed formal QA on the 1.6.0 working tree at HEAD `61ca85f` (237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files and Playwright 1/1; one Low `browser_type` channel finding, no High or Medium). Audience: operators and MCP/REST client authors.
 
 ## 1. Overview
 
@@ -25,7 +25,7 @@ The file must be valid JSON, at most 65,536 bytes, and an object with no unknown
 | `redact_secrets` | boolean | `false` | Redact values in `browser_cookies` and `storage_get` results. |
 | `content_boundary` | boolean | `false` | Wrap untrusted page text and HTML in marker lines. |
 
-An empty `allow_tools` means no allowlist restriction. An empty `allowed_hosts` means no host restriction. Tool names must exist in the 62-tool, ten-category catalogue in the 1.7.0 tree; the published 1.6.0 release had 43. Unknown names reject startup. A name may not appear in both `allow_tools` and `deny_tools`.
+An empty `allow_tools` means no allowlist restriction. An empty `allowed_hosts` means no host restriction. Tool names must exist in the 62-tool, ten-category catalogue in the 1.7.0 release; the previous 1.6.0 release had 43. Unknown names reject startup. A name may not appear in both `allow_tools` and `deny_tools`.
 
 A host entry is either an exact lowercase host such as `example.com` or a leading wildcard suffix such as `*.example.com`. Patterns reject whitespace, `/`, `:`, `?`, `#`, `@`, an embedded `*`, a leading or trailing dot, and double dots; characters are limited to ASCII letters, digits, dot, hyphen and underscore. Ports are ignored. `*.example.com` matches the apex `example.com` and its subdomains, but not `api.example.com.evil.test`.
 
@@ -168,11 +168,11 @@ When no policy is configured, `enabled` is false and the three list-count fields
 - `details.policy` exposes the local policy path in daemon responses. The extension UI hides it, but direct MCP/REST clients receive it.
 - A denied `browser_batch` step is an error and stops the batch by default. `session_replay` records a denied step as skipped instead of executing it.
 - Read-only is a catalogue classification. Check [09-tools.md](09-tools.md) for a tool's current classification before relying on it.
-- No live v1.6.0 deployment is claimed, and NFR-3 remains unpassed. The 1.7.0 working tree rescopes to 62 tools in ten categories; `browser_screenshot` and `page_pdf` are read-only for guardrails, but screenshot pixels and PDF bytes are not redacted, boundary-wrapped or inspected. The four tab and window tools are extension-only. QA acceptance and local Windows packaging passed on the re-frozen 62-tool tree; every 1.7.0 CI and published-release row is Pending.
+- No live v1.7.0 deployment is claimed, and NFR-3 remains unpassed. The 1.7.0 release has 62 tools in ten categories; `browser_screenshot` and `page_pdf` are read-only for guardrails, but screenshot pixels and PDF bytes are not redacted, boundary-wrapped or inspected. The four tab and window tools are extension-only. QA acceptance passed at HEAD `d804c33` before release commit `f12930c`; local Windows packaging passed separately, and every published asset and CI result is recorded in the release notes. `page_pdf` enforces a 32 MiB decoded cap; the live cap was not reached, the largest live PDF being 55,891 B.
 
 ## 10. Related documents
 
 - [09-tools.md](09-tools.md) for tool inputs, results and error codes.
 - [02-architecture.md](02-architecture.md) for the enforcement point and daemon structure.
 - [05-deployment.md](05-deployment.md) for service configuration and health checks.
-- [release-notes/v1.6.0.md](release-notes/v1.6.0.md) for the 1.6.0 release evidence and [release-notes/v1.7.0.md](release-notes/v1.7.0.md) for the unreleased 1.7.0 tree.
+- [release-notes/v1.6.0.md](release-notes/v1.6.0.md) for the 1.6.0 release evidence and [release-notes/v1.7.0.md](release-notes/v1.7.0.md) for the 1.7.0 release.

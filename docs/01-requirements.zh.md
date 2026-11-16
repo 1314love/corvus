@@ -122,7 +122,7 @@
 
 ## 4. MCP 工具矩阵（目标 >= 60）
 
-截至 1.6.0，已交付面为九类 43 个工具；未发布的 1.7.0 工作树将其扩展为十类 62 个工具。下列名称是原始目标矩阵，不是已交付目录。
+截至 1.7.0，已交付面为十类 62 个工具；上一版本 1.6.0 为九类 43 个工具。下列名称是原始目标矩阵，不是已交付目录。
 
 感知：page_snapshot, page_text, page_html, page_screenshot, page_pdf, page_console, page_network, page_accessibility, page_links, page_forms, page_find, page_wait, page_observe
 
@@ -249,7 +249,7 @@ v1.6.0 不新增 MCP 工具：九类 43 工具面与紧凑信封不变；brief `
 
 ### 4.11 v1.7.0 工具扩展需求覆盖
 
-1.7.0 工作树把 MCP 工具面从九类 43 个工具扩展为十类 62 个工具。新增 18 个工具：`page_pdf`、`page_links`、`page_forms` 与 `page_accessibility`；`browser_drag`、`browser_focus` 与 `browser_highlight`；`tab_group`、`tab_duplicate`、`window_list` 与 `window_new`；`cookie_set`、`cookie_clear`、`storage_get`、`storage_set` 与 `storage_clear`；`health` 与 `version`。`browser_screenshot` 仍是第 44 个工具，page 类别现在有 15 个。CDP 提供 46 个浏览器类工具，扩展提供 42 个，12 个为守护进程本地；四个标签页与窗口工具仅扩展可用，强制 CDP 返回 `CAPABILITY_UNAVAILABLE`。扩展声明 11 项权限（含 `tabGroups`），`all_frames` 保持 false，并通过 42 个基于 debugger 的处理器提供新工具。
+1.7.0 发布把 MCP 工具面从九类 43 个工具扩展为十类 62 个工具。新增 18 个工具：`page_pdf`、`page_links`、`page_forms` 与 `page_accessibility`；`browser_drag`、`browser_focus` 与 `browser_highlight`；`tab_group`、`tab_duplicate`、`window_list` 与 `window_new`；`cookie_set`、`cookie_clear`、`storage_get`、`storage_set` 与 `storage_clear`；`health` 与 `version`。`browser_screenshot` 仍是第 44 个工具，page 类别现在有 15 个。CDP 提供 46 个浏览器类工具，扩展提供 42 个，12 个为守护进程本地；四个标签页与窗口工具仅扩展可用，强制 CDP 返回 `CAPABILITY_UNAVAILABLE`。扩展声明 11 项权限（含 `tabGroups`），`all_frames` 保持 false，并通过 42 个基于 debugger 的处理器提供新工具。
 
 - **browser_screenshot。** 它把 `viewport`、`full_page` 或 `element` 捕获为 `webp`、`png` 或 `jpeg`；`quality` 对 webp 与 jpeg 取 1..100，png 忽略；`inline` 默认 false。CDP 接受 `@cN` 引用，扩展接受 `@eN` 引用；来自错误通道的引用返回 `BAD_ARGS`，`browser_batch` 拒绝 `inline: true`。`crates/corvusd/src/screenshot.rs` 把解码后的图像限制在 8 MiB，在 `<home>/screenshots/` 下写入 `screenshot-<unix-millis>-<uuid8>.<ext>`，并返回 `width`、`height`、`bytes`、`sha256`、`path`、`summary` 与 `inline` 而不是 base64；每个成功截图都通过 `crates/corvusd/src/lib.rs` 的 `finalize_screenshot_result` 只最终处理一次。
 
@@ -257,7 +257,7 @@ v1.6.0 不新增 MCP 工具：九类 43 工具面与紧凑信封不变；brief `
 
 - **守护策略与脱敏。** `browser_batch` 保留类别允许清单，并按名称排除十个工具，留下 42 个可批量工具；`storage`、`sessions` 与 `help` 不可批量。只读注解覆盖 `health`、`version`、`page_links`、`page_forms`、`page_accessibility`、`window_list`、`storage_get`、`page_pdf` 与 `browser_highlight`。录制会脱敏 `cookie_set.value` 与每个存储条目的值；守护策略把每个 `storage_get` 结果值替换为 `[redacted]` 并添加 `redacted: true`。截图与 PDF 像素不被检查、脱敏或包裹边界，需用 `deny_tools` 阻止。
 
-- **证据。** QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过：25 条结果行上的 263 个 workspace 测试、137 项一致性检查、13 个文件中的 91 个 Vitest 测试、14 文件/537,844 B 的扩展构建、3 个 Playwright 端到端测试，以及在 ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e` 上的 160/160 项本地打包检查。此前的 44 工具 v1.7.0 结果已被取代，不能作为该树的证据。报告已包含在 1.7.0 工作树中；不存在 1.7.0 标签、CI 运行、已发布包或已发布产物，因此所有 CI 与发布行均为 Pending。1.6.0 仍是包含 43 个工具的当前已发布版本。NFR-3 仍未通过。
+- **证据。** QA 验收在发布提交 `f12930c` 之前的 HEAD `d804c33` 上通过，本地 Windows 打包单独通过：25 条结果行上的 263 个 workspace 测试、137 项一致性检查、13 个文件中的 91 个 Vitest 测试、14 文件/537,844 B 的扩展构建、3 个 Playwright 端到端测试，以及在 ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e` 上的 160/160 项本地打包检查。报告已包含在 1.7.0 发布中。标签 `v1.7.0` 的对象 `84d7c086147e96ff58531198b6ead55c65ff116f` 指向 `f12930c145c8cac05a50db9702ab3f1ad021c666`；CI 运行 43795994581 通过八个任务，发布工作流 43796443828 成功，GitHub 发布 446568768 发布了 `corvus-1.7.0-windows-x64.zip` 19,159,984 B、`corvus-1.7.0-linux-x86_64.tar.gz` 20,443,563 B 与 `corvus-v1.7.0-SHA256SUMS` 194 B。1.6.0 为包含 43 个工具的上一版本。NFR-3 仍未通过。
 
 ## 5. 非功能需求
 

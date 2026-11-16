@@ -2,16 +2,16 @@
 
 # Firefox feasibility assessment
 
-Status: assessment complete against the v0.1.0 surface and re-checked against the 1.7.0 working tree on 2026-11-16; full parity is NO-GO; degraded DOM/tab mode is a conditional GO. The decision stands, and the tool counts below name their baseline.
+Status: assessment complete against the v0.1.0 surface and re-checked against the 1.7.0 release on 2026-11-16; full parity is NO-GO; degraded DOM/tab mode is a conditional GO. The decision stands, and the tool counts below name their baseline.
 
-Scope: Firefox 121+ desktop. The original assessment measured the browser-facing surface shipped in v0.1.0, which was 26 of the 32 MCP tools. The 1.7.0 working tree has 44 MCP tools, of which 34 are browser-facing and 10 are daemon-local, so the 26 and 18 counts in this document are historical. They are kept because the platform blockers and the shape of the degraded mode did not change, not because they describe the current catalogue. This document records a feasibility decision only; it does not change product code or the current support matrix.
+Scope: Firefox 121+ desktop. The original assessment measured the browser-facing surface shipped in v0.1.0, which was 26 of the 32 MCP tools. The 1.7.0 release has 62 MCP tools, of which 50 are browser-facing and 12 are daemon-local, with 46 reachable over CDP and 42 served by the extension, so the 26 and 18 counts in this document are historical. They are kept because the platform blockers and the shape of the degraded mode did not change, not because they describe the current catalogue. This document records a feasibility decision only; it does not change product code or the current support matrix.
 
 ## 1. Decision
 
 | Option | Decision | Reason |
 |---|---|---|
-| Full browser-side parity (26 tools in v0.1.0; 42 extension tools in the 1.7.0 tree) | NO-GO | Firefox 121+ has no `chrome.debugger`/CDP attach and no `chrome.offscreen`; the blocking platform gap has no ETA. |
-| Degraded 18-tool DOM/tab mode (v0.1.0 scope) | Conditional GO | Feasible with content scripts and the tabs API, but it drops eight tools and needs 15-20 engineer-days. A current port needs re-scoping against 42 extension browser-facing tools. |
+| Full browser-side parity (26 tools in v0.1.0; 42 extension tools in the 1.7.0 release) | NO-GO | Firefox 121+ has no `chrome.debugger`/CDP attach and no `chrome.offscreen`; the blocking platform gap has no ETA. |
+| Degraded 18-tool DOM/tab mode (v0.1.0 scope) | Conditional GO | Feasible with content scripts and the tabs API, but it drops eight tools and needs 15-20 engineer-days. A current port needs re-scoping against the 42 extension browser-facing tools in the 1.7.0 release. |
 | Current milestone | Keep Firefox out | The client has not committed to Firefox; record the NFR-6 deviation and revisit on a product decision. |
 
 Recommendation: do not add Firefox to the current milestone. This document records the NFR-6 deviation; the client decision is pending. Revisit if Firefox becomes a committed target or if Bugzilla 1316741 lands.

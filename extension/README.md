@@ -5,7 +5,7 @@ The shipped extension is built from TypeScript and Vue 3 sources. There is no
 remote code and no inline script. Content scripts stay framework-free, and
 `build/extension` is the directory to load or package.
 
-Status: this document describes the 1.6.0 release and the unreleased 1.7.0 working tree. The released extension package and manifest are versioned 1.6.0 and 1.5.0 is the previous release; the working tree is 1.7.0. QA acceptance PASS is recorded in [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md): 55 Vitest tests in ten files, a 14-file/490,393-byte build and isolated Playwright 1/1. Main CI run 43716832915 passed eight jobs, release workflow 43717236667 succeeded, and GitHub Release 446071476 published the assets; the release adds the guardrails policy-denial presentation but no permission or handler. The 1.7.0 tree expands the MCP surface to 62 tools in ten categories and this extension to 42 browser-facing names with 11 permissions including `tabGroups`, 42 handlers and `all_frames: false`; `browser_screenshot` remains available through the existing debugger channel. QA acceptance and local Windows packaging passed on the frozen 62-tool tree: 263 workspace tests, 137 conformance checks, 91 Vitest tests in 13 files, 3 Playwright E2E tests, and a 14-file/537,844-byte build with 62 tools, 42 handlers and 11 permissions; local packaging passed 160/160 checks on ZIP 19,129,611 B. The on-disk schema snapshot is complete at 62 entries. CI, published-package and release rows for 1.7.0 remain Pending. The 1.6.0 release remains current.
+Status: this document describes the 1.7.0 release. The extension package and manifest are versioned 1.7.0; 1.6.0 is the previous release. QA acceptance PASS is recorded in [tests/acceptance/v1.7.0.md](../tests/acceptance/v1.7.0.md): 263 workspace tests, 137 conformance checks, 91 Vitest tests in 13 files, 3 Playwright E2E tests, and a 14-file/537,844-byte build with 62 tools, 42 handlers and 11 permissions. Local Windows packaging passed 160/160 checks on ZIP 19,129,611 B. Main CI run 43795994581 passed eight jobs, release workflow 43796443828 succeeded, and GitHub Release 446568768 published the release assets: Windows ZIP 19,159,984 B SHA-256 `3269ea25a916687c0d638b4798965e24d32dc4adbd5cd9490352afc21076e5e1`, Linux tarball 20,443,563 B SHA-256 `f0e90a7a8d338cdbe3bcee251739567c03186395071457d1a08b064c2733b4c1`, and combined `SHA256SUMS` 194 B SHA-256 `7d7163ea9ceabbd9f27018e9510ba6c4cdc96e939bea7e664e5cc62e0bfd6fea`. The extension has 42 browser-facing names, 11 permissions including `tabGroups`, 42 handlers and `all_frames: false`; `browser_screenshot` remains available through the existing debugger channel. The on-disk schema snapshot is complete at 62 entries.
 
 The visible surfaces are one read-only popup status card and a small options page.
 The popup shows the connection dot and state, browser id, extension version,
@@ -298,7 +298,7 @@ chrome.storage.local. Extension APIs cannot read the real profile name.
 
 ## Tool contract
 
-There are sixty-two MCP tool names in the 1.7.0 working tree; the published
+There are sixty-two MCP tool names in the 1.7.0 release; the previous
 1.6.0 surface had forty-three. This extension handles forty-two browser-facing
 names, including all sixteen new browser tools; the daemon-local twelve
 (browser_batch, browser_list, browser_channel, tool_help, session_list,
