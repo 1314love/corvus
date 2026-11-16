@@ -308,9 +308,10 @@ async function schemaCheck([toolsPath, snapshotPath]) {
   const body = parseRpc(readFileSync(toolsPath, "utf8"));
   const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
   const currentTools = body?.result?.tools ?? body?.tools;
-  if (snapshot.length !== 43) fail("snapshot has " + snapshot.length + " tools, expected 43");
-  if (!Array.isArray(currentTools) || currentTools.length !== 43) {
-    fail("tools/list has " + (Array.isArray(currentTools) ? currentTools.length : 0) + " tools, expected 43");
+  if (!Array.isArray(snapshot) || snapshot.length < 1) fail("snapshot is empty");
+  const expectedCount = snapshot.length;
+  if (!Array.isArray(currentTools) || currentTools.length !== expectedCount) {
+    fail("tools/list has " + (Array.isArray(currentTools) ? currentTools.length : 0) + " tools, expected " + expectedCount);
   }
   const byName = new Map(currentTools.map((tool) => [tool.name, tool]));
   const diffs = [];
@@ -325,7 +326,7 @@ async function schemaCheck([toolsPath, snapshotPath]) {
     }
   }
   if (diffs.length) fail("schema drift: " + diffs.join("; "));
-  console.log("schema snapshot matches 43 tools");
+  console.log("schema snapshot matches " + expectedCount + " tools");
 }
 
 const [, , mode, ...args] = process.argv;

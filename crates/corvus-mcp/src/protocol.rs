@@ -622,6 +622,25 @@ fn tool_success(result: &Value) -> Value {
     // A tools/call result carries the payload exactly once. The text block is
     // compact JSON; duplicating the same object in structuredContent doubles the
     // wire size of large results such as page_snapshot without adding information.
+    if let Some(image) = result.get("image") {
+        if let (Some(data), Some(mime_type)) = (
+            image.get("data").and_then(Value::as_str),
+            image.get("mime_type").and_then(Value::as_str),
+        ) {
+            let text = result
+                .get("summary")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| encode(result));
+            return json!({
+                "content": [
+                    { "type": "text", "text": text },
+                    { "type": "image", "data": data, "mimeType": mime_type },
+                ],
+                "isError": false,
+            });
+        }
+    }
     json!({
         "content": [{ "type": "text", "text": encode(result) }],
         "isError": false,
@@ -726,6 +745,48 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(text).expect("parse text json"),
             result
+        );
+    }
+
+    #[test]
+    fn inline_screenshots_use_a_summary_and_an_image_block() {
+        let result = json!({
+            "format": "webp",
+            "mime_type": "image/webp",
+            "target": "viewport",
+            "tab_id": "T1",
+            "url": "https://example.test/",
+            "width": 756,
+            "height": 488,
+            "bytes": 2730,
+            "sha256": "00",
+            "path": "C:/corvus/screenshots/screenshot-1.webp",
+            "inline": true,
+            "summary": "Captured viewport screenshot 756x488 (2730 bytes) to C:/corvus/screenshots/screenshot-1.webp",
+            "image": { "mime_type": "image/webp", "data": "UklGRg==" }
+        });
+        let answer = tool_success(&result);
+        assert_eq!(answer.get("isError").and_then(Value::as_bool), Some(false));
+        let content = answer
+            .get("content")
+            .and_then(Value::as_array)
+            .expect("content array");
+        assert_eq!(content.len(), 2);
+        assert_eq!(
+            content[0].get("text").and_then(Value::as_str),
+            result.get("summary").and_then(Value::as_str)
+        );
+        assert_eq!(
+            content[1].get("type").and_then(Value::as_str),
+            Some("image")
+        );
+        assert_eq!(
+            content[1].get("mimeType").and_then(Value::as_str),
+            Some("image/webp")
+        );
+        assert_eq!(
+            content[1].get("data").and_then(Value::as_str),
+            Some("UklGRg==")
         );
     }
 

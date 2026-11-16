@@ -2,7 +2,7 @@
 
 [English](11-guardrails.md) | [中文](11-guardrails.zh.md)
 
-Status: v1.6.0 is the current published release, released on 2026-11-15 from tag `v1.6.0`; 1.5.0 is the previous release. The guardrails implementation passed formal QA on the working tree at HEAD `61ca85f` (237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files and Playwright 1/1; one Low `browser_type` channel finding, no High or Medium). Main CI run `43716832915` passed eight jobs, release workflow `43717236667` succeeded, and GitHub Release `446071476` published the assets. Audience: operators and MCP/REST client authors.
+Status: v1.6.0 is the current published release, released on 2026-11-15 from tag `v1.6.0`; 1.5.0 is the previous release. The 1.7.0 working tree rescopes the MCP surface to 62 tools in ten categories and adds 18 tools; `browser_screenshot` and `page_pdf` are read-only for guardrails, but their pixels and PDF bytes are not redacted, boundary-wrapped or inspected. The extension declares 11 permissions including `tabGroups`, 42 debugger-based handlers and `all_frames: false`; four tab and window tools are extension-only. QA acceptance and local Windows packaging passed on the re-frozen 62-tool tree; the earlier 44-tool v1.7.0 results predate the rescope, while no 1.7.0 CI run, published package or published asset exists, so CI and published-release evidence is Pending. The guardrails implementation passed formal QA on the 1.6.0 working tree at HEAD `61ca85f` (237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files and Playwright 1/1; one Low `browser_type` channel finding, no High or Medium). Main CI run `43716832915` passed eight jobs, release workflow `43717236667` succeeded, and GitHub Release `446071476` published the assets. Audience: operators and MCP/REST client authors.
 
 ## 1. Overview
 
@@ -22,10 +22,10 @@ The file must be valid JSON, at most 65,536 bytes, and an object with no unknown
 | `deny_tools` | string array | `[]` | These tool names are always denied. |
 | `allowed_hosts` | string array | `[]` | When non-empty, navigation must target an http or https host matching an entry. |
 | `block_private_network` | boolean | `false` | Deny literal loopback, private, link-local and local-name hosts. |
-| `redact_secrets` | boolean | `false` | Redact cookie values in `browser_cookies` results. |
+| `redact_secrets` | boolean | `false` | Redact values in `browser_cookies` and `storage_get` results. |
 | `content_boundary` | boolean | `false` | Wrap untrusted page text and HTML in marker lines. |
 
-An empty `allow_tools` means no allowlist restriction. An empty `allowed_hosts` means no host restriction. Tool names must exist in the 43-tool catalogue; unknown names reject startup. A name may not appear in both `allow_tools` and `deny_tools`.
+An empty `allow_tools` means no allowlist restriction. An empty `allowed_hosts` means no host restriction. Tool names must exist in the 62-tool, ten-category catalogue in the 1.7.0 tree; the published 1.6.0 release had 43. Unknown names reject startup. A name may not appear in both `allow_tools` and `deny_tools`.
 
 A host entry is either an exact lowercase host such as `example.com` or a leading wildcard suffix such as `*.example.com`. Patterns reject whitespace, `/`, `:`, `?`, `#`, `@`, an embedded `*`, a leading or trailing dot, and double dots; characters are limited to ASCII letters, digits, dot, hyphen and underscore. Ports are ignored. `*.example.com` matches the apex `example.com` and its subdomains, but not `api.example.com.evil.test`.
 
@@ -71,7 +71,7 @@ A read-only daemon for observation and testing:
 }
 ```
 
-Every action tool is denied before dispatch with reason `read_only`; tools that the catalogue classifies as read-only, such as snapshots and page text reads, remain available. The policy does not make a read-only tool's result safe to trust.
+Every action tool is denied before dispatch with reason `read_only`; tools that the catalogue classifies as read-only, such as snapshots, page text reads, `page_links`, `page_forms`, `page_accessibility`, `window_list`, `storage_get`, `health`, `version`, `page_pdf` and `browser_screenshot`, remain available. The policy does not make a read-only tool's result safe to trust, and it does not inspect screenshot pixels or PDF bytes.
 
 ### 5.2 Host allowlist and private-network block
 
@@ -101,7 +101,7 @@ Mark page output as data and hide cookie values:
 }
 ```
 
-With `redact_secrets`, every object in the top-level `cookies` array of a `browser_cookies` result that has a `value` field gets `value: "[redacted]"` and `redacted: true`. Objects without `value` are unchanged. No other tool's values and no generic secret scanning are covered.
+With `redact_secrets`, every object in the top-level `cookies` array of a `browser_cookies` result that has a `value` field gets `value: "[redacted]"` and `redacted: true`, and every entry in a `storage_get` result gets `value: "[redacted]"` with `redacted: true`. Objects without `value` are unchanged. No other tool's values and no generic secret scanning are covered.
 
 With `content_boundary`, `page_text` output under `text`, `page_html` output under `html`, and compact `page_snapshot` output under `text` are wrapped in marker lines. JSON snapshots are untouched. The markers are applied after navigation-result checks and cookie redaction.
 
@@ -125,7 +125,7 @@ URL denials use the message `navigation denied by guardrails policy (<reason>)` 
 
 ## 7. Redaction and content boundaries
 
-Cookie redaction is deliberately narrow. Only `browser_cookies` is processed, only the top-level `cookies` array is inspected, and only objects that already contain `value` are changed. Other tools, nested values, headers and page text are not redacted.
+Cookie and storage redaction is deliberately narrow. `browser_cookies` processes only the top-level `cookies` array; `storage_get` processes only its top-level entries; only objects that already contain `value` are changed. Other tools, nested values, headers and page text are not redacted.
 
 The content boundary uses these exact markers:
 
@@ -168,11 +168,11 @@ When no policy is configured, `enabled` is false and the three list-count fields
 - `details.policy` exposes the local policy path in daemon responses. The extension UI hides it, but direct MCP/REST clients receive it.
 - A denied `browser_batch` step is an error and stops the batch by default. `session_replay` records a denied step as skipped instead of executing it.
 - Read-only is a catalogue classification. Check [09-tools.md](09-tools.md) for a tool's current classification before relying on it.
-- No live v1.6.0 deployment is claimed, and NFR-3 remains unpassed.
+- No live v1.6.0 deployment is claimed, and NFR-3 remains unpassed. The 1.7.0 working tree rescopes to 62 tools in ten categories; `browser_screenshot` and `page_pdf` are read-only for guardrails, but screenshot pixels and PDF bytes are not redacted, boundary-wrapped or inspected. The four tab and window tools are extension-only. QA acceptance and local Windows packaging passed on the re-frozen 62-tool tree; every 1.7.0 CI and published-release row is Pending.
 
 ## 10. Related documents
 
 - [09-tools.md](09-tools.md) for tool inputs, results and error codes.
 - [02-architecture.md](02-architecture.md) for the enforcement point and daemon structure.
 - [05-deployment.md](05-deployment.md) for service configuration and health checks.
-- [release-notes/v1.6.0.md](release-notes/v1.6.0.md) for the release evidence.
+- [release-notes/v1.6.0.md](release-notes/v1.6.0.md) for the 1.6.0 release evidence and [release-notes/v1.7.0.md](release-notes/v1.7.0.md) for the unreleased 1.7.0 tree.

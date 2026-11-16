@@ -122,7 +122,7 @@
 
 ## 4. MCP 工具矩阵（目标 >= 60）
 
-截至 1.6.0，已交付面为九类 43 个工具；1.7.0 工作树新增未发布的第 44 个工具 `browser_screenshot`。下列名称是原始目标矩阵，不是已交付目录。
+截至 1.6.0，已交付面为九类 43 个工具；未发布的 1.7.0 工作树将其扩展为十类 62 个工具。下列名称是原始目标矩阵，不是已交付目录。
 
 感知：page_snapshot, page_text, page_html, page_screenshot, page_pdf, page_console, page_network, page_accessibility, page_links, page_forms, page_find, page_wait, page_observe
 
@@ -246,6 +246,18 @@ v1.6.0 不新增 MCP 工具：九类 43 工具面与紧凑信封不变；brief `
 - **执行点。** 检查在 `RouterBackend::call` 派发前、`browser_batch` 每一步与 `session_replay` 中运行；`browser_navigate` 与 `tab_new` 的参数在派发前受门禁，导航结果再检查一次。拒绝使用第 11 个错误码 `POLICY_DENIED`，`retryable: false`，REST 返回 403。
 - **内容处理。** `browser_cookies` 脱敏值；`page_text`、`page_html` 与紧凑 `page_snapshot` 文本包裹不可信内容边界；密码输入保持掩码。
 - **证据。** [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md) 记录 PASS：237 个 workspace 测试、137 项 conformance、10 个文件 55 个 Vitest 测试、14 文件 490,393 字节扩展构建与 Playwright 1/1；一条 Low `browser_type` 发现，无 High/Medium。CI 43716832915 与 GitHub Release 446071476 发布资产。NFR-3 仍未通过。
+
+### 4.11 v1.7.0 工具扩展需求覆盖
+
+1.7.0 工作树把 MCP 工具面从九类 43 个工具扩展为十类 62 个工具。新增 18 个工具：`page_pdf`、`page_links`、`page_forms` 与 `page_accessibility`；`browser_drag`、`browser_focus` 与 `browser_highlight`；`tab_group`、`tab_duplicate`、`window_list` 与 `window_new`；`cookie_set`、`cookie_clear`、`storage_get`、`storage_set` 与 `storage_clear`；`health` 与 `version`。`browser_screenshot` 仍是第 44 个工具，page 类别现在有 15 个。CDP 提供 46 个浏览器类工具，扩展提供 42 个，12 个为守护进程本地；四个标签页与窗口工具仅扩展可用，强制 CDP 返回 `CAPABILITY_UNAVAILABLE`。扩展声明 11 项权限（含 `tabGroups`），`all_frames` 保持 false，并通过 42 个基于 debugger 的处理器提供新工具。
+
+- **browser_screenshot。** 它把 `viewport`、`full_page` 或 `element` 捕获为 `webp`、`png` 或 `jpeg`；`quality` 对 webp 与 jpeg 取 1..100，png 忽略；`inline` 默认 false。CDP 接受 `@cN` 引用，扩展接受 `@eN` 引用；来自错误通道的引用返回 `BAD_ARGS`，`browser_batch` 拒绝 `inline: true`。`crates/corvusd/src/screenshot.rs` 把解码后的图像限制在 8 MiB，在 `<home>/screenshots/` 下写入 `screenshot-<unix-millis>-<uuid8>.<ext>`，并返回 `width`、`height`、`bytes`、`sha256`、`path`、`summary` 与 `inline` 而不是 base64；每个成功截图都通过 `crates/corvusd/src/lib.rs` 的 `finalize_screenshot_result` 只最终处理一次。
+
+- **page_pdf。** 打印使用 `paper_width` 默认 8.5 英寸、`paper_height` 默认 11、`landscape` 默认 false、`print_background` 默认 true、`scale` 取 0.1 到 2，页边距固定 0.4 英寸。守护进程解码 PDF，执行 32 MiB（33,554,432 字节）解码上限，并在 `<daemon home>/pdf` 下写入 `page-<unix_millis>-<uuid8>.pdf`；不返回 base64 或内联 PDF。`page_pdf` 被排除在 `browser_batch` 之外，重放以 `page_pdf_not_replayable` 跳过它。
+
+- **守护策略与脱敏。** `browser_batch` 保留类别允许清单，并按名称排除十个工具，留下 42 个可批量工具；`storage`、`sessions` 与 `help` 不可批量。只读注解覆盖 `health`、`version`、`page_links`、`page_forms`、`page_accessibility`、`window_list`、`storage_get`、`page_pdf` 与 `browser_highlight`。录制会脱敏 `cookie_set.value` 与每个存储条目的值；守护策略把每个 `storage_get` 结果值替换为 `[redacted]` 并添加 `redacted: true`。截图与 PDF 像素不被检查、脱敏或包裹边界，需用 `deny_tools` 阻止。
+
+- **证据。** QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过：25 条结果行上的 263 个 workspace 测试、137 项一致性检查、13 个文件中的 91 个 Vitest 测试、14 文件/537,844 B 的扩展构建、3 个 Playwright 端到端测试，以及在 ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e` 上的 160/160 项本地打包检查。此前的 44 工具 v1.7.0 结果已被取代，不能作为该树的证据。报告已包含在 1.7.0 工作树中；不存在 1.7.0 标签、CI 运行、已发布包或已发布产物，因此所有 CI 与发布行均为 Pending。1.6.0 仍是包含 43 个工具的当前已发布版本。NFR-3 仍未通过。
 
 ## 5. 非功能需求
 

@@ -8,10 +8,12 @@ pub mod guardrails;
 pub mod home;
 pub mod logging;
 pub mod logs;
+pub mod pdf;
+pub mod screenshot;
 pub mod signals;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -56,7 +58,7 @@ const STEP_VALUE_CAP: usize = 65_536;
 const EXPORT_CAP: usize = 2_097_152;
 
 /// Tools answered inside the daemon instead of being forwarded to a browser.
-const LOCAL_TOOLS: [&str; 10] = [
+const LOCAL_TOOLS: [&str; 12] = [
     "browser_list",
     "browser_batch",
     "browser_channel",
@@ -67,10 +69,12 @@ const LOCAL_TOOLS: [&str; 10] = [
     "session_export",
     "metrics",
     "logs_tail",
+    "health",
+    "version",
 ];
 
 /// Tools that describe or control the recording layer and must not be replayed.
-const CONTROL_TOOLS: [&str; 10] = [
+const CONTROL_TOOLS: [&str; 12] = [
     "browser_channel",
     "browser_batch",
     "tool_help",
@@ -81,6 +85,8 @@ const CONTROL_TOOLS: [&str; 10] = [
     "metrics",
     "logs_tail",
     "browser_list",
+    "health",
+    "version",
 ];
 
 /// Authentication settings, including an optional bootstrap account.
@@ -165,6 +171,8 @@ pub struct RouterBackend {
     channel: Arc<ChannelState>,
     sink: StepSink,
     guardrails: Option<Arc<Guardrails>>,
+    screenshot_root: PathBuf,
+    pdf_root: PathBuf,
 }
 
 impl RouterBackend {
@@ -180,6 +188,8 @@ impl RouterBackend {
         channel: Arc<ChannelState>,
         sink: StepSink,
         guardrails: Option<Arc<Guardrails>>,
+        screenshot_root: PathBuf,
+        pdf_root: PathBuf,
     ) -> Self {
         Self {
             router,
@@ -190,6 +200,8 @@ impl RouterBackend {
             channel,
             sink,
             guardrails,
+            screenshot_root,
+            pdf_root,
         }
     }
 }
@@ -204,6 +216,8 @@ impl ToolBackend for RouterBackend {
         let channel = Arc::clone(&self.channel);
         let sink = self.sink.clone();
         let guardrails = self.guardrails.clone();
+        let screenshot_root = self.screenshot_root.clone();
+        let pdf_root = self.pdf_root.clone();
         let started = Instant::now();
         Box::pin(async move {
             let ToolCall {
@@ -220,10 +234,10 @@ impl ToolBackend for RouterBackend {
                 None => None,
             };
             let denied = guard_error.is_some();
-            let (result, recorded_here) = match guard_error {
-                Some(error) => (Err(error), false),
+            let (result, recorded_here, browser_id) = match guard_error {
+                Some(error) => (Err(error), false, None),
                 None => match name.as_str() {
-                    "browser_list" => (Ok(browser_list(&registry, &channel)), true),
+                    "browser_list" => (Ok(browser_list(&registry, &channel)), true, None),
                     "browser_batch" => (
                         run_batch(
                             &cdp,
@@ -233,14 +247,29 @@ impl ToolBackend for RouterBackend {
                             &arguments,
                             session.as_ref(),
                             guardrails.as_deref(),
+                            &screenshot_root,
+                            &pdf_root,
                         )
                         .await,
                         true,
+                        None,
                     ),
-                    "browser_channel" => (channel.tool(&arguments), true),
-                    "tool_help" => (corvus_mcp::tools::help_document(&arguments), true),
-                    "session_list" => (session_list(&store, &arguments), true),
-                    "session_steps" => (session_steps(&store, &arguments), true),
+                    "browser_channel" => (channel.tool(&arguments), true, None),
+                    "health" => (
+                        Ok(health_tool(
+                            &registry,
+                            &store,
+                            &metrics,
+                            &channel,
+                            guardrails.as_deref(),
+                        )),
+                        true,
+                        None,
+                    ),
+                    "version" => (Ok(version_tool()), true, None),
+                    "tool_help" => (corvus_mcp::tools::help_document(&arguments), true, None),
+                    "session_list" => (session_list(&store, &arguments), true, None),
+                    "session_steps" => (session_steps(&store, &arguments), true, None),
                     "session_replay" => (
                         replay_session(
                             &router,
@@ -251,13 +280,27 @@ impl ToolBackend for RouterBackend {
                         )
                         .await,
                         true,
+                        None,
                     ),
-                    "session_export" => (session_export(&store, &arguments), true),
-                    "metrics" => (metrics_tool(&metrics, &registry, &store, &channel), true),
-                    "logs_tail" => (logs::tail(&arguments), true),
+                    "session_export" => (session_export(&store, &arguments), true, None),
+                    "metrics" => (
+                        metrics_tool(&metrics, &registry, &store, &channel),
+                        true,
+                        None,
+                    ),
+                    "logs_tail" => (logs::tail(&arguments), true, None),
                     _ => {
-                        dispatch_tool(&cdp, &channel, &router, &name, &arguments, session.as_ref())
-                            .await
+                        dispatch_tool(
+                            &cdp,
+                            &channel,
+                            &router,
+                            &name,
+                            &arguments,
+                            session.as_ref(),
+                            &screenshot_root,
+                            &pdf_root,
+                        )
+                        .await
                     }
                 },
             };
@@ -274,7 +317,15 @@ impl ToolBackend for RouterBackend {
                 );
             }
             if local || recorded_here || denied {
-                record_backend_step(&sink, session.as_ref(), &name, &arguments, &result, started);
+                record_backend_step(
+                    &sink,
+                    session.as_ref(),
+                    &name,
+                    &arguments,
+                    &result,
+                    started,
+                    browser_id,
+                );
             }
             result
         })
@@ -430,7 +481,7 @@ fn metrics_tool(
 /// Tools that only the extension implements. Every browser-facing tool now
 /// has a CDP handler, so the extension remains a fallback rather than a
 /// capability boundary.
-const EXTENSION_ONLY_TOOLS: [&str; 0] = [];
+const EXTENSION_ONLY_TOOLS: [&str; 4] = ["tab_group", "tab_duplicate", "window_list", "window_new"];
 
 /// CDP target identifiers are 32 hexadecimal characters.
 fn looks_like_cdp_target(value: &Value) -> bool {
@@ -487,6 +538,7 @@ fn browser_route(name: &str, mode: ChannelMode, cdp_connected: bool) -> Route {
     route_tool(mode, family, cdp_connected)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_batch(
     cdp: &Arc<CdpClient>,
     channel: &Arc<ChannelState>,
@@ -495,6 +547,8 @@ async fn run_batch(
     arguments: &Value,
     session: Option<&SessionContext>,
     guardrails: Option<&Guardrails>,
+    screenshot_root: &Path,
+    pdf_root: &Path,
 ) -> Result<Value, ErrorBody> {
     let arguments = corvus_mcp::tools::validate("browser_batch", arguments)?;
     let steps = arguments
@@ -519,32 +573,53 @@ async fn run_batch(
             .unwrap_or_default()
             .to_string();
         let raw_args = step.get("args").cloned().unwrap_or_else(|| json!({}));
-        let outcome = match corvus_mcp::tools::validate(&tool, &raw_args) {
-            Ok(args) => {
-                let policy_error = guardrails.and_then(|policy| {
-                    policy
-                        .check_tool(&tool)
-                        .and_then(|()| policy.check_arguments(&tool, &args))
-                        .err()
-                });
-                match policy_error {
-                    Some(error) => Err(error),
-                    None => {
-                        let result = if tool == "browser_list" {
-                            Ok(browser_list(registry, channel))
-                        } else {
-                            dispatch_tool(cdp, channel, router, &tool, &args, session)
+        let inline_screenshot = tool == "browser_screenshot"
+            && raw_args
+                .get("inline")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        let outcome = if inline_screenshot {
+            Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                "browser_batch does not support inline screenshots; set inline false and read the saved path",
+            ))
+        } else {
+            match corvus_mcp::tools::validate(&tool, &raw_args) {
+                Ok(args) => {
+                    let policy_error = guardrails.and_then(|policy| {
+                        policy
+                            .check_tool(&tool)
+                            .and_then(|()| policy.check_arguments(&tool, &args))
+                            .err()
+                    });
+                    match policy_error {
+                        Some(error) => Err(error),
+                        None => {
+                            let result = if tool == "browser_list" {
+                                Ok(browser_list(registry, channel))
+                            } else {
+                                dispatch_tool(
+                                    cdp,
+                                    channel,
+                                    router,
+                                    &tool,
+                                    &args,
+                                    session,
+                                    screenshot_root,
+                                    pdf_root,
+                                )
                                 .await
                                 .0
-                        };
-                        match guardrails {
-                            Some(policy) => policy.apply_result(&tool, result),
-                            None => result,
+                            };
+                            match guardrails {
+                                Some(policy) => policy.apply_result(&tool, result),
+                                None => result,
+                            }
                         }
                     }
                 }
+                Err(error) => Err(error),
             }
-            Err(error) => Err(error),
         };
         match outcome {
             Ok(data) => {
@@ -580,6 +655,124 @@ async fn run_batch(
     }))
 }
 
+/// Validate, hash and store a successful browser screenshot, replacing the
+/// raw base64 payload with path and metadata.
+///
+/// This runs inside the shared dispatch path, so a top-level call, an extension
+/// fallback and every browser_batch step are finalized exactly once.
+async fn finalize_screenshot_result(
+    root: &Path,
+    name: &str,
+    arguments: &Value,
+    result: Result<Value, ErrorBody>,
+) -> Result<Value, ErrorBody> {
+    let mut value = match result {
+        Ok(value) => value,
+        Err(error) => return Err(error),
+    };
+    if name != "browser_screenshot" {
+        return Ok(value);
+    }
+    let Some(data) = value
+        .get("data")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Ok(value);
+    };
+    let format = value
+        .get("format")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            arguments
+                .get("format")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "webp".to_string());
+    // The extension result intentionally omits the request options, so the
+    // inline decision must come from the original tool arguments.
+    let inline = arguments
+        .get("inline")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let stored = screenshot::write_screenshot(root, &format, &data)
+        .await
+        .map_err(|error| {
+            ErrorBody::new(ErrorCode::Internal, error.to_string())
+                .with_details(json!({ "tool": name, "reason": "image" }))
+        })?;
+    let mime_type = value
+        .get("mime_type")
+        .and_then(Value::as_str)
+        .unwrap_or(match format.as_str() {
+            "png" => "image/png",
+            "jpeg" => "image/jpeg",
+            _ => "image/webp",
+        })
+        .to_string();
+    let path = stored.path.display().to_string();
+    let summary = format!(
+        "Screenshot {}x{} ({} bytes) saved to {}",
+        stored.width, stored.height, stored.bytes, path
+    );
+    if let Some(object) = value.as_object_mut() {
+        object.remove("data");
+        object.remove("image");
+    }
+    value["width"] = json!(stored.width);
+    value["height"] = json!(stored.height);
+    value["bytes"] = json!(stored.bytes);
+    value["sha256"] = json!(stored.sha256);
+    value["path"] = json!(path);
+    value["summary"] = json!(summary);
+    value["inline"] = json!(inline);
+    if inline {
+        value["image"] = json!({ "mime_type": mime_type, "data": data });
+    }
+    Ok(value)
+}
+
+/// Validate, hash and store a successful page PDF, replacing the raw base64
+/// payload with a path, size and hash.
+async fn finalize_page_pdf_result(
+    root: &Path,
+    name: &str,
+    result: Result<Value, ErrorBody>,
+) -> Result<Value, ErrorBody> {
+    let mut value = match result {
+        Ok(value) => value,
+        Err(error) => return Err(error),
+    };
+    if name != "page_pdf" {
+        return Ok(value);
+    }
+    let Some(data) = value
+        .get("data")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Ok(value);
+    };
+    let stored = pdf::write_pdf(root, &data).await.map_err(|error| {
+        ErrorBody::new(ErrorCode::Internal, error.to_string())
+            .with_details(json!({ "tool": name, "reason": "pdf" }))
+    })?;
+    let path = stored.path.display().to_string();
+    if let Some(object) = value.as_object_mut() {
+        object.remove("data");
+        object.remove("image");
+    }
+    value["format"] = json!("pdf");
+    value["mime_type"] = json!("application/pdf");
+    value["path"] = json!(path);
+    value["bytes"] = json!(stored.bytes);
+    value["sha256"] = json!(stored.sha256);
+    value["summary"] = json!(format!("PDF ({} bytes) saved to {}", stored.bytes, path));
+    Ok(value)
+}
+
 /// Apply the shared snapshot diff to a successful CDP page snapshot.
 ///
 /// Both a top-level tool call and a browser_batch step reach the CDP client
@@ -597,6 +790,7 @@ fn finish_cdp_page_snapshot(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_tool(
     cdp: &Arc<CdpClient>,
     channel: &Arc<ChannelState>,
@@ -604,22 +798,55 @@ async fn dispatch_tool(
     name: &str,
     arguments: &Value,
     session: Option<&SessionContext>,
-) -> (Result<Value, ErrorBody>, bool) {
+    screenshot_root: &Path,
+    pdf_root: &Path,
+) -> (Result<Value, ErrorBody>, bool, Option<String>) {
+    let (result, recorded_here, browser_id) =
+        dispatch_tool_unfinalized(cdp, channel, router, name, arguments, session).await;
+    let result = finalize_screenshot_result(screenshot_root, name, arguments, result).await;
+    (
+        finalize_page_pdf_result(pdf_root, name, result).await,
+        recorded_here,
+        browser_id,
+    )
+}
+
+async fn dispatch_tool_unfinalized(
+    cdp: &Arc<CdpClient>,
+    channel: &Arc<ChannelState>,
+    router: &Arc<Router>,
+    name: &str,
+    arguments: &Value,
+    session: Option<&SessionContext>,
+) -> (Result<Value, ErrorBody>, bool, Option<String>) {
     let mode = channel.mode();
+    // Screenshots are recorded by the daemon after finalization, because the
+    // raw base64 payload only becomes auditable once it has been stored and
+    // replaced with a path, hash and dimensions. Every other extension tool is
+    // still recorded by the router as soon as it answers.
+    let recorded_here = name == "browser_screenshot" || name == "page_pdf";
     // Namespace validation belongs to the selected browser-facing route, so it
     // must run before any tool-family early return (including CDP-only tools).
     match browser_route(name, mode, cdp.is_connected()) {
         Route::Cdp => {
             if let Some(tab_id) = arguments.get("tab_id") {
                 if looks_like_extension_tab(tab_id) {
-                    return (Err(tab_namespace_error(tab_id, CDP_TAB_HINT)), false);
+                    return (
+                        Err(tab_namespace_error(tab_id, CDP_TAB_HINT)),
+                        recorded_here,
+                        None,
+                    );
                 }
             }
         }
         Route::Extension => {
             if let Some(tab_id) = arguments.get("tab_id") {
                 if looks_like_cdp_target(tab_id) {
-                    return (Err(tab_namespace_error(tab_id, EXTENSION_TAB_HINT)), false);
+                    return (
+                        Err(tab_namespace_error(tab_id, EXTENSION_TAB_HINT)),
+                        recorded_here,
+                        None,
+                    );
                 }
             }
         }
@@ -632,13 +859,15 @@ async fn dispatch_tool(
                     "CDP tools are disabled while the extension channel is selected",
                     mode,
                 )),
-                false,
+                recorded_here,
+                None,
             );
         }
         if !cdp.is_connected() {
             return (
                 Err(capability_error("no CDP endpoint is connected", mode)),
-                false,
+                recorded_here,
+                None,
             );
         }
         return match cdp.call_tool(name, arguments).await {
@@ -649,9 +878,9 @@ async fn dispatch_tool(
                     }
                 }
                 finish_cdp_page_snapshot(router, name, arguments, session, &mut value);
-                (Ok(value), true)
+                (Ok(value), true, None)
             }
-            Err(error) => (Err(cdp_error_body(error)), true),
+            Err(error) => (Err(cdp_error_body(error)), true, None),
         };
     }
     if EXTENSION_ONLY_TOOLS.contains(&name) && mode == ChannelMode::Cdp {
@@ -664,7 +893,8 @@ async fn dispatch_tool(
                 "transport": "extension",
                 "channel": mode.as_str(),
             }))),
-            false,
+            recorded_here,
+            None,
         );
     }
     if is_cdp_tool(name) && mode != ChannelMode::Extension {
@@ -672,26 +902,26 @@ async fn dispatch_tool(
             return match cdp.call_tool(name, arguments).await {
                 Ok(mut value) => {
                     finish_cdp_page_snapshot(router, name, arguments, session, &mut value);
-                    (Ok(value), true)
+                    (Ok(value), true, None)
                 }
-                Err(error) if fall_back_to_extension(mode, &error) => (
-                    route(router, name.to_string(), arguments.clone(), session).await,
-                    false,
-                ),
-                Err(error) => (Err(cdp_error_body(error)), true),
+                Err(error) if fall_back_to_extension(mode, &error) => {
+                    let (result, browser_id) =
+                        route(router, name.to_string(), arguments.clone(), session).await;
+                    (result, recorded_here, browser_id)
+                }
+                Err(error) => (Err(cdp_error_body(error)), true, None),
             };
         }
         if mode == ChannelMode::Cdp {
             return (
                 Err(capability_error("no CDP endpoint is connected", mode)),
-                false,
+                recorded_here,
+                None,
             );
         }
     }
-    (
-        route(router, name.to_string(), arguments.clone(), session).await,
-        false,
-    )
+    let (result, browser_id) = route(router, name.to_string(), arguments.clone(), session).await;
+    (result, recorded_here, browser_id)
 }
 
 /// Auto mode may retry a tool on the extension only when the CDP handler
@@ -734,12 +964,73 @@ async fn route(
     name: String,
     arguments: Value,
     session: Option<&SessionContext>,
-) -> Result<Value, ErrorBody> {
+) -> (Result<Value, ErrorBody>, Option<String>) {
+    let unrecorded = name == "browser_screenshot" || name == "page_pdf";
     let mut request = CommandRequest::new(name, arguments).with_trace_id(ids::next_id("trace"));
     if let Some(session) = session {
         request = request.with_session(session.clone());
     }
-    router.dispatch(request).await
+    if unrecorded {
+        router.dispatch_unrecorded(request).await
+    } else {
+        (router.dispatch(request).await, None)
+    }
+}
+
+/// Remove raw image bytes before a screenshot result is written to the
+/// recording store; the path, hash, dimensions and summary are enough to audit
+/// the call without duplicating a potentially large base64 payload.
+fn recordable_result(tool: &str, value: &Value) -> Value {
+    let mut value = value.clone();
+    match tool {
+        "browser_screenshot" => {
+            if let Some(object) = value.as_object_mut() {
+                object.remove("data");
+                if let Some(image) = object.get_mut("image").and_then(Value::as_object_mut) {
+                    image.remove("data");
+                }
+            }
+        }
+        "page_pdf" => {
+            if let Some(object) = value.as_object_mut() {
+                object.remove("data");
+            }
+        }
+        "storage_get" => {
+            if let Some(entries) = value.get_mut("entries").and_then(Value::as_array_mut) {
+                for entry in entries {
+                    if let Some(object) = entry.as_object_mut() {
+                        object.insert("value".to_string(), json!("[redacted]"));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    value
+}
+
+/// Remove secret values from a tool's arguments before they are recorded.
+fn recordable_arguments(tool: &str, arguments: &Value) -> Value {
+    let mut value = arguments.clone();
+    match tool {
+        "cookie_set" => {
+            if let Some(object) = value.as_object_mut() {
+                if object.contains_key("value") {
+                    object.insert("value".to_string(), json!("[redacted]"));
+                }
+            }
+        }
+        "storage_set" => {
+            if let Some(entries) = value.get_mut("entries").and_then(Value::as_object_mut) {
+                for entry in entries.values_mut() {
+                    *entry = json!("[redacted]");
+                }
+            }
+        }
+        _ => {}
+    }
+    value
 }
 
 fn record_backend_step(
@@ -749,6 +1040,7 @@ fn record_backend_step(
     arguments: &Value,
     result: &Result<Value, ErrorBody>,
     started: Instant,
+    browser_id: Option<String>,
 ) {
     let Some(session) = session else {
         return;
@@ -757,14 +1049,17 @@ fn record_backend_step(
         session_id: session.session_id.clone(),
         ts: now_millis(),
         tool: tool.to_string(),
-        args: arguments.clone(),
-        result: result.as_ref().ok().cloned(),
+        args: recordable_arguments(tool, arguments),
+        result: result
+            .as_ref()
+            .ok()
+            .map(|value| recordable_result(tool, value)),
         error_code: result
             .as_ref()
             .err()
             .map(|error| error.code.as_str().to_string()),
         duration_ms: started.elapsed().as_millis() as i64,
-        browser_id: None,
+        browser_id,
         tab_id: arguments
             .get("tab_id")
             .and_then(Value::as_str)
@@ -772,6 +1067,46 @@ fn record_backend_step(
         ok: result.is_ok(),
     };
     sink.record(step);
+}
+
+fn health_tool(
+    registry: &Arc<Registry>,
+    store: &Arc<Store>,
+    metrics: &Arc<Metrics>,
+    channel: &Arc<ChannelState>,
+    guardrails: Option<&Guardrails>,
+) -> Value {
+    let connected = registry.list().len();
+    let database_ok = store.sessions_total().is_ok();
+    json!({
+        "status": if database_ok { "ok" } else { "degraded" },
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_ms": metrics.uptime_ms(),
+        "started_at": metrics.started_at_ms(),
+        "browser_count": connected,
+        "connected_browsers": connected,
+        "channel": channel.health_status(),
+        "database": { "ok": database_ok },
+        "guardrails": match guardrails {
+            Some(policy) => policy.health(),
+            None => Guardrails::health_disabled(),
+        },
+        "tools": {
+            "count": corvus_mcp::tools::names().len(),
+            "categories": corvus_mcp::tools::categories().len(),
+        },
+    })
+}
+
+fn version_tool() -> Value {
+    json!({
+        "name": "corvus",
+        "version": env!("CARGO_PKG_VERSION"),
+        "tools": corvus_mcp::tools::names().len(),
+        "categories": corvus_mcp::tools::categories().len(),
+        "protocol_version": 1,
+        "schema_snapshot": "v1.7.0",
+    })
 }
 
 fn browser_list(registry: &Arc<Registry>, channel: &Arc<ChannelState>) -> Value {
@@ -1018,6 +1353,7 @@ async fn replay_session(
     let mut planned: Vec<(i64, String, Value)> = Vec::new();
     let mut skipped: Vec<Value> = Vec::new();
     let mut policy_skipped = false;
+    let mut screenshot_skipped = false;
     for row in rows.into_iter().filter(|row| row.seq <= to_seq) {
         if CONTROL_TOOLS.contains(&row.tool.as_str()) {
             skipped.push(json!({
@@ -1033,6 +1369,27 @@ async fn replay_session(
                 "tool": row.tool,
                 "reason": "tab_tool",
             }));
+            continue;
+        }
+        // Replay cannot finalize a screenshot: it has no screenshot root and a
+        // raw base64 response must never be persisted. Skip it with a typed
+        // reason instead of replaying an audit-unsafe result.
+        if row.tool == "browser_screenshot" {
+            skipped.push(json!({
+                "seq": row.seq,
+                "tool": row.tool,
+                "reason": "screenshot_not_replayable",
+            }));
+            screenshot_skipped = true;
+            continue;
+        }
+        if row.tool == "page_pdf" {
+            skipped.push(json!({
+                "seq": row.seq,
+                "tool": row.tool,
+                "reason": "page_pdf_not_replayable",
+            }));
+            screenshot_skipped = true;
             continue;
         }
         let Some(args) = replay_arguments(row.args_json.as_deref(), row.args_truncated) else {
@@ -1066,7 +1423,7 @@ async fn replay_session(
         .map(|(seq, tool, args)| json!({ "seq": seq, "tool": tool, "args": args }))
         .collect();
     if planned.is_empty() {
-        if policy_skipped {
+        if policy_skipped || screenshot_skipped {
             return Ok(json!({
                 "session_id": session_id,
                 "mode": mode,
@@ -1345,6 +1702,8 @@ impl Daemon {
             Arc::clone(&channel),
             recorder.sink(),
             guardrails.clone(),
+            layout.screenshots_dir(),
+            layout.pdf_dir(),
         ));
         let http_addr_slot = Arc::new(std::sync::OnceLock::<SocketAddr>::new());
         let health_registry = Arc::clone(&registry);
@@ -1819,8 +2178,17 @@ mod channel_routing_tests {
             registry.clone() as Arc<dyn BrowserRegistry>,
             RouterConfig::default(),
         );
-        let (result, recorded) =
-            dispatch_tool(&cdp, &channel, &router, "page_snapshot", &json!({}), None).await;
+        let (result, recorded, _browser_id) = dispatch_tool(
+            &cdp,
+            &channel,
+            &router,
+            "page_snapshot",
+            &json!({}),
+            None,
+            Path::new("."),
+            Path::new("."),
+        )
+        .await;
         let error = result.expect_err("forced cdp needs a connected endpoint for DOM tools");
         assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
         assert_eq!(error.message, "no CDP endpoint is connected");
@@ -1859,6 +2227,8 @@ mod channel_routing_tests {
             }),
             None,
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await
         .map(|value| (value, true))
@@ -1890,6 +2260,8 @@ mod channel_routing_tests {
             }),
             None,
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await
         .expect("a failing first step is still an envelope");
@@ -1920,6 +2292,8 @@ mod channel_routing_tests {
             &json!({ "steps": [{ "tool": "browser_batch", "args": { "steps": [] } }] }),
             None,
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await
         .expect_err("browser_batch must never recurse");
@@ -2048,6 +2422,8 @@ mod channel_routing_tests {
             &json!({ "steps": [{ "tool": "page_snapshot", "args": { "max_nodes": 100 } }] }),
             Some(&session),
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await
         .expect("baseline batch");
@@ -2064,6 +2440,8 @@ mod channel_routing_tests {
             } }] }),
             Some(&session),
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await
         .expect("diff batch");
@@ -2086,6 +2464,8 @@ mod channel_routing_tests {
             &json!({ "steps": [{ "tool": "page_snapshot", "args": { "max_nodes": 100 } }] }),
             Some(&session),
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await
         .expect("refresh batch");
@@ -2105,6 +2485,8 @@ mod channel_routing_tests {
             } }] }),
             Some(&session),
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await
         .expect("stable batch");
@@ -2128,8 +2510,17 @@ mod channel_routing_tests {
             true,
         ));
         let router = Router::new(registry, RouterConfig::default());
-        let (result, recorded) =
-            dispatch_tool(&cdp, &channel, &router, "cdp_status", &json!({}), None).await;
+        let (result, recorded, _browser_id) = dispatch_tool(
+            &cdp,
+            &channel,
+            &router,
+            "cdp_status",
+            &json!({}),
+            None,
+            Path::new("."),
+            Path::new("."),
+        )
+        .await;
         let error = result.expect_err("extension mode must reject cdp-only tools");
         assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
         let details = error.details.expect("details");
@@ -2149,8 +2540,17 @@ mod channel_routing_tests {
             true,
         ));
         let router = Router::new(registry, RouterConfig::default());
-        let (result, recorded) =
-            dispatch_tool(&cdp, &channel, &router, "page_snapshot", &json!({}), None).await;
+        let (result, recorded, _browser_id) = dispatch_tool(
+            &cdp,
+            &channel,
+            &router,
+            "page_snapshot",
+            &json!({}),
+            None,
+            Path::new("."),
+            Path::new("."),
+        )
+        .await;
         let error = result.expect_err("no extension is connected in this test");
         assert_eq!(error.code, ErrorCode::TransportDown);
         assert!(!recorded);
@@ -2168,13 +2568,15 @@ mod channel_routing_tests {
         ));
         let router = Router::new(registry, RouterConfig::default());
         let target = "0123456789abcdef0123456789abcdef";
-        let (result, recorded) = dispatch_tool(
+        let (result, recorded, _browser_id) = dispatch_tool(
             &cdp,
             &channel,
             &router,
             "page_snapshot",
             &json!({ "tab_id": target }),
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await;
         let error = result.expect_err("a CDP target id is not an extension tab id");
@@ -2197,13 +2599,15 @@ mod channel_routing_tests {
             true,
         ));
         let router = Router::new(registry, RouterConfig::default());
-        let (result, recorded) = dispatch_tool(
+        let (result, recorded, _browser_id) = dispatch_tool(
             &cdp,
             &channel,
             &router,
             "browser_console",
             &json!({ "tab_id": 7 }),
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await;
         let error = result.expect_err("a numeric extension tab id is not a CDP target id");
@@ -2226,13 +2630,15 @@ mod channel_routing_tests {
             true,
         ));
         let router = Router::new(registry, RouterConfig::default());
-        let (result, recorded) = dispatch_tool(
+        let (result, recorded, _browser_id) = dispatch_tool(
             &cdp,
             &channel,
             &router,
             "browser_navigate",
             &json!({ "url": "https://example.test/", "tab_id": 7 }),
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await;
         let error = result.expect_err("a numeric extension tab id is not a CDP target id");
@@ -2329,13 +2735,15 @@ mod channel_routing_tests {
         ));
         let router = Router::new(registry, RouterConfig::default());
         let target = "0123456789abcdef0123456789abcdef";
-        let (result, recorded) = dispatch_tool(
+        let (result, recorded, _browser_id) = dispatch_tool(
             &cdp,
             &channel,
             &router,
             "tab_close",
             &json!({ "tab_id": target }),
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await;
         let error = result.expect_err("a CDP target id is not an extension tab id");
@@ -2355,13 +2763,15 @@ mod channel_routing_tests {
             true,
         ));
         let router = Router::new(registry, RouterConfig::default());
-        let (result, recorded) = dispatch_tool(
+        let (result, recorded, _browser_id) = dispatch_tool(
             &cdp,
             &channel,
             &router,
             "tab_close",
             &json!({ "tab_id": 7 }),
             None,
+            Path::new("."),
+            Path::new("."),
         )
         .await;
         let error = result.expect_err("a numeric extension tab id is not a CDP target id");
@@ -2431,6 +2841,8 @@ mod channel_routing_tests {
             Arc::clone(channel),
             recorder.sink(),
             Some(policy),
+            std::env::temp_dir(),
+            std::env::temp_dir(),
         );
         (backend, recorder)
     }
@@ -2544,6 +2956,8 @@ mod channel_routing_tests {
             }),
             None,
             Some(&*policy),
+            Path::new("."),
+            Path::new("."),
         )
         .await
         .expect("batch envelope");
@@ -2627,5 +3041,319 @@ mod channel_routing_tests {
         assert_eq!(live["planned"].as_array().unwrap().len(), 0);
         assert_eq!(live["executed"].as_array().unwrap().len(), 0);
         assert_eq!(live["skipped"][0]["reason"], "policy_denied");
+    }
+
+    const ONE_PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==";
+
+    #[tokio::test]
+    async fn screenshot_finalization_writes_files_and_respects_inline() {
+        let root = std::env::temp_dir().join(format!("corvus-shot-{}", uuid::Uuid::new_v4()));
+        let base = json!({
+            "format": "png",
+            "mime_type": "image/png",
+            "target": "viewport",
+            "tab_id": "T1",
+            "url": "https://example.test/",
+            "width": 1,
+            "height": 1,
+            "data": ONE_PIXEL_PNG,
+        });
+        let saved = finalize_screenshot_result(
+            &root,
+            "browser_screenshot",
+            &json!({ "format": "png" }),
+            Ok(base.clone()),
+        )
+        .await
+        .expect("screenshot finalizes");
+        assert!(saved.get("data").is_none());
+        assert!(saved.get("image").is_none());
+        assert_eq!(saved["format"], "png");
+        assert_eq!(saved["mime_type"], "image/png");
+        assert_eq!(saved["inline"], false);
+        assert_eq!(saved["width"], 1);
+        assert_eq!(saved["height"], 1);
+        assert_eq!(saved["bytes"], 70);
+        let path = std::path::PathBuf::from(saved["path"].as_str().expect("path"));
+        assert!(path.starts_with(&root));
+        assert!(path.exists());
+        assert_eq!(std::fs::read(&path).expect("file").len(), 70);
+        assert_eq!(saved["sha256"].as_str().unwrap().len(), 64);
+        assert!(saved["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Screenshot 1x1"));
+
+        // The extension result shape has no inline field; the request argument
+        // alone must decide whether image content is returned.
+        let inline = finalize_screenshot_result(
+            &root,
+            "browser_screenshot",
+            &json!({ "inline": true }),
+            Ok(base),
+        )
+        .await
+        .expect("inline screenshot finalizes");
+        assert_eq!(inline["inline"], true);
+        assert_eq!(inline["image"]["mime_type"], "image/png");
+        assert_eq!(inline["image"]["data"], ONE_PIXEL_PNG);
+        assert!(inline["path"].as_str().unwrap() != saved["path"].as_str().unwrap());
+        assert_eq!(inline["bytes"], 70);
+
+        let untouched = finalize_screenshot_result(
+            &root,
+            "page_text",
+            &json!({}),
+            Ok(json!({ "text": "hello" })),
+        )
+        .await
+        .expect("other tools pass through");
+        assert_eq!(untouched, json!({ "text": "hello" }));
+        let error = finalize_screenshot_result(
+            &root,
+            "browser_screenshot",
+            &json!({ "inline": true }),
+            Err(ErrorBody::new(ErrorCode::BadArgs, "no page")),
+        )
+        .await
+        .expect_err("failed screenshots are not rewritten");
+        assert_eq!(error.code, ErrorCode::BadArgs);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    const MINIMAL_PDF: &str = "JVBERi0xLjQKJSVFT0YK";
+
+    #[tokio::test]
+    async fn pdf_finalization_writes_a_file_and_removes_the_payload() {
+        let root = std::env::temp_dir().join(format!("corvus-pdf-{}", uuid::Uuid::new_v4()));
+        let saved = finalize_page_pdf_result(
+            &root,
+            "page_pdf",
+            Ok(json!({
+                "format": "pdf",
+                "mime_type": "application/pdf",
+                "tab_id": "T1",
+                "url": "https://example.test/",
+                "data": MINIMAL_PDF,
+            })),
+        )
+        .await
+        .expect("pdf finalizes");
+        assert!(saved.get("data").is_none());
+        assert!(saved.get("image").is_none());
+        assert_eq!(saved["format"], "pdf");
+        assert_eq!(saved["mime_type"], "application/pdf");
+        assert_eq!(saved["bytes"], 15);
+        assert_eq!(saved["sha256"].as_str().unwrap().len(), 64);
+        assert!(saved["summary"]
+            .as_str()
+            .unwrap()
+            .contains("PDF (15 bytes)"));
+        let path = std::path::PathBuf::from(saved["path"].as_str().expect("path"));
+        assert!(path.starts_with(&root));
+        assert!(path.exists());
+        assert_eq!(std::fs::read(&path).expect("file"), b"%PDF-1.4\n%%EOF\n");
+        let untouched =
+            finalize_page_pdf_result(&root, "page_text", Ok(json!({ "text": "hello" })))
+                .await
+                .expect("other tools pass through");
+        assert_eq!(untouched, json!({ "text": "hello" }));
+        let error = finalize_page_pdf_result(
+            &root,
+            "page_pdf",
+            Err(ErrorBody::new(ErrorCode::BadArgs, "no page")),
+        )
+        .await
+        .expect_err("failed pdfs are not rewritten");
+        assert_eq!(error.code, ErrorCode::BadArgs);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recorded_new_tools_drop_file_bytes_and_secret_values() {
+        let pdf = json!({ "format": "pdf", "path": "/tmp/x.pdf", "data": MINIMAL_PDF });
+        let recorded = recordable_result("page_pdf", &pdf);
+        assert!(recorded.get("data").is_none());
+        assert_eq!(recorded["path"], "/tmp/x.pdf");
+        let storage = json!({ "entries": [{ "key": "token", "value": "top-secret" }] });
+        let recorded = recordable_result("storage_get", &storage);
+        assert_eq!(recorded["entries"][0]["value"], "[redacted]");
+        let arguments = json!({ "name": "session", "value": "top-secret", "path": "/" });
+        let recorded = recordable_arguments("cookie_set", &arguments);
+        assert_eq!(recorded["value"], "[redacted]");
+        assert_eq!(recorded["name"], "session");
+        let arguments = json!({ "area": "local", "entries": { "token": "top-secret" } });
+        let recorded = recordable_arguments("storage_set", &arguments);
+        assert_eq!(recorded["entries"]["token"], "[redacted]");
+        assert_eq!(recorded["area"], "local");
+        assert_eq!(recordable_arguments("page_text", &arguments), arguments);
+    }
+
+    #[tokio::test]
+    async fn local_health_and_version_answer_without_a_browser() {
+        let registry = Arc::new(Registry::new());
+        let cdp = Arc::new(CdpClient::new());
+        let channel = Arc::new(ChannelState::new(
+            ChannelMode::Auto,
+            Arc::clone(&cdp),
+            Arc::clone(&registry),
+            true,
+        ));
+        assert!(cdp
+            .connect("ws://127.0.0.1:9/devtools/browser/test")
+            .is_ok());
+        let policy = guardrails_policy(r#"{"version":1}"#);
+        let (backend, _recorder) = policy_backend(policy, &registry, &cdp, &channel);
+        let health = backend
+            .call(ToolCall {
+                name: "health".into(),
+                arguments: json!({}),
+                session: None,
+            })
+            .await
+            .expect("health answers");
+        assert_eq!(health["status"], "ok");
+        assert_eq!(health["version"], "1.7.0");
+        assert_eq!(health["browser_count"], 0);
+        assert_eq!(health["database"]["ok"], true);
+        assert_eq!(health["guardrails"]["enabled"], true);
+        assert_eq!(health["tools"]["count"], 62);
+        assert_eq!(health["tools"]["categories"], 10);
+        assert!(health["channel"]["cdp"].get("endpoint").is_none());
+        assert_eq!(health["channel"]["descriptor_present"], false);
+        let health_text = serde_json::to_string(&health).expect("health JSON");
+        for forbidden in ["://", "C:", "token", "password", "top-secret"] {
+            assert!(
+                !health_text.contains(forbidden),
+                "health result contains {forbidden}"
+            );
+        }
+        let version = backend
+            .call(ToolCall {
+                name: "version".into(),
+                arguments: json!({}),
+                session: None,
+            })
+            .await
+            .expect("version answers");
+        assert_eq!(version["name"], "corvus");
+        assert_eq!(version["version"], "1.7.0");
+        assert_eq!(version["tools"], 62);
+        assert_eq!(version["categories"], 10);
+        assert_eq!(version["protocol_version"], 1);
+        assert_eq!(version["schema_snapshot"], "v1.7.0");
+        let version_text = serde_json::to_string(&version).expect("version JSON");
+        for forbidden in ["://", "C:", "token", "password"] {
+            assert!(
+                !version_text.contains(forbidden),
+                "version result contains {forbidden}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn extension_only_tools_are_rejected_on_the_cdp_channel() {
+        let registry = Arc::new(Registry::new());
+        let cdp = Arc::new(CdpClient::new());
+        let channel = Arc::new(ChannelState::new(
+            ChannelMode::Cdp,
+            Arc::clone(&cdp),
+            Arc::clone(&registry),
+            true,
+        ));
+        let policy = guardrails_policy(r#"{"version":1}"#);
+        let (backend, _recorder) = policy_backend(policy, &registry, &cdp, &channel);
+        assert_eq!(EXTENSION_ONLY_TOOLS.len(), 4);
+        for name in EXTENSION_ONLY_TOOLS {
+            let error = backend
+                .call(ToolCall {
+                    name: name.into(),
+                    arguments: json!({}),
+                    session: None,
+                })
+                .await
+                .expect_err("extension-only tools are unavailable on CDP");
+            assert_eq!(error.code, ErrorCode::CapabilityUnavailable, "{name}");
+        }
+        let health = backend
+            .call(ToolCall {
+                name: "health".into(),
+                arguments: json!({}),
+                session: None,
+            })
+            .await
+            .expect("health answers on the cdp channel");
+        assert_eq!(health["status"], "ok");
+        let version = backend
+            .call(ToolCall {
+                name: "version".into(),
+                arguments: json!({}),
+                session: None,
+            })
+            .await
+            .expect("version answers on the cdp channel");
+        assert_eq!(version["version"], "1.7.0");
+    }
+
+    #[test]
+    fn recorded_screenshots_drop_raw_base64_but_keep_metadata() {
+        let value = json!({
+            "format": "webp",
+            "path": "/tmp/shot.webp",
+            "data": "AAAA",
+            "image": { "mime_type": "image/webp", "data": "BBBB" },
+        });
+        let recorded = recordable_result("browser_screenshot", &value);
+        assert!(recorded.get("data").is_none());
+        assert_eq!(recorded["image"]["mime_type"], "image/webp");
+        assert!(recorded["image"].get("data").is_none());
+        assert_eq!(recorded["path"], "/tmp/shot.webp");
+        let other = recordable_result("page_text", &value);
+        assert_eq!(other, value);
+    }
+
+    #[tokio::test]
+    async fn browser_batch_rejects_inline_screenshots_before_dispatch() {
+        let registry = Arc::new(Registry::new());
+        let cdp = Arc::new(CdpClient::new());
+        let channel = Arc::new(ChannelState::new(
+            ChannelMode::Auto,
+            Arc::clone(&cdp),
+            Arc::clone(&registry),
+            true,
+        ));
+        let router = Router::new(
+            registry.clone() as Arc<dyn BrowserRegistry>,
+            RouterConfig::default(),
+        );
+        let result = run_batch(
+            &cdp,
+            &channel,
+            &registry,
+            &router,
+            &json!({
+                "stop_on_error": false,
+                "steps": [
+                    { "tool": "browser_screenshot", "args": { "inline": true } },
+                    { "tool": "browser_list" }
+                ]
+            }),
+            None,
+            None,
+            Path::new("."),
+            Path::new("."),
+        )
+        .await
+        .expect("batch returns an envelope");
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["count"], 2);
+        assert_eq!(result["stopped"], false);
+        assert_eq!(result["results"][0]["ok"], false);
+        assert_eq!(result["results"][0]["error"]["code"], "BAD_ARGS");
+        assert!(result["results"][0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("inline screenshots"));
+        assert_eq!(result["results"][1]["ok"], true);
     }
 }

@@ -104,6 +104,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: extension/pnpm-lock.yaml
 
+      - name: Check manifest contract
+        run: |
+          node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('manifest.json','utf8'));if(!Array.isArray(m.permissions)||m.permissions.length!==11)throw new Error('expected exactly 11 permissions');if(!m.content_scripts||m.content_scripts[0].all_frames!==false)throw new Error('content script all_frames must be false');"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -210,7 +214,7 @@ jobs:
           set -euo pipefail
           version="$(docker run --rm --entrypoint /usr/local/bin/corvusd corvus:test --version)"
           echo "$version"
-          echo "$version" | grep -q '1.6.0'
+          echo "$version" | grep -q '1.7.0'
 
       - name: Run container and verify health and tools
         run: |
@@ -242,7 +246,7 @@ jobs:
             sleep 1
           done
           test -n "$ready"
-          grep -Eq '"version"[[:space:]]*:[[:space:]]*"1\.6\.0"' /tmp/corvus-health.json
+          grep -Eq '"version"[[:space:]]*:[[:space:]]*"1\.7\.0"' /tmp/corvus-health.json
           echo "health: $(cat /tmp/corvus-health.json)"
           headers="$(mktemp)"
           init_body="$(mktemp)"
@@ -287,8 +291,8 @@ jobs:
           tools = payload.get("result", {}).get("tools", [])
           names = [tool.get("name") for tool in tools]
           print("tool count:", len(names))
-          if len(names) != 43:
-              raise SystemExit("expected 43 tools, got " + str(len(names)))
+          if len(names) != 62:
+              raise SystemExit("expected 62 tools, got " + str(len(names)))
           PY
 
   k8s:

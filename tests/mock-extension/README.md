@@ -19,7 +19,7 @@ Binary: `tests/mock-extension/target/debug/mock-extension.exe` (Windows) or
 
 ## Run against a local daemon
 
-With no answer flags the mock answers all 26 frozen tools from its own state:
+With no answer flags the mock answers the 26-tool v0.1.0 frozen surface from its own state. It is a historical fixture and does not implement the current 1.7.0 62-tool catalogue:
 
 ```bash
 tests/mock-extension/target/debug/mock-extension.exe \
@@ -124,7 +124,8 @@ Representative stateful results:
 ### M2b tools
 
 The eight M2b tools also answer from state, so one mock run covers the whole
-26-tool surface:
+26-tool v0.1.0 surface. This is the historical fixture surface, not the current
+62-tool catalogue:
 
 - `net_capture` `start` seeds four network entries and reports
   `capacity:2000`; `status` reports the entry count; `stop` stops capture.

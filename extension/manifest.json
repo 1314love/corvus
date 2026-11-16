@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "__MSG_extDescription__",
   "default_locale": "en",
   "minimum_chrome_version": "116",
@@ -19,7 +19,8 @@
     "downloads",
     "alarms",
     "offscreen",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "tabGroups"
   ],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [

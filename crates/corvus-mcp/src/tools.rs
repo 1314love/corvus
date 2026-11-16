@@ -17,7 +17,7 @@ struct Spec {
     open_world: bool,
 }
 
-const SPECS: [Spec; 43] = [
+const SPECS: [Spec; 62] = [
     Spec {
         name: "browser_navigate",
         title: "Navigate",
@@ -73,6 +73,16 @@ const SPECS: [Spec; 43] = [
         title: "Page HTML",
         description: "Return the HTML of the document, or of one element when target is given, capped by max_chars. The result reports the page url, the html and whether it was truncated.",
         schema: page_html_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_screenshot",
+        title: "Screenshot",
+        description: "Capture the visible viewport, the full scrollable page, or one element as webp, png or jpeg. The image is saved under the Corvus home screenshots directory; inline true also returns it as MCP image content. Element targets accept @c<backendNodeId> references from page_snapshot.",
+        schema: screenshot_schema,
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -448,6 +458,186 @@ const SPECS: [Spec; 43] = [
         idempotent: true,
         open_world: false,
     },
+    Spec {
+        name: "page_pdf",
+        title: "Save Page as PDF",
+        description: "Print the active tab to a PDF saved under the Corvus home pdf directory. Paper size is in inches; margins are fixed at 0.4 inch on every side.",
+        schema: page_pdf_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "page_links",
+        title: "List Page Links",
+        description: "List absolute links in the top document and its open shadow roots, optionally scoped by selector and filtered by visibility.",
+        schema: page_links_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "page_forms",
+        title: "Inspect Page Forms",
+        description: "Inspect forms in the top document and open shadow roots, including field selectors, labels and optionally non-password values.",
+        schema: page_forms_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "page_accessibility",
+        title: "Page Accessibility Tree",
+        description: "Return the accessibility tree of a tab or one root element, with ignored and presentational nodes removed.",
+        schema: page_accessibility_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_drag",
+        title: "Drag Between Elements",
+        description: "Drag the pointer from one element to another using the element references of page_snapshot. HTML5 data transfer is not guaranteed.",
+        schema: browser_drag_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_focus",
+        title: "Focus Element",
+        description: "Focus one element and scroll it into view.",
+        schema: browser_focus_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "browser_highlight",
+        title: "Highlight Element",
+        description: "Show a transient browser overlay on one element reference or selector for a short duration, without changing the page DOM.",
+        schema: browser_highlight_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: true,
+    },
+    Spec {
+        name: "tab_group",
+        title: "Group Tabs",
+        description: "Group two or more tabs into one tab group and set its title and colour. This tool is implemented by the extension only.",
+        schema: tab_group_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "tab_duplicate",
+        title: "Duplicate Tab",
+        description: "Duplicate one tab and return the new tab. This tool is implemented by the extension only.",
+        schema: tab_duplicate_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        open_world: false,
+    },
+    Spec {
+        name: "window_list",
+        title: "List Windows",
+        description: "List browser windows and optionally their tabs. This tool is implemented by the extension only.",
+        schema: window_list_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "window_new",
+        title: "New Window",
+        description: "Open a new browser window with an optional http, https or about:blank URL. This tool is implemented by the extension only.",
+        schema: window_new_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        open_world: true,
+    },
+    Spec {
+        name: "cookie_set",
+        title: "Set Cookie",
+        description: "Set one browser cookie. The value is never echoed in the result or in session recording.",
+        schema: cookie_set_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "cookie_clear",
+        title: "Clear Cookies",
+        description: "Delete browser cookies selected by URL, domain or name. Cookie values are never returned.",
+        schema: cookie_clear_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "storage_get",
+        title: "Read Web Storage",
+        description: "Read localStorage or sessionStorage entries for the page origin. Session recording redacts every value.",
+        schema: storage_get_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "storage_set",
+        title: "Write Web Storage",
+        description: "Write localStorage or sessionStorage entries for the page origin. Values are not echoed and session recording redacts them.",
+        schema: storage_set_schema,
+        read_only: false,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "storage_clear",
+        title: "Clear Web Storage",
+        description: "Clear all keys or selected keys from localStorage or sessionStorage for the page origin.",
+        schema: storage_clear_schema,
+        read_only: false,
+        destructive: true,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "health",
+        title: "Daemon Health",
+        description: "Return daemon status, version, uptime, browser counts, channel, database health, guardrails state and the tool catalogue size. No paths, URLs or secrets are included.",
+        schema: health_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
+    Spec {
+        name: "version",
+        title: "Daemon Version",
+        description: "Return the daemon name, version, protocol version, tool and category counts and the schema snapshot label.",
+        schema: version_schema,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+    },
 ];
 
 /// Whether browser_batch may call this tool. Daemon control, recording,
@@ -484,17 +674,25 @@ pub fn definitions() -> Vec<Value> {
 /// Category name for a tool.
 pub fn category(name: &str) -> &'static str {
     match name {
-        "browser_navigate" | "page_snapshot" | "page_text" | "page_html" | "page_find"
-        | "browser_wait" | "browser_history" | "browser_dialog" | "browser_emulate"
-        | "browser_batch" => "page",
+        "browser_navigate" | "page_snapshot" | "browser_screenshot" | "page_text" | "page_html"
+        | "page_find" | "browser_wait" | "browser_history" | "browser_dialog"
+        | "browser_emulate" | "browser_batch" | "page_pdf" | "page_links" | "page_forms"
+        | "page_accessibility" => "page",
         "browser_click" | "browser_type" | "browser_hover" | "browser_press" | "browser_scroll"
-        | "browser_select" | "browser_eval" => "input",
-        "tab_list" | "tab_new" | "tab_close" | "tab_switch" => "tabs",
+        | "browser_select" | "browser_eval" | "browser_drag" | "browser_focus"
+        | "browser_highlight" => "input",
+        "tab_list" | "tab_new" | "tab_close" | "tab_switch" | "tab_group" | "tab_duplicate"
+        | "window_list" | "window_new" => "tabs",
         "net_capture" | "net_log" | "net_clear" | "net_intercept" | "browser_cookies" => "network",
+        "cookie_set" | "cookie_clear" | "storage_get" | "storage_set" | "storage_clear" => {
+            "storage"
+        }
         "upload_file" | "download_list" | "download_wait" => "files",
         "cdp_status" | "cdp_targets" | "cdp_send" | "cdp_events" | "browser_channel" => "cdp",
         "session_list" | "session_steps" | "session_replay" | "session_export" => "sessions",
-        "browser_list" | "metrics" | "logs_tail" | "browser_console" => "diagnostics",
+        "browser_list" | "metrics" | "logs_tail" | "browser_console" | "health" | "version" => {
+            "diagnostics"
+        }
         "tool_help" => "help",
         _ => "diagnostics",
     }
@@ -510,6 +708,7 @@ pub fn summary(name: &str) -> &'static str {
         "page_text" => "Visible page text, capped by max_chars.",
         "page_html" => "Document or element HTML, capped by max_chars.",
         "page_find" => "Find page text and return element references.",
+        "browser_screenshot" => "Capture a viewport, full-page or element screenshot.",
         "browser_hover" => "Move the pointer over an element.",
         "browser_press" => "Send one key or a key sequence.",
         "browser_scroll" => "Scroll the page or an element.",
@@ -545,6 +744,24 @@ pub fn summary(name: &str) -> &'static str {
         "browser_dialog" => "Accept or dismiss a JavaScript dialog.",
         "browser_emulate" => "Apply or reset device and network emulation.",
         "browser_batch" => "Run up to 20 browser tool calls in order.",
+        "page_pdf" => "Print a tab to a PDF and save it.",
+        "page_links" => "List links with optional visibility filtering.",
+        "page_forms" => "Inspect forms, fields, labels and values.",
+        "page_accessibility" => "Accessibility tree with optional root and limits.",
+        "browser_drag" => "Drag the pointer between two elements.",
+        "browser_focus" => "Focus an element and scroll it into view.",
+        "browser_highlight" => "Show a transient overlay on an element.",
+        "tab_group" => "Group tabs and set the group title and colour.",
+        "tab_duplicate" => "Duplicate a tab.",
+        "window_list" => "List browser windows and their tabs.",
+        "window_new" => "Open a new browser window.",
+        "cookie_set" => "Set one browser cookie.",
+        "cookie_clear" => "Delete cookies by URL, domain or name.",
+        "storage_get" => "Read localStorage or sessionStorage.",
+        "storage_set" => "Write localStorage or sessionStorage.",
+        "storage_clear" => "Clear localStorage or sessionStorage.",
+        "health" => "Daemon status, version, channels and database health.",
+        "version" => "Daemon name, version and catalogue counts.",
         "tool_help" => "Catalogue index, category or full tool help.",
         _ => "Corvus tool.",
     }
@@ -557,6 +774,7 @@ pub fn categories() -> Vec<&'static str> {
         "input",
         "tabs",
         "network",
+        "storage",
         "files",
         "cdp",
         "sessions",
@@ -594,7 +812,29 @@ pub fn definitions_for(category_filter: Option<&str>, detail: &str) -> Vec<Value
         .filter(|spec| category_filter.is_none_or(|wanted| category(spec.name) == wanted))
         .map(|spec| {
             let mut schema = (spec.schema)();
-            add_browser_id(&mut schema);
+            if !matches!(spec.name, "health" | "version") {
+                add_browser_id(&mut schema);
+                if is_new_browser_tool(spec.name) {
+                    if let Some(browser_id) = schema
+                        .get_mut("properties")
+                        .and_then(Value::as_object_mut)
+                        .and_then(|properties| properties.get_mut("browser_id"))
+                        .and_then(Value::as_object_mut)
+                    {
+                        browser_id.insert("minLength".to_string(), json!(1));
+                        browser_id.insert("maxLength".to_string(), json!(128));
+                    }
+                    if let Some(tab_id) = schema
+                        .get_mut("properties")
+                        .and_then(Value::as_object_mut)
+                        .and_then(|properties| properties.get_mut("tab_id"))
+                        .and_then(Value::as_object_mut)
+                    {
+                        tab_id.insert("minLength".to_string(), json!(1));
+                        tab_id.insert("maxLength".to_string(), json!(128));
+                    }
+                }
+            }
             if detail != "full" {
                 strip_schema_descriptions(&mut schema);
             }
@@ -719,7 +959,30 @@ pub fn help_document(arguments: &Value) -> Result<Value, ErrorBody> {
     }))
 }
 
-/// Add the optional routing field every tool accepts.
+/// Tools added in v1.7 that accept a bounded browser_id.
+fn is_new_browser_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "page_pdf"
+            | "page_links"
+            | "page_forms"
+            | "page_accessibility"
+            | "browser_drag"
+            | "browser_focus"
+            | "browser_highlight"
+            | "tab_group"
+            | "tab_duplicate"
+            | "window_list"
+            | "window_new"
+            | "cookie_set"
+            | "cookie_clear"
+            | "storage_get"
+            | "storage_set"
+            | "storage_clear"
+    )
+}
+
+/// Add the optional routing field every browser tool accepts.
 fn add_browser_id(schema: &mut Value) {
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.insert(
@@ -790,6 +1053,47 @@ fn snapshot_schema() -> Value {
                 "type": "boolean",
                 "default": false,
                 "description": "Compact format only: mark added, changed and removed lines against the previous snapshot of the same tab.",
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn screenshot_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "enum": ["viewport", "full_page", "element"],
+                "default": "viewport",
+                "description": "Region to capture: the visible viewport, the full scrollable page, or one element.",
+            },
+            "ref": {
+                "type": "string",
+                "description": "Element reference from page_snapshot such as @c42; required when target is element.",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["webp", "png", "jpeg"],
+                "default": "webp",
+                "description": "Image encoding; quality is ignored for png.",
+            },
+            "quality": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 80,
+                "description": "Encoder quality for webp and jpeg.",
+            },
+            "inline": {
+                "type": "boolean",
+                "default": false,
+                "description": "Also return the image bytes as MCP image content; the file is always saved.",
+            },
+            "tab_id": {
+                "type": "string",
+                "description": "Tab to capture; the active tab when omitted.",
             },
         },
         "additionalProperties": false,
@@ -1674,6 +1978,249 @@ fn tool_help_schema() -> Value {
     })
 }
 
+fn page_pdf_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "paper_width": { "type": "number", "minimum": 1, "maximum": 100, "default": 8.5 },
+            "paper_height": { "type": "number", "minimum": 1, "maximum": 100, "default": 11 },
+            "landscape": { "type": "boolean", "default": false },
+            "print_background": { "type": "boolean", "default": true },
+            "scale": { "type": "number", "minimum": 0.1, "maximum": 2, "default": 1 },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn page_links_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "selector": { "type": "string", "maxLength": 512 },
+            "max_results": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 },
+            "include_hidden": { "type": "boolean", "default": false },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn page_forms_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "selector": { "type": "string", "maxLength": 512 },
+            "include_values": { "type": "boolean", "default": false },
+            "max_forms": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn page_accessibility_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "root": { "type": "string", "maxLength": 512 },
+            "max_nodes": { "type": "integer", "minimum": 1, "maximum": 2000, "default": 500 },
+            "max_depth": { "type": "integer", "minimum": 1, "maximum": 50, "default": 12 },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn browser_drag_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "from_ref": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "to_ref": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "steps": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10 },
+        },
+        "required": ["from_ref", "to_ref"],
+        "additionalProperties": false,
+    })
+}
+
+fn browser_focus_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "ref": { "type": "string", "minLength": 1, "maxLength": 512 },
+        },
+        "required": ["ref"],
+        "additionalProperties": false,
+    })
+}
+
+fn browser_highlight_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "ref": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "selector": { "type": "string", "maxLength": 512 },
+            "duration_ms": { "type": "integer", "minimum": 0, "maximum": 10000, "default": 1200 },
+            "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "default": "#ffd400" },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn tab_group_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_ids": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "minItems": 1,
+                "maxItems": 50,
+            },
+            "title": { "type": "string", "maxLength": 64 },
+            "color": {
+                "type": "string",
+                "enum": ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"],
+                "default": "blue",
+            },
+        },
+        "required": ["tab_ids"],
+        "additionalProperties": false,
+    })
+}
+
+fn tab_duplicate_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string", "minLength": 1 },
+        },
+        "required": ["tab_id"],
+        "additionalProperties": false,
+    })
+}
+
+fn window_list_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "include_tabs": { "type": "boolean", "default": true },
+            "max_windows": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn window_new_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "url": { "type": "string", "maxLength": 4096 },
+            "incognito": { "type": "boolean", "default": false },
+            "focused": { "type": "boolean", "default": true },
+            "width": { "type": "integer", "minimum": 200, "maximum": 10000 },
+            "height": { "type": "integer", "minimum": 200, "maximum": 10000 },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn cookie_set_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "value": { "type": "string", "maxLength": 4096 },
+            "url": { "type": "string", "maxLength": 4096 },
+            "domain": { "type": "string", "maxLength": 256 },
+            "path": { "type": "string", "maxLength": 512, "default": "/" },
+            "secure": { "type": "boolean", "default": false },
+            "http_only": { "type": "boolean", "default": false },
+            "same_site": { "type": "string", "enum": ["strict", "lax", "none"], "default": "lax" },
+            "expires": { "type": "integer", "minimum": 0 },
+        },
+        "required": ["name", "value"],
+        "additionalProperties": false,
+    })
+}
+
+fn cookie_clear_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "url": { "type": "string", "maxLength": 4096 },
+            "domain": { "type": "string", "maxLength": 256 },
+            "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn storage_get_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "area": { "type": "string", "enum": ["local", "session"], "default": "local" },
+            "keys": {
+                "type": "array",
+                "items": { "type": "string", "maxLength": 256 },
+                "maxItems": 100,
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn storage_set_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "area": { "type": "string", "enum": ["local", "session"], "default": "local" },
+            "entries": {
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 100,
+                "additionalProperties": { "type": "string", "maxLength": 4096 },
+            },
+        },
+        "required": ["entries"],
+        "additionalProperties": false,
+    })
+}
+
+fn storage_clear_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "tab_id": { "type": "string" },
+            "area": { "type": "string", "enum": ["local", "session"], "default": "local" },
+            "keys": {
+                "type": "array",
+                "items": { "type": "string", "maxLength": 256 },
+                "maxItems": 100,
+            },
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn health_schema() -> Value {
+    json!({ "type": "object", "properties": {}, "additionalProperties": false })
+}
+
+fn version_schema() -> Value {
+    json!({ "type": "object", "properties": {}, "additionalProperties": false })
+}
+
 fn validate_batch(object: &mut Map<String, Value>) -> Result<(), ErrorBody> {
     let steps = match object.get_mut("steps") {
         Some(Value::Array(steps)) if BatchPolicy::validate_count(steps.len()).is_ok() => steps,
@@ -1760,6 +2307,163 @@ fn validate_batch(object: &mut Map<String, Value>) -> Result<(), ErrorBody> {
 ///
 /// Everything this function rejects is a caller mistake, so the returned error
 /// is always BAD_ARGS.
+fn optional_string_max(
+    object: &Map<String, Value>,
+    field: &str,
+    max: usize,
+    tool: &str,
+) -> Result<(), ErrorBody> {
+    optional_string(object, field, tool)?;
+    if let Some(text) = object.get(field).and_then(Value::as_str) {
+        if text.chars().count() > max {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                format!("{tool} argument {field} must be at most {max} characters"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn required_present_string(
+    object: &Map<String, Value>,
+    field: &str,
+    max: usize,
+    tool: &str,
+) -> Result<(), ErrorBody> {
+    match object.get(field) {
+        Some(Value::String(text)) if text.chars().count() <= max => Ok(()),
+        Some(Value::String(_)) => Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            format!("{tool} argument {field} must be at most {max} characters"),
+        )),
+        _ => Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            format!("{tool} requires a string {field} argument"),
+        )),
+    }
+}
+
+fn required_string_max(
+    object: &Map<String, Value>,
+    field: &str,
+    max: usize,
+    tool: &str,
+) -> Result<(), ErrorBody> {
+    required_string(object, field, tool)?;
+    optional_string_max(object, field, max, tool)
+}
+
+fn optional_string_array(
+    object: &Map<String, Value>,
+    field: &str,
+    max_items: usize,
+    max_length: usize,
+    tool: &str,
+) -> Result<(), ErrorBody> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Array(items))
+            if items.len() <= max_items
+                && items.iter().all(|item| {
+                    item.as_str()
+                        .is_some_and(|text| text.chars().count() <= max_length)
+                }) =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            format!(
+                "{tool} argument {field} must be an array of at most {max_items} strings of at most {max_length} characters"
+            ),
+        )),
+    }
+}
+
+fn validate_storage_entries(object: &Map<String, Value>) -> Result<(), ErrorBody> {
+    let Some(entries) = object.get("entries").and_then(Value::as_object) else {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            "storage_set requires an entries object with 1 to 100 string values",
+        ));
+    };
+    if entries.is_empty() || entries.len() > 100 {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            "storage_set requires an entries object with 1 to 100 string values",
+        ));
+    }
+    let mut total = 0usize;
+    for (key, value) in entries {
+        if key.chars().count() > 256 {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                "storage_set keys must be at most 256 characters",
+            ));
+        }
+        let Some(text) = value.as_str() else {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                "storage_set values must be strings",
+            ));
+        };
+        if text.chars().count() > 4096 {
+            return Err(ErrorBody::new(
+                ErrorCode::BadArgs,
+                "storage_set values must be at most 4096 characters",
+            ));
+        }
+        total += key.len() + text.len();
+    }
+    if total > 65_536 {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            "storage_set entries must not exceed 64 KiB in total",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_highlight_color(object: &Map<String, Value>, tool: &str) -> Result<(), ErrorBody> {
+    let Some(color) = object.get("color") else {
+        return Ok(());
+    };
+    let Some(text) = color.as_str() else {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            format!("{tool} argument color must be a #rrggbb string"),
+        ));
+    };
+    let valid = text.len() == 7
+        && text.starts_with('#')
+        && text[1..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit());
+    if !valid {
+        return Err(ErrorBody::new(
+            ErrorCode::BadArgs,
+            format!("{tool} argument color must be a #rrggbb string"),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a window_new URL is well formed and uses an accepted scheme.
+///
+/// A prefix check is not enough: "http://" and "https:// example" pass a
+/// starts_with test but have no usable host, and a browser window would fail
+/// only after the call was accepted. Parse the URL instead.
+fn valid_window_url(url: &str) -> bool {
+    if url.trim().eq_ignore_ascii_case("about:blank") {
+        return true;
+    }
+    url::Url::parse(url).is_ok_and(|parsed| {
+        matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some()
+    })
+}
+
+/// Validate and normalize the arguments of one tool call.
 pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
     let arguments = match arguments {
         Value::Null => json!({}),
@@ -1773,6 +2477,16 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
     };
     let mut object = arguments.as_object().cloned().unwrap_or_default();
     optional_string(&object, "browser_id", name)?;
+    if is_new_browser_tool(name) {
+        if let Some(id) = object.get("browser_id").and_then(Value::as_str) {
+            if id.is_empty() || id.chars().count() > 128 {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    format!("{name} argument browser_id must be 1 to 128 characters"),
+                ));
+            }
+        }
+    }
     match name {
         "browser_navigate" => {
             required_string(&object, "url", name)?;
@@ -2059,6 +2773,195 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
             fill_default(&mut object, "wait_ms", json!(0));
             fill_default(&mut object, "clear", json!(false));
         }
+        "page_pdf" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            optional_number_range(&object, "paper_width", 1.0, 100.0, name)?;
+            optional_number_range(&object, "paper_height", 1.0, 100.0, name)?;
+            optional_bool(&object, "landscape", name)?;
+            optional_bool(&object, "print_background", name)?;
+            optional_number_range(&object, "scale", 0.1, 2.0, name)?;
+            fill_default(&mut object, "paper_width", json!(8.5));
+            fill_default(&mut object, "paper_height", json!(11));
+            fill_default(&mut object, "landscape", json!(false));
+            fill_default(&mut object, "print_background", json!(true));
+            fill_default(&mut object, "scale", json!(1));
+        }
+        "page_links" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            optional_string_max(&object, "selector", 512, name)?;
+            optional_integer_range(&object, "max_results", 1, 1000, name)?;
+            optional_bool(&object, "include_hidden", name)?;
+            fill_default(&mut object, "max_results", json!(200));
+            fill_default(&mut object, "include_hidden", json!(false));
+        }
+        "page_forms" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            optional_string_max(&object, "selector", 512, name)?;
+            optional_bool(&object, "include_values", name)?;
+            optional_integer_range(&object, "max_forms", 1, 100, name)?;
+            fill_default(&mut object, "include_values", json!(false));
+            fill_default(&mut object, "max_forms", json!(20));
+        }
+        "page_accessibility" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            optional_string_max(&object, "root", 512, name)?;
+            optional_integer_range(&object, "max_nodes", 1, 2000, name)?;
+            optional_integer_range(&object, "max_depth", 1, 50, name)?;
+            fill_default(&mut object, "max_nodes", json!(500));
+            fill_default(&mut object, "max_depth", json!(12));
+        }
+        "browser_drag" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            required_string_max(&object, "from_ref", 512, name)?;
+            required_string_max(&object, "to_ref", 512, name)?;
+            optional_integer_range(&object, "steps", 1, 50, name)?;
+            fill_default(&mut object, "steps", json!(10));
+            if object.get("from_ref") == object.get("to_ref") {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "browser_drag from_ref and to_ref must differ",
+                ));
+            }
+        }
+        "browser_focus" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            required_string_max(&object, "ref", 512, name)?;
+        }
+        "browser_highlight" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            optional_string_max(&object, "ref", 512, name)?;
+            optional_string_max(&object, "selector", 512, name)?;
+            optional_integer_range(&object, "duration_ms", 0, 10_000, name)?;
+            validate_highlight_color(&object, name)?;
+            fill_default(&mut object, "duration_ms", json!(1200));
+            fill_default(&mut object, "color", json!("#ffd400"));
+            match (
+                object.get("ref").and_then(Value::as_str),
+                object.get("selector").and_then(Value::as_str),
+            ) {
+                (Some(_), None) | (None, Some(_)) => {}
+                _ => {
+                    return Err(ErrorBody::new(
+                        ErrorCode::BadArgs,
+                        "browser_highlight requires exactly one of ref or selector",
+                    ))
+                }
+            }
+        }
+        "tab_group" => {
+            let Some(Value::Array(tab_ids)) = object.get("tab_ids") else {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "tab_group requires an array of 1 to 50 tab ids",
+                ));
+            };
+            if tab_ids.is_empty()
+                || tab_ids.len() > 50
+                || !tab_ids.iter().all(|id| {
+                    id.as_str()
+                        .is_some_and(|text| !text.trim().is_empty() && text.chars().count() <= 128)
+                })
+            {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "tab_group requires an array of 1 to 50 tab ids",
+                ));
+            }
+            optional_string_max(&object, "title", 64, name)?;
+            optional_choice(
+                &object,
+                "color",
+                &[
+                    "grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange",
+                ],
+                name,
+            )?;
+            fill_default(&mut object, "color", json!("blue"));
+        }
+        "tab_duplicate" => {
+            required_string_max(&object, "tab_id", 128, name)?;
+        }
+        "window_list" => {
+            optional_bool(&object, "include_tabs", name)?;
+            optional_integer_range(&object, "max_windows", 1, 50, name)?;
+            fill_default(&mut object, "include_tabs", json!(true));
+            fill_default(&mut object, "max_windows", json!(20));
+        }
+        "window_new" => {
+            optional_string_max(&object, "url", 4096, name)?;
+            optional_bool(&object, "incognito", name)?;
+            optional_bool(&object, "focused", name)?;
+            optional_integer_range(&object, "width", 200, 10_000, name)?;
+            optional_integer_range(&object, "height", 200, 10_000, name)?;
+            if let Some(url) = object.get("url").and_then(Value::as_str) {
+                if !valid_window_url(url) {
+                    return Err(ErrorBody::new(
+                        ErrorCode::BadArgs,
+                        "window_new url must be a valid http, https or about:blank URL",
+                    ));
+                }
+            }
+            fill_default(&mut object, "incognito", json!(false));
+            fill_default(&mut object, "focused", json!(true));
+        }
+        "cookie_set" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            required_string_max(&object, "name", 256, name)?;
+            required_present_string(&object, "value", 4096, name)?;
+            optional_string_max(&object, "url", 4096, name)?;
+            optional_string_max(&object, "domain", 256, name)?;
+            optional_string_max(&object, "path", 512, name)?;
+            optional_bool(&object, "secure", name)?;
+            optional_bool(&object, "http_only", name)?;
+            optional_choice(&object, "same_site", &["strict", "lax", "none"], name)?;
+            optional_integer_range(&object, "expires", 0, u64::MAX, name)?;
+            fill_default(&mut object, "path", json!("/"));
+            fill_default(&mut object, "secure", json!(false));
+            fill_default(&mut object, "http_only", json!(false));
+            fill_default(&mut object, "same_site", json!("lax"));
+        }
+        "cookie_clear" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            optional_string_max(&object, "url", 4096, name)?;
+            optional_string_max(&object, "domain", 256, name)?;
+            optional_string_max(&object, "name", 256, name)?;
+            if object
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "cookie_clear argument name must not be empty",
+                ));
+            }
+        }
+        "storage_get" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            optional_choice(&object, "area", &["local", "session"], name)?;
+            optional_string_array(&object, "keys", 100, 256, name)?;
+            fill_default(&mut object, "area", json!("local"));
+        }
+        "storage_set" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            optional_choice(&object, "area", &["local", "session"], name)?;
+            validate_storage_entries(&object)?;
+            fill_default(&mut object, "area", json!("local"));
+        }
+        "storage_clear" => {
+            optional_string_max(&object, "tab_id", 128, name)?;
+            optional_choice(&object, "area", &["local", "session"], name)?;
+            optional_string_array(&object, "keys", 100, 256, name)?;
+            fill_default(&mut object, "area", json!("local"));
+        }
+        "health" | "version" => {
+            if !object.is_empty() {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    format!("{name} accepts no arguments"),
+                ));
+            }
+        }
         "browser_batch" => {
             validate_batch(&mut object)?;
         }
@@ -2101,6 +3004,35 @@ pub fn validate(name: &str, arguments: &Value) -> Result<Value, ErrorBody> {
                         ))
                     }
                 }
+            }
+        }
+        "browser_screenshot" => {
+            optional_choice(
+                &object,
+                "target",
+                &["viewport", "full_page", "element"],
+                name,
+            )?;
+            optional_string(&object, "ref", name)?;
+            optional_choice(&object, "format", &["webp", "png", "jpeg"], name)?;
+            optional_integer_range(&object, "quality", 1, 100, name)?;
+            optional_bool(&object, "inline", name)?;
+            optional_string(&object, "tab_id", name)?;
+            fill_default(&mut object, "target", json!("viewport"));
+            fill_default(&mut object, "format", json!("webp"));
+            fill_default(&mut object, "quality", json!(80));
+            fill_default(&mut object, "inline", json!(false));
+            let target = object
+                .get("target")
+                .and_then(Value::as_str)
+                .unwrap_or("viewport");
+            if target == "element" {
+                required_string(&object, "ref", name)?;
+            } else if object.get("ref").is_some() {
+                return Err(ErrorBody::new(
+                    ErrorCode::BadArgs,
+                    "browser_screenshot ref is only supported when target is element",
+                ));
             }
         }
         "browser_dialog" => {
@@ -2456,7 +3388,7 @@ mod tests {
     #[test]
     fn every_definition_declares_a_category_and_summary() {
         let definitions = definitions_for(None, "brief");
-        assert_eq!(definitions.len(), 43);
+        assert_eq!(definitions.len(), 62);
         let categories = categories();
         for definition in &definitions {
             let name = definition
@@ -2486,7 +3418,7 @@ mod tests {
     fn brief_catalogue_fits_the_token_budget() {
         let brief = serde_json::to_string(&definitions_for(None, "brief")).expect("serialize");
         assert!(
-            brief.len() <= 30_000,
+            brief.len() <= 32_000,
             "brief catalogue is {} bytes",
             brief.len()
         );
@@ -2497,6 +3429,229 @@ mod tests {
             full.len(),
             definitions_for(None, "brief").len()
         );
+    }
+
+    #[test]
+    fn new_tools_apply_defaults_and_reject_malformed_arguments() {
+        let pdf = validate("page_pdf", &json!({})).expect("pdf defaults");
+        assert_eq!(pdf["paper_width"], 8.5);
+        assert_eq!(pdf["paper_height"], 11);
+        assert_eq!(pdf["landscape"], false);
+        assert_eq!(pdf["print_background"], true);
+        assert_eq!(pdf["scale"], 1);
+        assert!(validate("page_pdf", &json!({ "scale": 5 })).is_err());
+        assert_eq!(
+            validate("page_pdf", &json!({ "browser_id": "edge:default" })).expect("browser id")
+                ["browser_id"],
+            "edge:default"
+        );
+        assert!(validate("page_pdf", &json!({ "browser_id": "x".repeat(129) })).is_err());
+
+        let links = validate("page_links", &json!({})).expect("link defaults");
+        assert_eq!(links["max_results"], 200);
+        assert_eq!(links["include_hidden"], false);
+        assert!(validate("page_links", &json!({ "max_results": 0 })).is_err());
+
+        let forms = validate("page_forms", &json!({})).expect("form defaults");
+        assert_eq!(forms["include_values"], false);
+        assert_eq!(forms["max_forms"], 20);
+        let accessibility = validate("page_accessibility", &json!({})).expect("ax defaults");
+        assert_eq!(accessibility["max_nodes"], 500);
+        assert_eq!(accessibility["max_depth"], 12);
+
+        assert!(validate("browser_drag", &json!({ "from_ref": "@e1" })).is_err());
+        assert!(validate(
+            "browser_drag",
+            &json!({ "from_ref": "@e1", "to_ref": "@e1" })
+        )
+        .is_err());
+        let drag = validate(
+            "browser_drag",
+            &json!({ "from_ref": "@e1", "to_ref": "@e2" }),
+        )
+        .expect("drag");
+        assert_eq!(drag["steps"], 10);
+        assert!(validate("browser_focus", &json!({})).is_err());
+
+        assert!(validate("browser_highlight", &json!({})).is_err());
+        assert!(validate(
+            "browser_highlight",
+            &json!({ "ref": "@e1", "selector": "#a" })
+        )
+        .is_err());
+        let highlight =
+            validate("browser_highlight", &json!({ "selector": "#a" })).expect("highlight");
+        assert_eq!(highlight["duration_ms"], 1200);
+        assert_eq!(highlight["color"], "#ffd400");
+        assert!(validate(
+            "browser_highlight",
+            &json!({ "ref": "@e1", "color": "red" })
+        )
+        .is_err());
+
+        assert!(validate("tab_group", &json!({ "tab_ids": [] })).is_err());
+        let group = validate("tab_group", &json!({ "tab_ids": ["t1"] })).expect("group");
+        assert_eq!(group["color"], "blue");
+        assert!(validate("tab_duplicate", &json!({})).is_err());
+        let windows = validate("window_list", &json!({})).expect("window list");
+        assert_eq!(windows["include_tabs"], true);
+        assert_eq!(windows["max_windows"], 20);
+        assert!(validate("window_new", &json!({ "url": "mailto:a@b.test" })).is_err());
+        let window = validate("window_new", &json!({})).expect("window new");
+        assert_eq!(window["incognito"], false);
+        assert_eq!(window["focused"], true);
+
+        assert!(validate("cookie_set", &json!({ "name": "session" })).is_err());
+        let cookie = validate("cookie_set", &json!({ "name": "session", "value": "" }))
+            .expect("empty cookie value");
+        assert_eq!(cookie["value"], "");
+        assert_eq!(cookie["path"], "/");
+        assert_eq!(cookie["same_site"], "lax");
+        assert!(validate(
+            "cookie_set",
+            &json!({ "name": "session", "value": "x", "same_site": "maybe" })
+        )
+        .is_err());
+
+        let storage = validate("storage_get", &json!({})).expect("storage get");
+        assert_eq!(storage["area"], "local");
+        assert!(validate("storage_set", &json!({})).is_err());
+        let storage = validate(
+            "storage_set",
+            &json!({ "area": "session", "entries": { "token": "top-secret" } }),
+        )
+        .expect("storage set");
+        assert_eq!(storage["area"], "session");
+        assert_eq!(storage["entries"]["token"], "top-secret");
+        let storage = validate(
+            "storage_set",
+            &json!({ "entries": { "x": "y".repeat(4097) } }),
+        );
+        assert!(storage.is_err());
+        assert_eq!(
+            validate("storage_clear", &json!({})).expect("storage clear")["area"],
+            "local"
+        );
+
+        assert!(validate("health", &json!({})).is_ok());
+        assert!(validate("health", &json!({ "verbose": true })).is_err());
+        assert!(validate("version", &json!({})).is_ok());
+        assert!(validate("version", &json!({ "detail": "full" })).is_err());
+    }
+
+    #[test]
+    fn new_tools_enforce_hidden_length_and_url_bounds() {
+        assert!(validate(
+            "browser_drag",
+            &json!({ "from_ref": "x".repeat(513), "to_ref": "@e2" })
+        )
+        .is_err());
+        assert!(validate("browser_focus", &json!({ "ref": "x".repeat(513) })).is_err());
+        assert!(validate("browser_highlight", &json!({ "ref": "x".repeat(513) })).is_err());
+        assert!(validate("tab_group", &json!({ "tab_ids": ["x".repeat(129)] })).is_err());
+        assert!(validate("storage_get", &json!({ "keys": ["x".repeat(257)] })).is_err());
+        assert!(validate("storage_clear", &json!({ "keys": ["x".repeat(257)] })).is_err());
+
+        for malformed in [
+            "http://",
+            "https:// example",
+            "http://example.test:99999",
+            "https://exa mple.test",
+            "javascript:alert(1)",
+            "about:blank#fragment",
+        ] {
+            assert!(
+                validate("window_new", &json!({ "url": malformed })).is_err(),
+                "{malformed} must be rejected"
+            );
+        }
+        for accepted in [
+            "http://example.test",
+            "https://example.test/path?q=1",
+            "about:blank",
+        ] {
+            assert!(
+                validate("window_new", &json!({ "url": accepted })).is_ok(),
+                "{accepted} must be accepted"
+            );
+        }
+
+        assert!(validate("cookie_clear", &json!({ "name": "" })).is_err());
+        assert!(validate("cookie_clear", &json!({ "name": "   " })).is_err());
+        assert!(validate("cookie_clear", &json!({ "name": "session" })).is_ok());
+    }
+
+    #[test]
+    fn new_tool_schemas_expose_their_hidden_bounds() {
+        let definitions = definitions_for(None, "brief");
+        let schema = |name: &str| {
+            definitions
+                .iter()
+                .find(|definition| definition.get("name").and_then(Value::as_str) == Some(name))
+                .and_then(|definition| definition.get("inputSchema"))
+                .expect("schema")
+        };
+        assert_eq!(
+            schema("browser_drag").pointer("/properties/from_ref/maxLength"),
+            Some(&json!(512))
+        );
+        assert_eq!(
+            schema("browser_drag").pointer("/properties/to_ref/maxLength"),
+            Some(&json!(512))
+        );
+        assert_eq!(
+            schema("browser_focus").pointer("/properties/ref/maxLength"),
+            Some(&json!(512))
+        );
+        assert_eq!(
+            schema("browser_highlight").pointer("/properties/ref/maxLength"),
+            Some(&json!(512))
+        );
+        assert_eq!(
+            schema("tab_group").pointer("/properties/tab_ids/items/maxLength"),
+            Some(&json!(128))
+        );
+        assert_eq!(
+            schema("storage_get").pointer("/properties/keys/items/maxLength"),
+            Some(&json!(256))
+        );
+        assert_eq!(
+            schema("storage_clear").pointer("/properties/keys/items/maxLength"),
+            Some(&json!(256))
+        );
+    }
+
+    #[test]
+    fn brief_and_full_catalogues_share_structure_and_defaults() {
+        fn strip_text(value: &mut Value) {
+            match value {
+                Value::Object(object) => {
+                    object.remove("description");
+                    object.remove("title");
+                    for child in object.values_mut() {
+                        strip_text(child);
+                    }
+                }
+                Value::Array(items) => {
+                    for item in items {
+                        strip_text(item);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let brief = definitions_for(None, "brief");
+        let full = definitions_for(None, "full");
+        assert_eq!(brief.len(), 62);
+        assert_eq!(full.len(), 62);
+        for (brief, full) in brief.iter().zip(full.iter()) {
+            let name = brief.get("name").and_then(Value::as_str).expect("name");
+            let mut brief = brief.clone();
+            let mut full = full.clone();
+            strip_text(&mut brief);
+            strip_text(&mut full);
+            assert_eq!(brief, full, "{name} differs between brief and full");
+        }
     }
 
     #[test]
@@ -2659,7 +3814,7 @@ mod tests {
     #[test]
     fn definitions_carry_names_schemas_and_annotations() {
         let definitions = definitions();
-        assert_eq!(definitions.len(), 43);
+        assert_eq!(definitions.len(), 62);
         for definition in &definitions {
             assert!(definition.get("name").and_then(Value::as_str).is_some());
             let schema = definition.get("inputSchema").expect("schema");
@@ -2686,6 +3841,7 @@ mod tests {
                 "browser_type",
                 "page_text",
                 "page_html",
+                "browser_screenshot",
                 "page_find",
                 "browser_hover",
                 "browser_press",
@@ -2723,6 +3879,24 @@ mod tests {
                 "browser_emulate",
                 "browser_batch",
                 "tool_help",
+                "page_pdf",
+                "page_links",
+                "page_forms",
+                "page_accessibility",
+                "browser_drag",
+                "browser_focus",
+                "browser_highlight",
+                "tab_group",
+                "tab_duplicate",
+                "window_list",
+                "window_new",
+                "cookie_set",
+                "cookie_clear",
+                "storage_get",
+                "storage_set",
+                "storage_clear",
+                "health",
+                "version",
             ]
         );
     }
@@ -2739,6 +3913,10 @@ mod tests {
                 .and_then(|schema| schema.get("properties"))
                 .and_then(Value::as_object)
                 .expect("properties");
+            if name == "health" || name == "version" {
+                assert!(properties.is_empty(), "{name} must take no arguments");
+                continue;
+            }
             let browser_id = properties
                 .get("browser_id")
                 .unwrap_or_else(|| panic!("{name} is missing browser_id"));
@@ -2855,6 +4033,26 @@ mod tests {
 
     #[test]
     fn new_tool_defaults_are_filled() {
+        let screenshot = validate("browser_screenshot", &json!({})).expect("screenshot");
+        assert_eq!(
+            screenshot.get("target").and_then(Value::as_str),
+            Some("viewport")
+        );
+        assert_eq!(
+            screenshot.get("format").and_then(Value::as_str),
+            Some("webp")
+        );
+        assert_eq!(screenshot.get("quality").and_then(Value::as_u64), Some(80));
+        assert_eq!(
+            screenshot.get("inline").and_then(Value::as_bool),
+            Some(false)
+        );
+        let element = validate(
+            "browser_screenshot",
+            &json!({ "target": "element", "ref": "@c7" }),
+        )
+        .expect("element screenshot");
+        assert_eq!(element.get("ref").and_then(Value::as_str), Some("@c7"));
         let snapshot = validate("page_snapshot", &json!({})).expect("page_snapshot");
         assert_eq!(
             snapshot.get("mode").and_then(Value::as_str),
@@ -2928,6 +4126,11 @@ mod tests {
             ("page_snapshot", json!({ "mode": "everything" })),
             ("page_snapshot", json!({ "max_nodes": 10 })),
             ("page_snapshot", json!({ "max_nodes": "many" })),
+            ("browser_screenshot", json!({ "target": "element" })),
+            ("browser_screenshot", json!({ "ref": "@c7" })),
+            ("browser_screenshot", json!({ "format": "gif" })),
+            ("browser_screenshot", json!({ "quality": 101 })),
+            ("browser_screenshot", json!({ "inline": "yes" })),
             ("browser_click", json!({})),
             ("browser_click", json!({ "target": "@e1", "tab_id": 3 })),
             ("browser_type", json!({ "target": "@e1" })),

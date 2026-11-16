@@ -19,6 +19,9 @@ import { ToolError, toToolErrorPayload as toErrorPayload, policyDeniedReasonFrom
 import type { CdpProbeResult, CdpSource } from '../shared/cdp-endpoint';
 import type { CdpUiState, UiState } from '../shared/contracts/ui';
 import type { WireCdpDescriptor } from '../shared/contracts/protocol';
+import { captureScreenshot as captureScreenshotImage } from './screenshot';
+import type { ScreenshotElementRect } from './screenshot';
+import { createExpandedHandlers, EXPANDED_TOOL_NAMES } from './expanded-tools';
 
 /**
  * @fileoverview Corvus service worker.
@@ -114,6 +117,8 @@ const TOOL_NAMES = [
   'download_list',
   'download_wait',
   'upload_file',
+  'browser_screenshot',
+  ...EXPANDED_TOOL_NAMES,
 ];
 
 /** Connection lifecycle status reported to the daemon and UI. */
@@ -685,6 +690,14 @@ const HANDLERS: Record<string, (args: any, frame: any, signal?: any) => Promise<
   download_list: (args) => downloadListTool(args),
   download_wait: (args, frame, signal) => downloadWaitTool(args, frame, signal),
   upload_file: (args) => uploadFileTool(args),
+  browser_screenshot: (args) => screenshotTool(args),
+  ...createExpandedHandlers({
+    resolveTab: (args: any) => resolveTab(args),
+    runInTab: (tool: any, args: any, frame: any, options?: any) => runInTab(tool, args, frame, options),
+    requestContentResult: (tab: any, message: any) => requestContentResult(tab, message),
+    sendCdpCommand: (tabId: any, method: string, params?: any) => sendCdpCommand(tabId, method, params),
+    tabIdString: (tabId: any) => tabIdString(tabId),
+  }),
 };
 
 function idempotencyKeyOf(frame: any) {
@@ -1080,6 +1093,42 @@ async function requestContentResult(tab: any, message: any) {
   }
   if (reply.ok === false) throw fromContentError(reply.error);
   return reply.result;
+}
+
+async function screenshotTool(args: any) {
+  const tab = await resolveTab(args);
+  if (!tab || typeof tab.id !== 'number') {
+    throw new ToolError('NOT_FOUND', 'no active tab is available');
+  }
+  if (isRestrictedUrl(tab.url)) {
+    throw new ToolError('CAPABILITY_UNAVAILABLE', 'this page cannot be captured: ' + String(tab.url), {
+      url: tab.url,
+      reason: 'restricted_scheme',
+    });
+  }
+  return captureScreenshotImage(
+    args,
+    {
+      id: tab.id,
+      url: tab.url,
+      windowId: tab.windowId,
+      active: tab.active,
+    },
+    {
+      sendCdp: (tabId: number, method: string, params: any) => sendCdpCommand(tabId, method, params),
+      captureVisibleTab: (windowId?: number) =>
+        windowId === undefined
+          ? chrome.tabs.captureVisibleTab({ format: 'png' })
+          : chrome.tabs.captureVisibleTab(windowId, { format: 'png' }),
+      resolveElementRect: async (tabId: number, ref: string) => {
+        const result = await requestContentResult(tab, { type: 'corvus.element_rect', ref: ref });
+        if (!result || typeof result !== 'object') {
+          throw new ToolError('INTERNAL', 'content script returned no element rectangle');
+        }
+        return result as ScreenshotElementRect;
+      },
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2840,6 +2889,13 @@ function isErrorPageUrl(url: any) {
   return typeof url === 'string' && /^(chrome|edge)-error:\/\//i.test(url.trim());
 }
 
+function isUnscriptablePageUrl(url: any) {
+  if (typeof url !== 'string') return true;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.toLowerCase() === 'about:blank') return true;
+  return isRestrictedUrl(trimmed) || isErrorPageUrl(trimmed);
+}
+
 function isNavigableUrl(url: any) {
   return typeof url === 'string' && /^(https?|file):/i.test(url.trim());
 }
@@ -3088,8 +3144,8 @@ async function navigateTool(args: any, frame: any, signal: any) {
   const epoch = beginNavigationEpoch(tab.id);
 
   let started = null;
-  if (isErrorPageUrl(beforeUrl)) {
-    // An error page cannot host a content script; navigate it directly.
+  if (isUnscriptablePageUrl(beforeUrl)) {
+    // A restricted new-tab or error page cannot host a content script; navigate it directly.
     await updateTabUrl(tab.id, target);
     started = { navigated: true, previous: beforeUrl, started_at: Date.now() };
   } else {

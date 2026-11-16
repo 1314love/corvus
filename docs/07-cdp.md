@@ -2,21 +2,21 @@
 
 [English](07-cdp.md) | [中文](07-cdp.zh.md)
 
-Status: 1.6.0 is the current published release, released on 2026-11-15; 1.5.0 is previous. Page snapshots traverse open shadow DOM and same-origin child frames, and compact diffs are computed by the daemon. The 1.6.0 release adds daemon guardrails that run before CDP dispatch. The 1.7.0 working tree adds `browser_screenshot` as the 44th MCP tool and the 34th CDP browser-facing tool; its QA, CI and release evidence is Pending. QA PASS for 1.6.0 is recorded in [v1.6.0.md](../tests/acceptance/v1.6.0.md). Audience: operators and developers who want browser-level CDP control in addition to the extension transport.
+Status: 1.6.0 is the current published release, released on 2026-11-15; 1.5.0 is previous. Page snapshots traverse open shadow DOM and same-origin child frames, and compact diffs are computed by the daemon. The 1.6.0 release adds daemon guardrails that run before CDP dispatch. The 1.7.0 working tree expands the MCP surface to 62 tools in ten categories, of which 46 are browser-facing over CDP, 42 are served by the extension and 12 are daemon-local; four tab and window tools are extension-only. QA acceptance and local Windows packaging passed on the re-frozen 62-tool tree; no 1.7.0 CI run, published package or published asset exists, so every CI and published-release row is Pending. QA PASS for 1.6.0 is recorded in [v1.6.0.md](../tests/acceptance/v1.6.0.md). Audience: operators and developers who want browser-level CDP control in addition to the extension transport.
 
-Corvus 1.6.0 can drive a Chromium browser through the Chrome DevTools Protocol (CDP) directly from the Rust daemon, or through the Manifest V3 extension as before. The extension remains the zero-setup path and the default for user browsers. CDP is an opt-in path for a browser that is already listening on a loopback debugging port; in the 1.7.0 tree it covers all 34 browser-facing tools, including compact snapshots, `@c` element references and screenshots.
+Corvus 1.7.0 in the working tree can drive a Chromium browser through the Chrome DevTools Protocol (CDP) directly from the Rust daemon, or through the Manifest V3 extension as before. The extension remains the zero-setup path and the default for user browsers. CDP is an opt-in path for a browser that is already listening on a loopback debugging port; it covers 46 of the 50 browser-facing tools, including compact snapshots, `@c` element references, screenshots and PDF capture. The four extension-only tab and window tools are not available over CDP.
 
 ## 1. Two channels, one tool surface
 
-The MCP surface is 44 tools in the 1.7.0 tree; the published 1.6.0 release had 43. The channel decides how browser-facing calls travel; the original 32 result shapes remain available, alongside the compact snapshot and batch output introduced in 1.3.0.
+The MCP surface is 62 tools in ten categories in the 1.7.0 tree, including the new `storage` category; the published 1.6.0 release had 43 tools in nine categories. The channel decides how browser-facing calls travel; the original 32 result shapes remain available, alongside the compact snapshot and batch output introduced in 1.3.0.
 
 | Channel | Transport | Use it when |
 |---|---|---|
-| `extension` | WebSocket to the extension, then `chrome.*` and content scripts | You want the default zero-setup path, `@eN` DOM references, or the extension's 26 browser-facing tools. CDP is ignored. |
-| `cdp` | One long-lived browser-level WebSocket from `corvusd` to the browser | The browser was started with `--remote-debugging-port` and you want all 34 browser-facing tools, including `page_snapshot` with `@c` references and screenshots. Strict: no fallback. |
+| `extension` | WebSocket to the extension, then `chrome.*` and content scripts | You want the default zero-setup path, `@eN` DOM references, or the extension's 42 browser-facing tools. CDP is ignored. |
+| `cdp` | One long-lived browser-level WebSocket from `corvusd` to the browser | The browser was started with `--remote-debugging-port` and you want the 46 browser-facing tools CDP serves, including `page_snapshot` with `@c` references, screenshots and PDF capture. The four extension-only tab and window tools return `CAPABILITY_UNAVAILABLE`. Strict: no fallback. |
 | `auto` | CDP when connected, otherwise the extension | The default. It prefers CDP and falls back to the extension only when the CDP call reports `Unsupported`; transport and protocol errors are not retried on the other channel. |
 
-`browser_screenshot` follows the same split: CDP accepts `@c<backendNodeId>` element references and supports viewport, full_page and element captures; the extension accepts `@e<number>` references and can fall back to `chrome.tabs.captureVisibleTab` for an active-tab PNG viewport. The wrong reference kind returns `BAD_ARGS`. Screenshot pixels are not redacted or boundary-wrapped.
+`browser_screenshot` follows the same split: CDP accepts `@c<backendNodeId>` element references and supports viewport, full_page and element captures; the extension accepts `@e<number>` references and can fall back to `chrome.tabs.captureVisibleTab` for an active-tab PNG viewport. `page_pdf` is available on both channels: CDP prints through the browser's PDF backend and the extension uses its existing debugger channel; the daemon decodes the PDF, enforces the 32 MiB decoded cap and writes a unique `page-<unix_millis>-<uuid8>.pdf` under `<daemon home>/pdf`. Neither tool returns an inline PDF. The wrong reference kind returns `BAD_ARGS`. Screenshot pixels are not redacted or boundary-wrapped; PDF pixels are equally outside the text guardrails.
 
 `auto` is deliberately conservative. If a CDP call fails because the browser is gone or the WebSocket is down, the call fails with a typed error instead of silently replaying the action through a different browser. Only a genuine "this operation has no CDP equivalent" result falls back.
 
@@ -177,7 +177,7 @@ The ring holds 1000 events. `next_seq` is the cursor for the next read and `drop
 
 On the CDP channel the snapshot also traverses open shadow DOM and same-origin child frames. The top document has no frame path; child frames use document-order paths such as `f0`, `f0.0` and `f1`. Content inside a child frame appends `frame="<path>"` to its compact line, and a JSON node carries `frame` only when it is non-empty. When the page has child frames, the result adds `frames: {total, included, skipped: [{frame, url, reason}]}`; `reason` is `cross_origin`, `unavailable` or `geometry_unavailable`. Cross-origin frame DOM is never read, `max_nodes` is one budget across every included document, and bounding boxes are projected into the top viewport. Compact diffs are computed by the daemon application layer, not by CDP; see [09-tools.md](09-tools.md) for the diff contract.
 
-`@c` references are CDP-only and `@eN` references are extension-only. Passing one to the other channel returns typed `BAD_ARGS`; omit `tab_id` to act on the active target. The eight former extension-only tools now accept `@c` references under forced `cdp`; extension-only availability is zero in 1.6.0.
+`@c` references are CDP-only and `@eN` references are extension-only. Passing one to the other channel returns typed `BAD_ARGS`; omit `tab_id` to act on the active target. The four new `tab_group`, `tab_duplicate`, `window_list` and `window_new` tools are extension-only, so forced `cdp` returns `CAPABILITY_UNAVAILABLE` for them. Extension-only availability was zero in 1.6.0.
 
 ### Tab identifiers across channels
 
@@ -216,12 +216,12 @@ Because the connection is stateful, do not cache `session_id` or `target_id` acr
 
 | Group | Count | Tools |
 |---|---|---|
-| Both channels | 25 | `browser_navigate`, `page_snapshot`, `page_text`, `page_html`, `page_find`, `browser_wait`, `browser_history`, `browser_click`, `browser_type`, `browser_hover`, `browser_press`, `browser_scroll`, `browser_select`, `browser_eval`, `tab_list`, `tab_new`, `tab_close`, `tab_switch`, `net_capture`, `net_log`, `net_clear`, `net_intercept`, `upload_file`, `download_list`, `download_wait` |
+| Both channels | 38 | `browser_navigate`, `page_snapshot`, `page_text`, `page_html`, `page_find`, `browser_wait`, `browser_history`, `browser_click`, `browser_type`, `browser_hover`, `browser_press`, `browser_scroll`, `browser_select`, `browser_eval`, `tab_list`, `tab_new`, `tab_close`, `tab_switch`, `net_capture`, `net_log`, `net_clear`, `net_intercept`, `upload_file`, `download_list`, `download_wait`, `browser_screenshot`, `page_pdf`, `page_links`, `page_forms`, `page_accessibility`, `browser_drag`, `browser_focus`, `browser_highlight`, `cookie_set`, `cookie_clear`, `storage_get`, `storage_set`, `storage_clear` |
 | CDP-only | 8 | `cdp_status`, `cdp_targets`, `cdp_send`, `cdp_events`, `browser_console`, `browser_cookies`, `browser_dialog`, `browser_emulate` |
-| Extension-only | 0 | None in 1.6.0. |
-| Daemon-local | 10 | `browser_list`, `browser_channel`, `tool_help`, `browser_batch`, `session_list`, `session_steps`, `session_replay`, `session_export`, `metrics`, `logs_tail` |
+| Extension-only | 4 | `tab_group`, `tab_duplicate`, `window_list`, `window_new` |
+| Daemon-local | 12 | `browser_list`, `browser_channel`, `tool_help`, `browser_batch`, `session_list`, `session_steps`, `session_replay`, `session_export`, `metrics`, `logs_tail`, `health`, `version` |
 
-The counts add up to 43. The daemon-local tools never use either browser channel. CDP covers all 33 browser-facing tools; the eight CDP-only tools remain unavailable to the extension. In forced `cdp` mode every browser-facing tool is accepted; in forced `extension` mode a CDP-only tool fails with `CAPABILITY_UNAVAILABLE`. `auto` is the only mode that may move a call between channels, and it does so only for an `Unsupported` CDP result.
+The counts add up to 62. The daemon-local tools never use either browser channel. CDP covers 46 browser-facing tools; the eight CDP-only tools remain unavailable to the extension, and the four extension-only tab and window tools return `CAPABILITY_UNAVAILABLE` in forced `cdp` mode. In forced `extension` mode a CDP-only tool fails with `CAPABILITY_UNAVAILABLE`. `auto` is the only mode that may move a call between channels, and it does so only for an `Unsupported` CDP result.
 
 ## 11. Troubleshooting
 
@@ -233,7 +233,7 @@ The counts add up to 43. The daemon-local tools never use either browser channel
 | WebSocket URL returns 404 | The value came from `/json/list` instead of `/json/version` | Use the browser-level `webSocketDebuggerUrl` from `/json/version`. |
 | DevTools and Corvus conflict on a tab | Attach errors or `CAPABILITY_UNAVAILABLE` while DevTools is open | Close DevTools for that tab, or test with a dedicated browser profile. Tab-level debugger attach is exclusive. |
 | `browser_channel set cdp` fails | `cdp_enabled` is false | Restart without `--no-cdp`, then set the channel again. |
-| CDP-only tool fails under `extension` | Forced `extension` mode has no CDP access | Switch to `auto` or `cdp`, or use the extension's 26 browser-facing tools. `page_snapshot` is no longer extension-only since 1.4.0. |
+| CDP-only tool fails under `extension` | Forced `extension` mode has no CDP access | Switch to `auto` or `cdp`, or use the extension's 42 browser-facing tools. `page_snapshot` is no longer extension-only since 1.4.0. |
 | Everything works, then stops after a browser restart | `cdp_status.connected` is false; `reconnects` stopped increasing | The restart changed the browser's WebSocket URL. When the endpoint came from the extension descriptor, the daemon re-polls every 500 ms, selects the replacement endpoint and reconnects automatically; `cdp_status.reconnects` then increases and no daemon restart is needed. A URL pinned with `--cdp-endpoint` is not rediscovered; update it only if the browser's printed `webSocketDebuggerUrl` changed. |
 | Configured CDP endpoint changed at runtime | The extension endpoint was edited while the daemon was already connected | Auto-discovered endpoints are re-polled every 500 ms and reconnect; a configured endpoint change may need a daemon restart to take effect. Update the URL, restart only when required, and confirm the new endpoint in `cdp_status`. |
 
@@ -245,7 +245,7 @@ CDP is not a sandbox. A browser-level endpoint can read cookies, inject script, 
 - Use a dedicated profile for CDP work; do not attach a test harness to the everyday browser profile with live accounts.
 - Treat the CDP event ring, console output and cookie results as sensitive data.
 - The daemon does not launch a browser and does not install one. Docker and Kubernetes cannot reach the host's loopback interface by default and the shipped image contains no browser; see [05-deployment.md](05-deployment.md#7-ports-exposure-and-the-authentication-boundary) for that limitation.
-- The extension remains the zero-setup path and serves 26 browser-facing tools with `@eN` references. CDP serves all 34 browser-facing tools with `@c` references; neither channel is a fallback for an arbitrary failure.
+- The extension remains the zero-setup path and serves 42 browser-facing tools with `@eN` references. CDP serves 46 browser-facing tools with `@c` references; neither channel is a fallback for an arbitrary failure.
 
 ## 13. Test policy
 

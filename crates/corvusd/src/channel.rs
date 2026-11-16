@@ -124,6 +124,9 @@ impl ChannelState {
     }
 
     /// Channel, CDP state and extension state in one document.
+    ///
+    /// This is the diagnostic form returned by browser_channel: it includes
+    /// the configured CDP endpoint so an operator can inspect it.
     pub fn status(&self) -> Value {
         let browsers = self.registry.snapshot();
         let browser_ids: Vec<String> = browsers.iter().map(|browser| browser.id.clone()).collect();
@@ -151,6 +154,42 @@ impl ChannelState {
                         "cdp endpoint family mismatch"
                     );
                 }
+            }
+        }
+        document
+    }
+
+    /// Sanitised channel state for the health tool.
+    ///
+    /// The health contract forbids paths, URLs and secrets, so this variant
+    /// omits the endpoint, the advertised descriptor and raw error strings.
+    /// It keeps the facts an agent needs to decide whether browser tools work.
+    pub fn health_status(&self) -> Value {
+        let browsers = self.registry.snapshot();
+        let browser_ids: Vec<String> = browsers.iter().map(|browser| browser.id.clone()).collect();
+        let cdp = self.cdp.status();
+        let mut document = json!({
+            "channel": self.mode().as_str(),
+            "cdp_enabled": self.cdp_enabled,
+            "cdp": {
+                "connected": cdp.connected,
+                "browser": cdp.browser,
+                "protocol_version": cdp.protocol_version,
+                "targets": cdp.targets,
+                "connected_since_ms": cdp.connected_since_ms,
+                "reconnects": cdp.reconnects,
+                "last_error_present": cdp.last_error.is_some(),
+            },
+            "extension": {
+                "connected": !browsers.is_empty(),
+                "browsers": browser_ids,
+            },
+            "cdp_tools": CDP_TOOL_NAMES,
+            "descriptor_present": self.descriptor().is_some(),
+        });
+        if let Some((descriptor, family)) = self.descriptor_with_family() {
+            if family_mismatch(&descriptor, family.as_deref()) {
+                document["browser_mismatch"] = json!(true);
             }
         }
         document

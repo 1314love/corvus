@@ -101,7 +101,14 @@ v1.4.0 把后端拆成端口与适配器 crate，在 MCP 之外增加 REST 面�
 
 QA 证据：[v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md) 记录 25 条结果行上的 237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试、14 个文件/490,393 B 的扩展构建与 Playwright 1/1 通过；报告记录一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium 发现。发布证据已发布：主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了 Windows ZIP 18,822,522 B SHA-256 `bdec40f2f26012f2aeb5f977d6eef4fe80c18a662683c4fa9004ea99f59451db`、Linux tar 包 20,124,260 B SHA-256 `e7a21d3996e52f8a0c5725d959987aa8c96eacfb044a928341575af19d4ce738` 与合并 `SHA256SUMS` 194 B SHA-256 `4ee452ce947c4b47cbe9cca4eabc64d8eac1345177f27ea3e2b0acca2e49f5bf`。CoT 与语言门禁通过 10 个用例的自检，扫描 313 个跟踪文件、0 发现，最近五个提交 0 发现，CI language 门禁通过。独立的本地安装包 ZIP 已通过本地验收：84 项检查与观察、0 失败（18,801,258 B，SHA-256 `3d91001f980c17c8e8eb41fa426730776244dab592e977b73f33fa0a6bf7cdcd`）；它不是已发布产物。NFR-3 仍未通过，不宣称任何 1.6.0 实机部署。
 
-**v1.7.0 下一步（尚未定义范围）。** 未设定范围或日期。
+## v1.7.0 已交付到工作树（未发布；62 工具重划；QA 与本地打包 PASS）
+
+v1.7.0 工作树把 MCP 工具面从九类 43 个工具重划为十类 62 个工具。新增 18 个工具：`page_pdf`、`page_links`、`page_forms`、`page_accessibility`、`browser_drag`、`browser_focus`、`browser_highlight`、`tab_group`、`tab_duplicate`、`window_list`、`window_new`、`cookie_set`、`cookie_clear`、`storage_get`、`storage_set`、`storage_clear`、`health` 与 `version`。`browser_screenshot` 仍是第 44 个工具，page 类别现在有 15 个。守护进程的文件输出路径同时覆盖截图与 PDF：`crates/corvusd/src/screenshot.rs` 把解码图像限制在 8 MiB 并写入 `<home>/screenshots/`；`page_pdf` 在 `<daemon home>/pdf` 下写入唯一的 `page-<unix_millis>-<uuid8>.pdf`，解码上限 32 MiB，不返回内联 PDF，重放原因为 `page_pdf_not_replayable`。
+
+CDP 提供 46 个浏览器类工具，扩展提供 42 个，12 个为守护进程本地（`health` 与 `version` 仅本地）。四个标签页与窗口工具（`tab_group`、`tab_duplicate`、`window_list`、`window_new`）仅扩展可用，强制 CDP 返回 `CAPABILITY_UNAVAILABLE`。扩展声明 11 项权限（含 `tabGroups`），保留 42 个基于 debugger 的处理器与 `all_frames: false`。`browser_batch` 在十个具名排除项后保留 42 个可批量工具；`storage`、`sessions` 与 `help` 不可批量。录制与守护策略脱敏 `cookie_set` 与存储值，截图与 PDF 像素不脱敏、不包裹边界。
+
+QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过：25 条结果行上的 263 个 workspace 测试、137 项一致性检查、13 个文件中的 91 个 Vitest 测试、14 文件/537,844 B 的扩展构建、3 个 Playwright 端到端测试，以及在 ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e` 上的 160/160 项本地打包检查；该 ZIP 仅本地可用，不是 CI 重建产物或已发布产物。不存在 1.7.0 标签、CI 运行、已发布包或已发布产物。[tests/conformance/schema-snapshot.v1.7.0.json](../tests/conformance/schema-snapshot.v1.7.0.json) 的 schema 快照是 62 条目文件（36,993 B、1,853 行、SHA-256 `0763eee9256bae1942c1480317fc6a80375257d44b3674261b689ae1f3844114`），`tests/conformance/run.sh` 为 52,902 B、1,046 行、SHA-256 `43df9ea1e2366eff9db6171b369b9b56af2a75fbc412c04b589b52bb7e3d691f`；冻结的 62 工具二进制上一致性检查通过 137 项、0 失败、0 跳过。此前的 44 工具 v1.7.0 QA PASS 与本地 Windows 打包 PASS 已被本次重划取代；1.7.0 的所有 CI 与发布行均为 Pending。1.6.0 仍是当前已发布版本，NFR-3 仍未通过。
+
 
 ## 建议排期（以 1 名主力 + AI 结对估算）
 

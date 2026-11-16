@@ -127,7 +127,7 @@ person using the browser, not like a robot asking for permission before every cl
 
 ## 4. MCP tool matrix (target >= 60)
 
-The delivered surface is 43 tools in nine categories as of 1.6.0, with `browser_screenshot` as an unreleased 44th tool in the 1.7.0 tree; the names below are the original target matrix, not the shipped catalogue.
+The delivered 1.6.0 surface is 43 tools in nine categories; the unreleased 1.7.0 working tree expands it to 62 tools in ten categories. The names below are the original target matrix, not the shipped catalogue.
 
 Perception: page_snapshot, page_text, page_html, page_screenshot, page_pdf, page_console, page_network, page_accessibility, page_links, page_forms, page_find, page_wait, page_observe
 
@@ -251,6 +251,18 @@ v1.6.0 adds no MCP tools: the 43-tool surface in nine categories and the compact
 - **Enforcement.** Checks run before dispatch in `RouterBackend::call`, in every `browser_batch` step and in `session_replay`; `browser_navigate` and `tab_new` arguments are gated before dispatch and re-checked on navigation results. Denials use `POLICY_DENIED` as the 11th error code with `retryable: false`, and REST returns 403.
 - **Content handling.** `browser_cookies` redacts values; `page_text`, `page_html` and compact `page_snapshot` text are wrapped in untrusted-content boundaries; password inputs stay masked.
 - **Evidence.** [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md) records PASS for 237 workspace tests, 137 conformance checks, 55 Vitest tests in ten files, a 14-file/490,393-byte extension build and Playwright 1/1, with one Low `browser_type` finding and no High or Medium. CI run 43716832915 and GitHub Release 446071476 published the assets. NFR-3 remains unpassed.
+
+### 4.11 v1.7.0 tool expansion traceability
+
+The 1.7.0 working tree expands the MCP surface from 43 tools in nine categories to 62 tools in ten categories. It adds 18 tools: `page_pdf`, `page_links`, `page_forms` and `page_accessibility`; `browser_drag`, `browser_focus` and `browser_highlight`; `tab_group`, `tab_duplicate`, `window_list` and `window_new`; `cookie_set`, `cookie_clear`, `storage_get`, `storage_set` and `storage_clear`; `health` and `version`. `browser_screenshot` remains the 44th tool, and the page category now holds 15. CDP serves 46 browser-facing tools, the extension serves 42 and 12 are daemon-local; the four tab and window tools are extension-only and forced CDP returns `CAPABILITY_UNAVAILABLE`. The extension declares 11 permissions including `tabGroups`, keeps `all_frames` false and serves the new tools through 42 debugger-based handlers.
+
+- **browser_screenshot.** It captures `viewport`, `full_page` or `element` as `webp`, `png` or `jpeg`; `quality` is 1..100 for webp and jpeg and is ignored for png, and `inline` defaults to false. CDP accepts `@cN` references and the extension accepts `@eN` references; a reference from the wrong channel is `BAD_ARGS`, and `browser_batch` rejects `inline: true`. `crates/corvusd/src/screenshot.rs` caps decoded image bytes at 8 MiB, writes `screenshot-<unix-millis>-<uuid8>.<ext>` under `<home>/screenshots/` and returns `width`, `height`, `bytes`, `sha256`, `path`, `summary` and `inline` instead of base64; every successful screenshot is finalized exactly once through `finalize_screenshot_result` in `crates/corvusd/src/lib.rs`.
+
+- **page_pdf.** It prints with `paper_width` default 8.5 inches, `paper_height` default 11, `landscape` default false, `print_background` default true and `scale` from 0.1 to 2, with fixed 0.4-inch margins. The daemon decodes the PDF, enforces the 32 MiB (33,554,432-byte) decoded cap and writes `page-<unix_millis>-<uuid8>.pdf` under `<daemon home>/pdf`; no base64 or inline PDF is returned. `page_pdf` is excluded from `browser_batch`, and replay skips it with `page_pdf_not_replayable`.
+
+- **Guardrails and redaction.** `browser_batch` keeps the category allowlist and excludes ten tools by name, leaving 42 batchable tools; `storage`, `sessions` and `help` are not batchable. Read-only annotations cover `health`, `version`, `page_links`, `page_forms`, `page_accessibility`, `window_list`, `storage_get`, `page_pdf` and `browser_highlight`. Recording redacts `cookie_set.value` and every storage entry value; guardrails replace every `storage_get` result value with `[redacted]` and add `redacted: true`. Screenshot and PDF pixels are not inspected, redacted or boundary-wrapped, so `deny_tools` is the way to block them.
+
+- **Evidence.** QA acceptance and local Windows packaging passed on the re-frozen 62-tool tree: 263 workspace tests on 25 result lines, 137 conformance checks, 91 Vitest tests in 13 files, a 14-file/537,844-byte extension build, 3 Playwright E2E tests, and 160/160 local packaging checks on ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e`. The earlier 44-tool v1.7.0 results are superseded and are not evidence for this tree. The reports are included in the 1.7.0 tree; no 1.7.0 tag, CI run, published package or published asset exists, so every CI and published-release row is Pending. 1.6.0 remains the current published release with 43 tools. NFR-3 remains unpassed.
 
 ## 5. Non-functional requirements
 

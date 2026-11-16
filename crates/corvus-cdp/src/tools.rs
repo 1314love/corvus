@@ -19,6 +19,7 @@ use crate::{CdpClient, CdpError};
 /// Existing tools that can be served through CDP.
 pub const CDP_TOOL_NAMES: &[&str] = &[
     "browser_navigate",
+    "browser_screenshot",
     "page_text",
     "page_html",
     "browser_eval",
@@ -51,6 +52,18 @@ pub const CDP_TOOL_NAMES: &[&str] = &[
     "browser_press",
     "browser_scroll",
     "browser_select",
+    "page_pdf",
+    "page_links",
+    "page_forms",
+    "page_accessibility",
+    "browser_drag",
+    "browser_focus",
+    "browser_highlight",
+    "cookie_set",
+    "cookie_clear",
+    "storage_get",
+    "storage_set",
+    "storage_clear",
 ];
 
 /// Whether this tool can be answered over CDP.
@@ -66,6 +79,7 @@ impl CdpClient {
         }
         match name {
             "browser_navigate" => self.navigate_tool(args).await,
+            "browser_screenshot" => self.screenshot_tool(args).await,
             "page_text" => self.page_text_tool(args).await,
             "page_html" => self.page_html_tool(args).await,
             "browser_eval" => self.eval_tool(args).await,
@@ -98,6 +112,18 @@ impl CdpClient {
             "browser_press" => self.press_tool(args).await,
             "browser_scroll" => self.scroll_tool(args).await,
             "browser_select" => self.select_tool(args).await,
+            "page_pdf" => self.page_pdf_tool(args).await,
+            "page_links" => self.page_links_tool(args).await,
+            "page_forms" => self.page_forms_tool(args).await,
+            "page_accessibility" => self.page_accessibility_tool(args).await,
+            "browser_drag" => self.drag_tool(args).await,
+            "browser_focus" => self.focus_tool(args).await,
+            "browser_highlight" => self.highlight_tool(args).await,
+            "cookie_set" => self.cookie_set_tool(args).await,
+            "cookie_clear" => self.cookie_clear_tool(args).await,
+            "storage_get" => self.storage_get_tool(args).await,
+            "storage_set" => self.storage_set_tool(args).await,
+            "storage_clear" => self.storage_clear_tool(args).await,
             other => Err(CdpError::Unsupported(format!("{other} is not a CDP tool"))),
         }
     }
@@ -1555,6 +1581,201 @@ impl CdpClient {
         }))
     }
 
+    async fn screenshot_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let (session, target_id) = self.page(args, 15_000).await?;
+        let target = args
+            .get("target")
+            .and_then(Value::as_str)
+            .unwrap_or("viewport");
+        let format = args.get("format").and_then(Value::as_str).unwrap_or("webp");
+        let mime_type = match format {
+            "webp" => "image/webp",
+            "png" => "image/png",
+            "jpeg" => "image/jpeg",
+            other => {
+                return Err(CdpError::InvalidArgument(format!(
+                    "browser_screenshot format must be webp, png or jpeg, got {other}"
+                )))
+            }
+        };
+        let quality = integer(args, "quality", 80, 1, 100);
+        let inline = args.get("inline").and_then(Value::as_bool).unwrap_or(false);
+        let url = self
+            .eval_value(&session, "location.href", false)
+            .await
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let mut params = json!({
+            "format": format,
+            "fromSurface": true,
+        });
+        if format != "png" {
+            params["quality"] = json!(quality);
+        }
+        let bbox = match target {
+            "viewport" => {
+                params["captureBeyondViewport"] = json!(false);
+                None
+            }
+            "full_page" => {
+                let metrics = self
+                    .send(
+                        "Page.getLayoutMetrics",
+                        json!({}),
+                        Some(&session),
+                        None,
+                        Some(10_000),
+                    )
+                    .await?;
+                let size = metrics
+                    .get("cssContentSize")
+                    .or_else(|| metrics.get("contentSize"))
+                    .ok_or_else(|| CdpError::Protocol("page content size is unavailable".into()))?;
+                let width = json_f64(size.get("width"));
+                let height = json_f64(size.get("height"));
+                if width <= 0.0 || height <= 0.0 {
+                    return Err(CdpError::Protocol(
+                        "page content size is not positive".into(),
+                    ));
+                }
+                params["clip"] = json!({
+                    "x": 0.0,
+                    "y": 0.0,
+                    "width": width,
+                    "height": height,
+                    "scale": 1.0,
+                });
+                params["captureBeyondViewport"] = json!(true);
+                None
+            }
+            "element" => {
+                let reference = required_string(args, "ref")?;
+                let clip = self.screenshot_element_clip(&session, &reference).await?;
+                params["clip"] = json!({
+                    "x": clip.0,
+                    "y": clip.1,
+                    "width": clip.2,
+                    "height": clip.3,
+                    "scale": 1.0,
+                });
+                params["captureBeyondViewport"] = json!(true);
+                Some(json!({
+                    "x": clip.0,
+                    "y": clip.1,
+                    "width": clip.2,
+                    "height": clip.3,
+                }))
+            }
+            other => {
+                return Err(CdpError::InvalidArgument(format!(
+                    "browser_screenshot target must be viewport, full_page or element, got {other}"
+                )))
+            }
+        };
+        let response = self
+            .send(
+                "Page.captureScreenshot",
+                params,
+                Some(&session),
+                None,
+                Some(15_000),
+            )
+            .await?;
+        let data = response
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CdpError::Protocol("Page.captureScreenshot returned no image data".into())
+            })?
+            .to_string();
+        let mut result = json!({
+            "format": format,
+            "mime_type": mime_type,
+            "target": target,
+            "tab_id": target_id,
+            "url": url,
+            "inline": inline,
+            "data": data,
+        });
+        if let Some(bbox) = bbox {
+            result["bbox"] = bbox;
+        }
+        Ok(result)
+    }
+
+    async fn screenshot_element_clip(
+        &self,
+        session: &str,
+        reference: &str,
+    ) -> Result<(f64, f64, f64, f64), CdpError> {
+        let backend_id = screenshot_backend_id(reference)?;
+        let response = match self
+            .send(
+                "DOM.getBoxModel",
+                json!({ "backendNodeId": backend_id }),
+                Some(session),
+                None,
+                Some(10_000),
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(CdpError::Remote { .. }) => {
+                return Err(CdpError::TargetNotFound(reference.to_string()))
+            }
+            Err(error) => return Err(error),
+        };
+        let model = response.get("model").cloned().unwrap_or(Value::Null);
+        let scroll = self
+            .eval_value(session, "({ x: window.scrollX, y: window.scrollY })", false)
+            .await?;
+        Self::element_clip_from_box_model(
+            &model,
+            reference,
+            json_f64(scroll.get("x")),
+            json_f64(scroll.get("y")),
+        )
+    }
+
+    fn element_clip_from_box_model(
+        model: &Value,
+        reference: &str,
+        scroll_x: f64,
+        scroll_y: f64,
+    ) -> Result<(f64, f64, f64, f64), CdpError> {
+        let quad = model
+            .get("border")
+            .and_then(Value::as_array)
+            .ok_or_else(|| CdpError::TargetNotFound(reference.to_string()))?;
+        if quad.len() < 8 {
+            return Err(CdpError::TargetNotFound(reference.to_string()));
+        }
+        let mut min_x = f64::MAX;
+        let mut min_y = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut max_y = f64::MIN;
+        for pair in quad.as_chunks::<2>().0 {
+            let [x, y] = pair;
+            let x = x
+                .as_f64()
+                .ok_or_else(|| CdpError::TargetNotFound(reference.to_string()))?;
+            let y = y
+                .as_f64()
+                .ok_or_else(|| CdpError::TargetNotFound(reference.to_string()))?;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+        let width = max_x - min_x;
+        let height = max_y - min_y;
+        if width <= 0.0 || height <= 0.0 {
+            return Err(CdpError::TargetNotFound(reference.to_string()));
+        }
+        Ok((min_x + scroll_x, min_y + scroll_y, width, height))
+    }
+
     async fn snapshot_inputs(&self, session: &str) -> Result<(Value, Value, PageInfo), CdpError> {
         let (dom, page) = self.snapshot_page(session).await?;
         let ax = self
@@ -2328,6 +2549,848 @@ impl CdpClient {
         }
     }
 
+    async fn page_pdf_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let paper_width = bounded_number(args, "paper_width", 8.5, 1.0, 100.0)?;
+        let paper_height = bounded_number(args, "paper_height", 11.0, 1.0, 100.0)?;
+        let landscape = args
+            .get("landscape")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let print_background = args
+            .get("print_background")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let scale = bounded_number(args, "scale", 1.0, 0.1, 2.0)?;
+        let (session, target_id) = self.page(args, 30_000).await?;
+        let url = self.current_url(&session).await?;
+        let response = self
+            .send(
+                "Page.printToPDF",
+                json!({
+                    "printBackground": print_background,
+                    "landscape": landscape,
+                    "paperWidth": paper_width,
+                    "paperHeight": paper_height,
+                    "scale": scale,
+                    "marginTop": 0.4,
+                    "marginBottom": 0.4,
+                    "marginLeft": 0.4,
+                    "marginRight": 0.4,
+                    "preferCSSPageSize": false,
+                    "transferMode": "ReturnAsBase64",
+                }),
+                Some(&session),
+                None,
+                Some(60_000),
+            )
+            .await
+            .map_err(pdf_error)?;
+        let data = response
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CdpError::Protocol("Page.printToPDF returned no data".into()))?;
+        Ok(json!({
+            "format": "pdf",
+            "mime_type": "application/pdf",
+            "tab_id": target_id,
+            "url": url,
+            "data": data,
+            "paper_width": paper_width,
+            "paper_height": paper_height,
+            "landscape": landscape,
+            "scale": scale,
+        }))
+    }
+
+    async fn page_links_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let selector = optional_string(args, "selector");
+        if selector
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 512)
+        {
+            return Err(CdpError::InvalidArgument(
+                "selector must be at most 512 characters".into(),
+            ));
+        }
+        let max_results = integer(args, "max_results", 200, 1, 1000);
+        let include_hidden = args
+            .get("include_hidden")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let (session, target_id) = self.page(args, 15_000).await?;
+        let expression = PAGE_LINKS_JS
+            .replace(
+                "__SELECTOR__",
+                &selector
+                    .as_deref()
+                    .map(js_string)
+                    .unwrap_or_else(|| "null".into()),
+            )
+            .replace("__MAX__", &max_results.to_string())
+            .replace("__HIDDEN__", if include_hidden { "true" } else { "false" });
+        let value = self.eval_value(&session, &expression, false).await?;
+        if value.get("missing").and_then(Value::as_bool) == Some(true) {
+            return Err(CdpError::TargetNotFound(
+                selector.unwrap_or_else(|| "selector".into()),
+            ));
+        }
+        let links = value
+            .get("links")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(json!({
+            "tab_id": target_id,
+            "url": value.get("url").cloned().unwrap_or(Value::Null),
+            "count": links.len(),
+            "truncated": value.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+            "links": links,
+        }))
+    }
+
+    async fn page_forms_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let selector = optional_string(args, "selector");
+        if selector
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 512)
+        {
+            return Err(CdpError::InvalidArgument(
+                "selector must be at most 512 characters".into(),
+            ));
+        }
+        let include_values = args
+            .get("include_values")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let max_forms = integer(args, "max_forms", 20, 1, 100);
+        let (session, target_id) = self.page(args, 15_000).await?;
+        let expression = PAGE_FORMS_JS
+            .replace(
+                "__SELECTOR__",
+                &selector
+                    .as_deref()
+                    .map(js_string)
+                    .unwrap_or_else(|| "null".into()),
+            )
+            .replace("__MAX__", &max_forms.to_string())
+            .replace("__VALUES__", if include_values { "true" } else { "false" });
+        let value = self.eval_value(&session, &expression, false).await?;
+        if value.get("missing").and_then(Value::as_bool) == Some(true) {
+            return Err(CdpError::TargetNotFound(
+                selector.unwrap_or_else(|| "selector".into()),
+            ));
+        }
+        let forms = value
+            .get("forms")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(json!({
+            "tab_id": target_id,
+            "url": value.get("url").cloned().unwrap_or(Value::Null),
+            "count": forms.len(),
+            "truncated": value.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+            "forms": forms,
+        }))
+    }
+
+    async fn page_accessibility_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let root = optional_string(args, "root");
+        if root
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 512)
+        {
+            return Err(CdpError::InvalidArgument(
+                "root must be at most 512 characters".into(),
+            ));
+        }
+        let max_nodes = integer(args, "max_nodes", 500, 1, 2000);
+        let max_depth = integer(args, "max_depth", 12, 1, 50);
+        let (session, target_id) = self.page(args, 30_000).await?;
+        let url = self.current_url(&session).await?;
+        let response = if let Some(root) = &root {
+            let object_id = self.element_object(&session, root).await?;
+            self.send(
+                "Accessibility.getPartialAXTree",
+                json!({ "objectId": object_id, "fetchRelatives": false }),
+                Some(&session),
+                None,
+                Some(20_000),
+            )
+            .await
+            .map_err(accessibility_error)?
+        } else {
+            self.send(
+                "Accessibility.getFullAXTree",
+                json!({ "depth": max_depth }),
+                Some(&session),
+                None,
+                Some(30_000),
+            )
+            .await
+            .map_err(accessibility_error)?
+        };
+        let raw = response
+            .get("nodes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut depths: HashMap<String, u64> = HashMap::new();
+        let mut nodes = Vec::new();
+        let mut truncated = false;
+        let mut filtered = 0usize;
+        for node in &raw {
+            let depth = node
+                .get("parentId")
+                .and_then(Value::as_str)
+                .and_then(|parent| depths.get(parent).copied())
+                .map_or(0, |parent| parent + 1);
+            if let Some(id) = node.get("nodeId").and_then(Value::as_str) {
+                depths.insert(id.to_string(), depth);
+            }
+            if node
+                .get("ignored")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let role = node
+                .pointer("/role/value")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if role == "none" || role == "presentation" {
+                continue;
+            }
+            filtered += 1;
+            if depth >= max_depth {
+                if node
+                    .get("childIds")
+                    .and_then(Value::as_array)
+                    .is_some_and(|children| !children.is_empty())
+                {
+                    truncated = true;
+                }
+                continue;
+            }
+            if nodes.len() >= max_nodes as usize {
+                truncated = true;
+                continue;
+            }
+            let mut entry = Map::new();
+            entry.insert("role".into(), json!(role));
+            entry.insert("name".into(), json!(ax_string(node, "name")));
+            for (key, pointer) in [
+                ("value", "/value/value"),
+                ("description", "/description/value"),
+            ] {
+                if let Some(text) = node.pointer(pointer).and_then(Value::as_str) {
+                    entry.insert(key.into(), json!(cap_chars(text, 200)));
+                }
+            }
+            for property in node
+                .get("properties")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let name = property
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if ["disabled", "checked", "expanded", "selected", "level"].contains(&name) {
+                    if let Some(value) = property.pointer("/value/value") {
+                        entry.insert(name.into(), value.clone());
+                    }
+                }
+            }
+            entry.insert("depth".into(), json!(depth));
+            nodes.push(Value::Object(entry));
+        }
+        if filtered > nodes.len() {
+            truncated = true;
+        }
+        Ok(json!({
+            "tab_id": target_id,
+            "url": url,
+            "count": nodes.len(),
+            "truncated": truncated,
+            "nodes": nodes,
+        }))
+    }
+
+    async fn drag_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let from_ref = required_string(args, "from_ref")?;
+        let to_ref = required_string(args, "to_ref")?;
+        if from_ref == to_ref {
+            return Err(CdpError::InvalidArgument(
+                "from_ref and to_ref must be different elements".into(),
+            ));
+        }
+        let steps = integer(args, "steps", 10, 1, 50);
+        let (session, target_id) = self.page(args, 15_000).await?;
+        let (from_object, _) = self.resolve_element(&session, &from_ref).await?;
+        let (to_object, _) = self.resolve_element(&session, &to_ref).await?;
+        self.scroll_into_view(&session, &to_object).await?;
+        let from = self.border_center(&session, &from_object).await?;
+        let to = self.border_center(&session, &to_object).await?;
+        self.dispatch_mouse(&session, "mouseMoved", from.0, from.1, "none", 0, None)
+            .await?;
+        self.dispatch_mouse(&session, "mousePressed", from.0, from.1, "left", 1, Some(1))
+            .await?;
+        for step in 1..=steps {
+            let fraction = step as f64 / steps as f64;
+            let x = from.0 + (to.0 - from.0) * fraction;
+            let y = from.1 + (to.1 - from.1) * fraction;
+            self.dispatch_mouse(&session, "mouseMoved", x, y, "left", 1, None)
+                .await?;
+        }
+        self.dispatch_mouse(&session, "mouseReleased", to.0, to.1, "left", 0, Some(1))
+            .await?;
+        let url = self.current_url(&session).await?;
+        Ok(json!({
+            "dragged": true,
+            "from": { "ref": from_ref, "x": round2(from.0), "y": round2(from.1) },
+            "to": { "ref": to_ref, "x": round2(to.0), "y": round2(to.1) },
+            "tab_id": target_id,
+            "url": url,
+        }))
+    }
+
+    async fn focus_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let reference = required_string(args, "ref")?;
+        let (session, target_id) = self.page(args, 15_000).await?;
+        let (object_id, _) = self.resolve_element(&session, &reference).await?;
+        self.scroll_into_view(&session, &object_id).await?;
+        self.send(
+            "DOM.focus",
+            json!({ "objectId": object_id }),
+            Some(&session),
+            None,
+            Some(10_000),
+        )
+        .await
+        .map_err(interaction_error)?;
+        let url = self.current_url(&session).await?;
+        Ok(json!({
+            "focused": true,
+            "ref": reference,
+            "tab_id": target_id,
+            "url": url,
+        }))
+    }
+
+    async fn highlight_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let reference = optional_string(args, "ref");
+        let selector = optional_string(args, "selector");
+        if reference.is_some() == selector.is_some() {
+            return Err(CdpError::InvalidArgument(
+                "browser_highlight requires exactly one of ref or selector".into(),
+            ));
+        }
+        let duration_ms = integer(args, "duration_ms", 1200, 0, 10_000);
+        let color = args
+            .get("color")
+            .and_then(Value::as_str)
+            .unwrap_or("#ffd400")
+            .to_string();
+        let (r, g, b) = parse_hex_color(&color)?;
+        let (session, target_id) = self.page(args, 15_000).await?;
+        let mut params = Map::new();
+        if let Some(reference) = &reference {
+            params.insert(
+                "backendNodeId".into(),
+                json!(screenshot_backend_id(reference)?),
+            );
+        } else if let Some(selector) = &selector {
+            let object_id = self.element_object(&session, selector).await?;
+            let response = self
+                .send(
+                    "DOM.describeNode",
+                    json!({ "objectId": object_id, "depth": 0 }),
+                    Some(&session),
+                    None,
+                    Some(10_000),
+                )
+                .await?;
+            let backend_id = response
+                .pointer("/node/backendNodeId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| CdpError::TargetNotFound(selector.clone()))?;
+            params.insert("backendNodeId".into(), json!(backend_id));
+        }
+        params.insert(
+            "highlightConfig".into(),
+            json!({
+                "contentColor": { "r": r, "g": g, "b": b, "a": 0.35 },
+                "borderColor": { "r": r, "g": g, "b": b, "a": 0.9 },
+                "showInfo": false,
+            }),
+        );
+        let _ = self
+            .send(
+                "Overlay.enable",
+                json!({}),
+                Some(&session),
+                None,
+                Some(10_000),
+            )
+            .await;
+        self.send(
+            "Overlay.highlightNode",
+            Value::Object(params),
+            Some(&session),
+            None,
+            Some(10_000),
+        )
+        .await?;
+        if duration_ms == 0 {
+            let _ = self
+                .send(
+                    "Overlay.hideHighlight",
+                    json!({}),
+                    Some(&session),
+                    None,
+                    Some(10_000),
+                )
+                .await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(duration_ms)).await;
+            let _ = self
+                .send(
+                    "Overlay.hideHighlight",
+                    json!({}),
+                    Some(&session),
+                    None,
+                    Some(10_000),
+                )
+                .await;
+        }
+        let url = self.current_url(&session).await?;
+        let mut document = json!({
+            "highlighted": true,
+            "duration_ms": duration_ms,
+            "tab_id": target_id,
+            "url": url,
+        });
+        if let Some(reference) = reference {
+            document["ref"] = json!(reference);
+        }
+        if let Some(selector) = selector {
+            document["selector"] = json!(selector);
+        }
+        Ok(document)
+    }
+
+    async fn cookie_set_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let name = required_string(args, "name")?;
+        if name.chars().count() > 256 {
+            return Err(CdpError::InvalidArgument(
+                "name must be at most 256 characters".into(),
+            ));
+        }
+        let value = required_string_allow_empty(args, "value")?;
+        if value.chars().count() > 4096 {
+            return Err(CdpError::InvalidArgument(
+                "value must be at most 4096 characters".into(),
+            ));
+        }
+        let (session, target_id) = self.page(args, 15_000).await?;
+        let current = self.current_url(&session).await?;
+        let current = current.as_str();
+        let domain = optional_string(args, "domain");
+        let mut url = optional_string(args, "url");
+        if url.is_none() {
+            if let Some(domain) = &domain {
+                let scheme = current.and_then(web_scheme).unwrap_or("https");
+                url = Some(format!("{scheme}://{domain}/"));
+            } else {
+                url = current.map(str::to_string);
+            }
+        }
+        let Some(url) = url else {
+            return Err(CdpError::InvalidArgument(
+                "cookie_set needs url, domain or a web tab URL".into(),
+            ));
+        };
+        if !is_web_url(&url) {
+            return Err(CdpError::InvalidArgument(
+                "cookie_set requires an http or https URL".into(),
+            ));
+        }
+        let path = optional_string(args, "path").unwrap_or_else(|| "/".into());
+        let secure = args.get("secure").and_then(Value::as_bool).unwrap_or(false);
+        let http_only = args
+            .get("http_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let same_site = args
+            .get("same_site")
+            .and_then(Value::as_str)
+            .unwrap_or("lax")
+            .to_string();
+        let browser_same_site = match same_site.as_str() {
+            "strict" => "Strict",
+            "lax" => "Lax",
+            "none" => "None",
+            other => {
+                return Err(CdpError::InvalidArgument(format!(
+                    "same_site must be strict, lax or none, got {other}"
+                )))
+            }
+        };
+        let expires = args.get("expires").and_then(Value::as_f64).unwrap_or(0.0);
+        if expires < 0.0 || !expires.is_finite() {
+            return Err(CdpError::InvalidArgument(
+                "expires must be a non-negative number".into(),
+            ));
+        }
+        let mut params = Map::new();
+        params.insert("name".into(), json!(name));
+        params.insert("value".into(), json!(value));
+        params.insert("url".into(), json!(url));
+        params.insert("path".into(), json!(path));
+        params.insert("secure".into(), json!(secure));
+        params.insert("httpOnly".into(), json!(http_only));
+        params.insert("sameSite".into(), json!(browser_same_site));
+        if let Some(domain) = &domain {
+            params.insert("domain".into(), json!(domain));
+        }
+        if expires > 0.0 {
+            params.insert("expires".into(), json!(expires));
+        }
+        let response = self
+            .send(
+                "Network.setCookie",
+                Value::Object(params),
+                Some(&session),
+                None,
+                Some(10_000),
+            )
+            .await
+            .map_err(cookie_error)?;
+        if response.get("success").and_then(Value::as_bool) == Some(false) {
+            return Err(CdpError::Protocol("the browser rejected the cookie".into()));
+        }
+        let cookie_domain = response
+            .get("domain")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or(domain)
+            .unwrap_or_default();
+        Ok(json!({
+            "set": true,
+            "name": name,
+            "domain": cookie_domain,
+            "path": path,
+            "secure": secure,
+            "http_only": http_only,
+            "same_site": same_site,
+            "expires": expires as i64,
+            "tab_id": target_id,
+            "url": url,
+        }))
+    }
+
+    async fn cookie_clear_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let (session, _) = self.page(args, 15_000).await?;
+        let current = self.current_url(&session).await?;
+        let current = current.as_str();
+        let mut url = optional_string(args, "url");
+        let domain = optional_string(args, "domain");
+        let name = optional_string(args, "name");
+        if url.is_none() && domain.is_none() {
+            url = current.map(str::to_string);
+            if url.is_none() {
+                return Err(CdpError::InvalidArgument(
+                    "cookie_clear needs url, domain or a usable tab URL".into(),
+                ));
+            }
+        }
+        if let Some(url) = &url {
+            if !is_web_url(url) {
+                return Err(CdpError::InvalidArgument(
+                    "cookie_clear requires an http or https URL".into(),
+                ));
+            }
+        }
+        let response = match &url {
+            Some(url) => self
+                .send(
+                    "Network.getCookies",
+                    json!({ "urls": [url] }),
+                    Some(&session),
+                    None,
+                    Some(10_000),
+                )
+                .await
+                .map_err(cookie_error)?,
+            None => self
+                .send("Storage.getCookies", json!({}), None, None, Some(10_000))
+                .await
+                .map_err(cookie_error)?,
+        };
+        let cookies = response
+            .get("cookies")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut names = Vec::new();
+        for cookie in cookies {
+            let cookie_name = cookie
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if name.as_deref().is_some_and(|wanted| wanted != cookie_name) {
+                continue;
+            }
+            let cookie_domain = cookie
+                .get("domain")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if domain.as_deref().is_some_and(|wanted| {
+                cookie_domain != wanted && !cookie_domain.ends_with(&format!(".{wanted}"))
+            }) {
+                continue;
+            }
+            let mut params = Map::new();
+            params.insert("name".into(), json!(cookie_name));
+            if !cookie_domain.is_empty() {
+                params.insert("domain".into(), json!(cookie_domain));
+            }
+            if let Some(path) = cookie.get("path").and_then(Value::as_str) {
+                params.insert("path".into(), json!(path));
+            }
+            self.send(
+                "Network.deleteCookies",
+                Value::Object(params),
+                Some(&session),
+                None,
+                Some(10_000),
+            )
+            .await
+            .map_err(cookie_error)?;
+            if names.len() < 100 && !names.iter().any(|existing| existing == cookie_name) {
+                names.push(cookie_name.to_string());
+            }
+        }
+        let mut document = json!({
+            "cleared": names.len(),
+            "names": names,
+        });
+        if let Some(url) = url {
+            document["url"] = json!(url);
+        }
+        if let Some(domain) = domain {
+            document["domain"] = json!(domain);
+        }
+        if let Some(name) = name {
+            document["name"] = json!(name);
+        }
+        Ok(document)
+    }
+
+    async fn storage_get_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let (session, _) = self.page(args, 15_000).await?;
+        let area = storage_area(args)?;
+        let keys = optional_string_array(args, "keys");
+        let expression = STORAGE_GET_JS
+            .replace("__AREA__", &js_string(&area))
+            .replace(
+                "__KEYS__",
+                &keys
+                    .as_ref()
+                    .map(|values| json!(values).to_string())
+                    .unwrap_or_else(|| "null".into()),
+            );
+        let value = self.eval_value(&session, &expression, false).await?;
+        let origin = value
+            .get("origin")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if origin.is_empty() || !is_web_url(&origin) {
+            return Err(CdpError::InvalidArgument(
+                "storage tools require an http or https page".into(),
+            ));
+        }
+        let raw = value
+            .get("entries")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut entries = Vec::new();
+        let mut total = 0usize;
+        let mut truncated = false;
+        for entry in raw {
+            if entries.len() >= 200 {
+                truncated = true;
+                break;
+            }
+            let Some(key) = entry.get("key").and_then(Value::as_str) else {
+                continue;
+            };
+            let mut value = entry
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if value.chars().count() > 4096 {
+                value = cap_chars(&value, 4096);
+                truncated = true;
+            }
+            let length = key.chars().count() + value.chars().count();
+            if total + length > 65_536 {
+                truncated = true;
+                break;
+            }
+            total += length;
+            entries.push(json!({ "key": key, "value": value }));
+        }
+        Ok(json!({
+            "area": area,
+            "origin": origin,
+            "count": entries.len(),
+            "truncated": truncated,
+            "entries": entries,
+        }))
+    }
+
+    async fn storage_set_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let entries = args
+            .get("entries")
+            .and_then(Value::as_object)
+            .cloned()
+            .ok_or_else(|| CdpError::InvalidArgument("entries must be an object".into()))?;
+        let (session, _) = self.page(args, 15_000).await?;
+        let area = storage_area(args)?;
+        let expression = STORAGE_SET_JS
+            .replace("__AREA__", &js_string(&area))
+            .replace("__ENTRIES__", &Value::Object(entries).to_string());
+        let value = self.eval_value(&session, &expression, false).await?;
+        if value.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(CdpError::Protocol(format!(
+                "web storage write failed: {}",
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error")
+            )));
+        }
+        let origin = value
+            .get("origin")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !is_web_url(&origin) {
+            return Err(CdpError::InvalidArgument(
+                "storage tools require an http or https page".into(),
+            ));
+        }
+        let keys = value
+            .get("keys")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(json!({
+            "area": area,
+            "origin": origin,
+            "set": keys.len(),
+            "keys": keys,
+        }))
+    }
+
+    async fn storage_clear_tool(&self, args: &Value) -> Result<Value, CdpError> {
+        let (session, _) = self.page(args, 15_000).await?;
+        let area = storage_area(args)?;
+        let keys = optional_string_array(args, "keys");
+        let expression = STORAGE_CLEAR_JS
+            .replace("__AREA__", &js_string(&area))
+            .replace(
+                "__KEYS__",
+                &keys
+                    .as_ref()
+                    .map(|values| json!(values).to_string())
+                    .unwrap_or_else(|| "null".into()),
+            );
+        let value = self.eval_value(&session, &expression, false).await?;
+        let origin = value
+            .get("origin")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !is_web_url(&origin) {
+            return Err(CdpError::InvalidArgument(
+                "storage tools require an http or https page".into(),
+            ));
+        }
+        Ok(json!({
+            "area": area,
+            "origin": origin,
+            "cleared": value.get("cleared").and_then(Value::as_u64).unwrap_or(0),
+        }))
+    }
+
+    async fn border_center(&self, session: &str, object_id: &str) -> Result<(f64, f64), CdpError> {
+        let model = self
+            .send(
+                "DOM.getBoxModel",
+                json!({ "objectId": object_id }),
+                Some(session),
+                None,
+                Some(10_000),
+            )
+            .await
+            .map_err(interaction_error)?;
+        let quad = model
+            .pointer("/model/border")
+            .and_then(Value::as_array)
+            .filter(|quad| quad.len() >= 8)
+            .ok_or_else(|| CdpError::NotInteractable("element has no layout box".into()))?;
+        let numbers: Vec<f64> = quad
+            .iter()
+            .take(8)
+            .map(|value| value.as_f64().unwrap_or(0.0))
+            .collect();
+        Ok((
+            (numbers[0] + numbers[4]) / 2.0,
+            (numbers[1] + numbers[5]) / 2.0,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_mouse(
+        &self,
+        session: &str,
+        event: &str,
+        x: f64,
+        y: f64,
+        button: &str,
+        buttons: i64,
+        click_count: Option<i64>,
+    ) -> Result<(), CdpError> {
+        let mut params = json!({
+            "type": event,
+            "x": x,
+            "y": y,
+            "button": button,
+            "buttons": buttons,
+        });
+        if let Some(click_count) = click_count {
+            params["clickCount"] = json!(click_count);
+        }
+        self.send(
+            "Input.dispatchMouseEvent",
+            params,
+            Some(session),
+            None,
+            Some(10_000),
+        )
+        .await?;
+        Ok(())
+    }
+
     fn target_for_session(&self, session: Option<&str>) -> Option<String> {
         let session = session?;
         self.targets()
@@ -2803,18 +3866,431 @@ fn pattern_matches(pattern: &str, url: &str) -> bool {
     true
 }
 
+const PAGE_LINKS_JS: &str = r##"(() => {
+  const selector = __SELECTOR__;
+  const max = __MAX__;
+  const includeHidden = __HIDDEN__;
+  const roots = [document];
+  for (let index = 0; index < roots.length; index += 1) {
+    const nodes = roots[index].querySelectorAll('*');
+    for (const node of nodes) { if (node.shadowRoot) { roots.push(node.shadowRoot); } }
+  }
+  let scope = document;
+  const links = [];
+  const seen = new Set();
+  let truncated = false;
+  const hidden = (element) => {
+    let node = element;
+    while (node) {
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) { return true; }
+      node = node.parentElement || (node.getRootNode && node.getRootNode().host) || null;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width === 0 && rect.height === 0;
+  };
+  if (selector) {
+    scope = document.querySelector(selector);
+    if (!scope) { return { missing: true, url: location.href, links: [], truncated: false }; }
+  }
+  const scopes = [scope];
+  if (scope.querySelectorAll) {
+    for (let index = 0; index < scopes.length; index += 1) {
+      const nodes = scopes[index].querySelectorAll('*');
+      for (const node of nodes) { if (node.shadowRoot) { scopes.push(node.shadowRoot); } }
+    }
+  }
+  for (const root of scopes) {
+    for (const element of root.querySelectorAll('a[href], area[href]')) {
+      if (!includeHidden && hidden(element)) { continue; }
+      const raw = (element.getAttribute('href') || '').trim();
+      if (!raw || raw === '#' || raw.toLowerCase().startsWith('javascript:')) { continue; }
+      let resolved = '';
+      try { resolved = new URL(raw, location.href).href; } catch (error) { continue; }
+      if (!/^(https?|mailto|tel):/i.test(resolved)) { continue; }
+      const text = (element.getAttribute('aria-label') || element.textContent || element.getAttribute('title') || '').trim().slice(0, 200);
+      const key = resolved + '\n' + text;
+      if (seen.has(key)) { continue; }
+      seen.add(key);
+      if (links.length >= max) { truncated = true; break; }
+      const item = { text: text, url: resolved };
+      const title = (element.getAttribute('title') || '').trim();
+      if (title) { item.title = title; }
+      const rel = (element.getAttribute('rel') || '').trim();
+      if (rel) { item.rel = rel; }
+      const target = (element.getAttribute('target') || '').trim();
+      if (target) { item.target = target; }
+      links.push(item);
+    }
+    if (truncated) { break; }
+  }
+  return { url: location.href, links: links, truncated: truncated };
+})()"##;
+
+const PAGE_FORMS_JS: &str = r##"(() => {
+  const values = __VALUES__;
+  const max = __MAX__;
+  const selector = __SELECTOR__;
+  const cssPath = (element) => {
+    if (!element || element.nodeType !== 1) { return ''; }
+    if (element.id) { return '#' + CSS.escape(element.id); }
+    const parts = [];
+    let node = element;
+    while (node && node.nodeType === 1 && node.tagName.toLowerCase() !== 'html') {
+      let part = node.tagName.toLowerCase();
+      const parent = node.parentElement;
+      if (parent) {
+        let index = 1;
+        for (const sibling of parent.children) {
+          if (sibling === node) { break; }
+          if (sibling.tagName === node.tagName) { index += 1; }
+        }
+        part += ':nth-of-type(' + index + ')';
+      }
+      parts.unshift(part);
+      node = parent;
+    }
+    return parts.join(' > ');
+  };
+  const labelFor = (element) => {
+    let text = '';
+    if (element.labels && element.labels.length) {
+      text = Array.from(element.labels).map((label) => label.innerText || '').join(' ');
+    }
+    if (!text) {
+      const wrapping = element.closest ? element.closest('label') : null;
+      if (wrapping) { text = wrapping.innerText || ''; }
+    }
+    if (!text) { text = element.getAttribute('aria-label') || ''; }
+    if (!text) { text = element.getAttribute('placeholder') || ''; }
+    return text.replace(/\s+/g, ' ').trim().slice(0, 120);
+  };
+  const roots = [document];
+  for (let index = 0; index < roots.length; index += 1) {
+    const nodes = roots[index].querySelectorAll('*');
+    for (const node of nodes) { if (node.shadowRoot) { roots.push(node.shadowRoot); } }
+  }
+  let forms = [];
+  if (selector) {
+    const scope = document.querySelector(selector);
+    if (!scope) { return { missing: true, url: location.href, forms: [], truncated: false }; }
+    if (scope.tagName.toLowerCase() === 'form') { forms.push(scope); }
+    for (const form of scope.querySelectorAll('form')) { forms.push(form); }
+    for (const node of scope.querySelectorAll('*')) {
+      if (node.shadowRoot) { for (const form of node.shadowRoot.querySelectorAll('form')) { forms.push(form); } }
+    }
+  } else {
+    for (const root of roots) { for (const form of root.querySelectorAll('form')) { forms.push(form); } }
+  }
+  const output = [];
+  let truncated = false;
+  for (const form of forms) {
+    if (output.length >= max) { truncated = true; break; }
+    const fields = [];
+    for (const element of form.querySelectorAll('input, select, textarea, button')) {
+      const tag = element.tagName.toLowerCase();
+      let type = (element.type || '').toLowerCase();
+      if (tag === 'select') { type = 'select'; }
+      if (tag === 'textarea') { type = 'textarea'; }
+      if (tag === 'button' && !type) { type = 'button'; }
+      const field = {
+        name: element.name || '',
+        type: type,
+        selector: cssPath(element),
+        required: !!element.required,
+        disabled: !!element.disabled,
+        readonly: !!element.readOnly,
+      };
+      const label = labelFor(element);
+      if (label) { field.label = label; }
+      if (type === 'checkbox' || type === 'radio') { field.checked = !!element.checked; }
+      if (type === 'select') {
+        field.options = Array.from(element.options || []).slice(0, 50).map((option) => ({
+          value: option.value,
+          label: (option.textContent || '').trim().slice(0, 120),
+          selected: !!option.selected,
+        }));
+      }
+      if (values && type !== 'password') {
+        field.value = String(element.value === undefined ? '' : element.value).slice(0, 200);
+      }
+      fields.push(field);
+    }
+    let action = location.href;
+    const rawAction = form.getAttribute('action');
+    if (rawAction !== null && rawAction.trim() !== '') {
+      try { action = new URL(rawAction, location.href).href; } catch (error) { action = location.href; }
+    }
+    let method = 'get';
+    const rawMethod = form.getAttribute('method');
+    if (rawMethod !== null && rawMethod.trim() !== '') { method = rawMethod.trim().toLowerCase(); }
+    const item = {
+      index: output.length,
+      action: action,
+      method: method,
+      fields: fields,
+    };
+    const formName = form.getAttribute('name');
+    const formId = form.getAttribute('id');
+    if (formName) { item.name = formName; }
+    if (formId) { item.id = formId; }
+    output.push(item);
+  }
+  return { url: location.href, forms: output, truncated: truncated };
+})()"##;
+
+const STORAGE_GET_JS: &str = r##"(() => {
+  try {
+    const area = __AREA__;
+    const storage = area === 'session' ? sessionStorage : localStorage;
+    const keys = __KEYS__;
+    const entries = [];
+    const push = (key) => {
+      const value = storage.getItem(key);
+      if (value !== null) { entries.push({ key: key, value: value }); }
+    };
+    if (keys) {
+      for (const key of keys) { push(key); }
+    } else {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (key !== null) { push(key); }
+      }
+    }
+    return { origin: location.origin, entries: entries };
+  } catch (error) {
+    return { origin: location.origin, entries: [], error: String(error) };
+  }
+})()"##;
+
+const STORAGE_SET_JS: &str = r##"(() => {
+  try {
+    const area = __AREA__;
+    const storage = area === 'session' ? sessionStorage : localStorage;
+    const entries = __ENTRIES__;
+    const keys = Object.keys(entries);
+    for (const key of keys) { storage.setItem(key, entries[key]); }
+    return { origin: location.origin, ok: true, keys: keys };
+  } catch (error) {
+    return { origin: location.origin, ok: false, keys: [], error: String(error) };
+  }
+})()"##;
+
+const STORAGE_CLEAR_JS: &str = r##"(() => {
+  try {
+    const area = __AREA__;
+    const storage = area === 'session' ? sessionStorage : localStorage;
+    const keys = __KEYS__;
+    let cleared = 0;
+    if (keys) {
+      for (const key of keys) { if (storage.getItem(key) !== null) { cleared += 1; storage.removeItem(key); } }
+    } else {
+      cleared = storage.length;
+      storage.clear();
+    }
+    return { origin: location.origin, cleared: cleared };
+  } catch (error) {
+    return { origin: location.origin, cleared: 0, error: String(error) };
+  }
+})()"##;
+
+fn bounded_number(
+    args: &Value,
+    key: &str,
+    default: f64,
+    minimum: f64,
+    maximum: f64,
+) -> Result<f64, CdpError> {
+    let value = args.get(key).and_then(Value::as_f64).unwrap_or(default);
+    if !value.is_finite() || value < minimum || value > maximum {
+        return Err(CdpError::InvalidArgument(format!(
+            "{key} must be between {minimum} and {maximum}"
+        )));
+    }
+    Ok(value)
+}
+
+fn cap_chars(text: &str, maximum: usize) -> String {
+    text.chars().take(maximum).collect()
+}
+
+fn ax_string(node: &Value, key: &str) -> String {
+    node.pointer(&format!("/{key}/value"))
+        .and_then(Value::as_str)
+        .map(|value| cap_chars(value, 200))
+        .unwrap_or_default()
+}
+
+fn optional_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
+    args.get(key).and_then(Value::as_array).map(|values| {
+        values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    })
+}
+
+fn storage_area(args: &Value) -> Result<String, CdpError> {
+    let area = args
+        .get("area")
+        .and_then(Value::as_str)
+        .unwrap_or("local")
+        .to_string();
+    if area != "local" && area != "session" {
+        return Err(CdpError::InvalidArgument(
+            "area must be local or session".into(),
+        ));
+    }
+    Ok(area)
+}
+
+fn web_scheme(url: &str) -> Option<&'static str> {
+    if url.starts_with("https://") {
+        Some("https")
+    } else if url.starts_with("http://") {
+        Some("http")
+    } else {
+        None
+    }
+}
+
+fn is_web_url(url: &str) -> bool {
+    web_scheme(url).is_some()
+}
+
+fn parse_hex_color(color: &str) -> Result<(u8, u8, u8), CdpError> {
+    if color.len() != 7 || !color.starts_with('#') {
+        return Err(CdpError::InvalidArgument(
+            "color must be a #rrggbb value".into(),
+        ));
+    }
+    let red = u8::from_str_radix(&color[1..3], 16)
+        .map_err(|_| CdpError::InvalidArgument("color must be a #rrggbb value".into()))?;
+    let green = u8::from_str_radix(&color[3..5], 16)
+        .map_err(|_| CdpError::InvalidArgument("color must be a #rrggbb value".into()))?;
+    let blue = u8::from_str_radix(&color[5..7], 16)
+        .map_err(|_| CdpError::InvalidArgument("color must be a #rrggbb value".into()))?;
+    Ok((red, green, blue))
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn pdf_error(error: CdpError) -> CdpError {
+    match error {
+        CdpError::Unsupported(_) => {
+            CdpError::Unsupported("this page cannot be printed to PDF".into())
+        }
+        other => other,
+    }
+}
+
+fn accessibility_error(error: CdpError) -> CdpError {
+    match error {
+        CdpError::Unsupported(_) => {
+            CdpError::Unsupported("the accessibility tree is unavailable".into())
+        }
+        other => other,
+    }
+}
+
+fn cookie_error(error: CdpError) -> CdpError {
+    match error {
+        CdpError::Unsupported(_) => {
+            CdpError::Unsupported("cookies are unavailable on this browser".into())
+        }
+        other => other,
+    }
+}
+
+/// Parse a CDP element reference into a backend node id.
+///
+/// The extension uses @eN references, which have no meaning on the CDP
+/// channel; callers get a typed argument error instead of a protocol failure.
+fn screenshot_backend_id(reference: &str) -> Result<i64, CdpError> {
+    if let Some(raw) = reference.strip_prefix("@c") {
+        return raw.parse().map_err(|_| {
+            CdpError::InvalidArgument(
+                "CDP element references are @c<backendNodeId>, for example @c42".into(),
+            )
+        });
+    }
+    if reference.starts_with('@') {
+        return Err(CdpError::InvalidArgument(
+            "extension references such as @e12 are not CDP node ids; use @c<backendNodeId> from page_snapshot, or omit tab_id and use the extension channel".into(),
+        ));
+    }
+    Err(CdpError::InvalidArgument(
+        "browser_screenshot element ref must be @c<backendNodeId> from page_snapshot".into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn catalogue_has_the_expected_tools() {
-        assert_eq!(CDP_TOOL_NAMES.len(), 33);
+        assert_eq!(CDP_TOOL_NAMES.len(), 46);
         assert!(is_cdp_tool("browser_navigate"));
         assert!(is_cdp_tool("cdp_send"));
         assert!(is_cdp_tool("page_snapshot"));
         assert!(is_cdp_tool("browser_select"));
         assert!(!is_cdp_tool("browser_channel"));
+    }
+
+    #[test]
+    fn page_forms_returns_strings_for_named_controls() {
+        use std::process::{Command, Stdio};
+
+        let expression = PAGE_FORMS_JS
+            .replace("__VALUES__", "false")
+            .replace("__MAX__", "20")
+            .replace("__SELECTOR__", "null");
+        let dir = std::env::temp_dir().join(format!("corvus-page-forms-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create page_forms temp dir");
+        let harness_path = dir.join("page_forms_named_controls.mjs");
+        let expression_path = dir.join("page_forms.js");
+        std::fs::write(
+            &harness_path,
+            include_str!("../tests/page_forms_named_controls.mjs"),
+        )
+        .expect("write page_forms harness");
+        std::fs::write(&expression_path, expression.as_bytes()).expect("write PAGE_FORMS_JS");
+        let child = Command::new("node")
+            .arg(&harness_path)
+            .arg(&expression_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let child = match child {
+            Ok(child) => child,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let _ = std::fs::remove_dir_all(&dir);
+                eprintln!("node is unavailable; skipped the PAGE_FORMS_JS harness");
+                return;
+            }
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                panic!("failed to start node: {error}");
+            }
+        };
+        let output = child.wait_with_output().expect("node output");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            output.status.success(),
+            "page_forms regression failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("page_forms named controls: ok"),
+            "the node harness did not report success: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -3015,6 +4491,22 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_references_are_cdp_backend_ids_only() {
+        assert_eq!(screenshot_backend_id("@c42").expect("cdp ref"), 42);
+        let extension = screenshot_backend_id("@e12").expect_err("extension ref");
+        assert!(matches!(extension, CdpError::InvalidArgument(_)));
+        assert!(extension.to_string().contains("@c<backendNodeId>"));
+        assert!(matches!(
+            screenshot_backend_id("#card"),
+            Err(CdpError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            screenshot_backend_id("@cnot-a-number"),
+            Err(CdpError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
     fn snapshot_documents_decode_root_strings_and_scroll() {
         let strings = json!([
             "",
@@ -3038,5 +4530,54 @@ mod tests {
         );
         assert_eq!(snapshot_document_index(documents, strings, "MISSING"), None);
         assert_eq!(document_scroll(&documents[0]), (12.5, 34.5));
+    }
+
+    #[test]
+    fn element_screenshots_use_the_snapshot_border_box_for_top_shadow_and_iframes() {
+        let cases = [
+            (
+                "top padded button",
+                [
+                    8.0, 95.875, 71.734375, 95.875, 71.734375, 110.875, 8.0, 110.875,
+                ],
+                [0.0, 93.0, 80.0, 93.0, 80.0, 114.0, 0.0, 114.0],
+                (0.0, 0.0),
+                (0.0, 93.0, 80.0, 21.0),
+            ),
+            (
+                "open shadow button",
+                [
+                    8.0, 120.875, 98.421875, 120.875, 98.421875, 135.875, 8.0, 135.875,
+                ],
+                [0.0, 118.0, 106.0, 118.0, 106.0, 139.0, 0.0, 139.0],
+                (0.0, 0.0),
+                (0.0, 118.0, 106.0, 21.0),
+            ),
+            (
+                "same-origin iframe button",
+                [
+                    9.0, -207.3125, 81.625, -207.3125, 81.625, -192.3125, 9.0, -192.3125,
+                ],
+                [1.0, -210.0, 90.0, -210.0, 90.0, -189.0, 1.0, -189.0],
+                (0.0, 429.0),
+                (1.0, 219.0, 89.0, 21.0),
+            ),
+        ];
+        for (name, content, border, scroll, expected) in cases {
+            let model = json!({ "border": border, "content": content });
+            let clip = CdpClient::element_clip_from_box_model(&model, "@c239", scroll.0, scroll.1)
+                .unwrap_or_else(|error| panic!("{name} clip failed: {error}"));
+            assert_eq!(clip, expected, "{name} must match the snapshot border bbox");
+        }
+    }
+
+    #[test]
+    fn element_screenshots_reject_a_missing_border_box() {
+        let model = json!({
+            "content": [8.0, 95.875, 71.734375, 95.875, 71.734375, 110.875, 8.0, 110.875]
+        });
+        let error = CdpClient::element_clip_from_box_model(&model, "@c239", 0.0, 0.0)
+            .expect_err("content box alone must not be accepted");
+        assert!(matches!(error, CdpError::TargetNotFound(ref target) if target == "@c239"));
     }
 }

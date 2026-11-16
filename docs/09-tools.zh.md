@@ -2,13 +2,13 @@
 
 [English](09-tools.md) | [中文](09-tools.zh.md)
 
-状态：1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。1.6.0 发布新增可选守护进程策略，不新增工具；标签对象 `c5daf98eb03b0fac310e53c3a59edfa77874f919` 指向 `b420c3787a8f240c60514ac8c745e67474f1c1fd`，主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了产物。QA PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，基于 HEAD `61ca85f` 的工作树。读者：MCP 客户端作者、REST 客户端作者与工具使用者。
+状态：1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。工作树包含未发布的 1.7.0 工作：MCP 面扩展为十个类别中的 62 个工具，包括新的 `storage` 类别与 18 个新工具。1.7.0 面有 46 个 CDP 浏览器侧工具、42 个扩展处理程序与 12 个守护进程本地工具；扩展为 `tabGroups` 增至 11 项权限，保持 `all_frames: false`，并有 42 个处理程序。QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过；不存在 1.7.0 CI 运行、已发布包或已发布产物，因此所有 CI 与发布行仍为 Pending，工作树仍未发布。1.6.0 发布新增可选守护进程策略，不新增工具；标签对象 `c5daf98eb03b0fac310e53c3a59edfa77874f919` 指向 `b420c3787a8f240c60514ac8c745e67474f1c1fd`，主 CI 运行 43716832915 通过八个任务，发布工作流 43717236667 成功，GitHub 发布 446071476 发布了产物。QA PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，基于 HEAD `61ca85f` 的工作树。读者：MCP 客户端作者、REST 客户端作者与工具使用者。
 
-Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩展或回环 CDP 直连操作浏览器；10 个工具由守护进程应答。本文中的工具名、输入 schema 与结果形状均描述 1.6.0。MCP 面与 1.3.0 相同：1.4.0、1.5.0 与 1.6.0 均不新增工具；可选守护策略见 [11-guardrails.zh.md](11-guardrails.zh.md)。同一套 43 工具目录与执行器也通过 REST 面的 `/api/v1/tools` 与 `/api/v1/tools/call` 提供；第 1 节的信封仅适用于 MCP。
+1.7.0 工作树在十个类别中提供 62 个 MCP 工具。46 个浏览器侧工具可通过回环 CDP 直连运行，42 个可通过扩展运行，12 个由守护进程应答；38 个工具在两种浏览器通道上都可用，8 个仅 CDP，4 个仅扩展。已发布的 1.6.0 面为 43 个工具。1.7.0 工作树新增 18 个工具：四个页面工具、三个输入工具、四个标签页与窗口工具、五个存储工具和两个诊断工具。本文中的工具名、输入 schema 与结果形状描述该工作树。MCP 面在 1.3.0 至 1.6.0 之间保持不变：这些版本均不新增工具；可选守护策略见 [11-guardrails.zh.md](11-guardrails.zh.md)。同一套 62 工具目录与执行器也通过 REST 面的 `/api/v1/tools` 与 `/api/v1/tools/call` 提供；第 1 节的信封仅适用于 MCP。
 
 ## 1. MCP 结果信封
 
-成功的 `tools/call` 只返回一个内容块，不返回 `structuredContent`：
+成功的 `tools/call` 只返回一个内容块，不返回 `structuredContent`；例外是 `inline: true` 的 `browser_screenshot`，它返回一个文本块后跟一个图像块：
 
 ```json
 {
@@ -24,7 +24,7 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 
 文本是没有内嵌换行的紧凑 JSON。客户端必须把 `content[0].text` 解析为 JSON。不要读取 `structuredContent`：Corvus 不发送该字段。工具错误同样返回一个文本块，`isError` 为 true，文本是包含类型化错误码、消息、可选 details 与可选 trace 的紧凑 JSON 对象。
 
-该信封适用于所有工具，包括 `browser_batch`、`tool_help` 与 CDP 工具。文本内部的形状是下文描述的工具结果。
+该信封适用于所有工具，包括 `browser_batch`、`tool_help` 与 CDP 工具。唯一例外是内联截图：`tool_success` 把 `content[0]` 设为摘要文本，把 `content[1]` 设为 `{ "type": "image", "data": "<base64>", "mimeType": "image/webp" }`，且不返回 `structuredContent`。不带 `inline` 的 `browser_screenshot` 返回通常的单个文本块。文本内部的形状是下文描述的工具结果。
 
 ## 2. 两级发现
 
@@ -35,7 +35,7 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 | `detail` | `brief`、`full` | `brief` | `brief` 把每个长描述替换为一行摘要，删除 `title`，并移除输入 schema 中的每个属性描述。`full` 保留长描述、标题与 schema 描述。 |
 | `category` | 一个类别名 | 全部 | 只返回该类别。未知类别返回类型化 `BAD_ARGS`。 |
 
-默认简版返回全部 43 个工具，共 20,493 字节；`detail: "full"` 为 37,372 字节。简版低于 30,000 字节预算；完整结果需显式请求。
+1.6.0 的 43 工具目录实测简版 20,493 字节；`detail: "full"` 为 37,496 字节。简版低于 30,000 字节预算；完整结果需显式请求。62 工具 1.7.0 目录实测简版原始正文 31,367 字节（含末尾换行 31,368 字节），低于 32,000 字节简版预算；完整版原始 52,328 字节（含换行 52,329 字节）。旧的 44 工具测量不适用于新面。
 
 `tool_help` 是单个工具的补充入口：
 
@@ -51,16 +51,17 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 
 | 类别 | 数量 | 工具 |
 |---|---:|---|
-| `page` | 10 | `browser_navigate`、`page_snapshot`、`page_text`、`page_html`、`page_find`、`browser_wait`、`browser_history`、`browser_dialog`、`browser_emulate`、`browser_batch` |
-| `input` | 7 | `browser_click`、`browser_type`、`browser_hover`、`browser_press`、`browser_scroll`、`browser_select`、`browser_eval` |
-| `tabs` | 4 | `tab_list`、`tab_new`、`tab_close`、`tab_switch` |
+| `page` | 15 | `browser_navigate`、`page_snapshot`、`page_text`、`page_html`、`page_find`、`browser_wait`、`browser_history`、`browser_screenshot`、`page_pdf`、`page_links`、`page_forms`、`page_accessibility`、`browser_dialog`、`browser_emulate`、`browser_batch` |
+| `input` | 10 | `browser_click`、`browser_type`、`browser_hover`、`browser_press`、`browser_scroll`、`browser_select`、`browser_eval`、`browser_drag`、`browser_focus`、`browser_highlight` |
+| `tabs` | 8 | `tab_list`、`tab_new`、`tab_close`、`tab_switch`、`tab_group`、`tab_duplicate`、`window_list`、`window_new` |
 | `network` | 5 | `net_capture`、`net_log`、`net_clear`、`net_intercept`、`browser_cookies` |
+| `storage` | 5 | `cookie_set`、`cookie_clear`、`storage_get`、`storage_set`、`storage_clear` |
 | `files` | 3 | `upload_file`、`download_list`、`download_wait` |
 | `cdp` | 5 | `cdp_status`、`cdp_targets`、`cdp_send`、`cdp_events`、`browser_channel` |
 | `sessions` | 4 | `session_list`、`session_steps`、`session_replay`、`session_export` |
-| `diagnostics` | 4 | `browser_list`、`metrics`、`logs_tail`、`browser_console` |
+| `diagnostics` | 6 | `browser_list`、`metrics`、`logs_tail`、`browser_console`、`health`、`version` |
 | `help` | 1 | `tool_help` |
-| **合计** | **43** | |
+| **合计** | **62** | |
 
 `browser_batch` 属于 `page`，但由守护进程本地应答：它校验并调度步骤，每一步再走正常路由。`browser_channel` 属于 `cdp`，同样由守护进程本地应答。
 
@@ -77,6 +78,7 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 | `page_find` | page | both | 查找页面文本并返回元素引用。 |
 | `browser_wait` | page | both | 等待选择器、文本或 URL 条件。 |
 | `browser_history` | page | both | 后退、前进或刷新。 |
+| `browser_screenshot` | page | both | 捕获视口、整页或单个元素。 |
 | `browser_dialog` | page | cdp | 接受或关闭 JavaScript 对话框。 |
 | `browser_emulate` | page | cdp | 应用或重置设备与网络模拟。 |
 | `browser_batch` | page | daemon | 按顺序运行最多 20 个浏览器工具调用。 |
@@ -112,7 +114,25 @@ Corvus 在九个类别中提供 43 个 MCP 工具。其中 33 个工具通过扩
 | `metrics` | diagnostics | daemon | 运行时长、工具计数、会话与录制状态。 |
 | `logs_tail` | diagnostics | daemon | 读取进程内日志缓冲。 |
 | `browser_console` | diagnostics | cdp | 近期 console 与异常条目。 |
+| `health` | diagnostics | daemon | 已脱敏的守护进程健康、版本与连接摘要。 |
+| `version` | diagnostics | daemon | 产品版本、工具数量与协议版本。 |
 | `tool_help` | help | daemon | 目录索引、类别或单个工具的完整帮助。 |
+| `page_pdf` | page | both | 将页面保存为 PDF 文件。 |
+| `page_links` | page | both | 从文档与开放 shadow root 提取链接。 |
+| `page_forms` | page | both | 检查表单及其字段。 |
+| `page_accessibility` | page | both | 读取无障碍树。 |
+| `browser_drag` | input | both | 从一个元素引用拖拽到另一个。 |
+| `browser_focus` | input | both | 聚焦元素并滚动到可见区域。 |
+| `browser_highlight` | input | both | 短暂高亮引用或选择器。 |
+| `tab_group` | tabs | extension | 将标签页分组并设置标题与颜色。 |
+| `tab_duplicate` | tabs | extension | 复制一个标签页。 |
+| `window_list` | tabs | extension | 列出浏览器窗口及可选的标签页。 |
+| `window_new` | tabs | extension | 创建浏览器窗口。 |
+| `cookie_set` | storage | both | 设置一个 cookie，且不回显其值。 |
+| `cookie_clear` | storage | both | 按 URL 或域清除 cookie。 |
+| `storage_get` | storage | both | 读取页面 local 或 session storage。 |
+| `storage_set` | storage | both | 写入页面 local 或 session storage。 |
+| `storage_clear` | storage | both | 清除页面 local 或 session storage。 |
 
 ## 5. page_snapshot
 
@@ -184,7 +204,7 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 
 - 扩展引用为 `@eN`，CDP 引用为 `@c<backendNodeId>`。一种通道的引用不能用于另一种通道。跨通道使用时返回类型化 `BAD_ARGS`，`details.hint` 会提示改用匹配的引用，或省略 `tab_id` 对活动标签操作。
 - 引用在产生它的页面快照仍有效时可用。导航或 DOM 变化后请重新快照，不要复用旧引用。
-- 扩展标签 id 是数字（例如 `7`）；CDP 目标 id 是 `cdp_targets` 返回的 32 位十六进制字符串。1.5.0 不在两个命名空间之间转换。任一通道都可省略 `tab_id` 使用活动标签页。
+- 扩展标签 id 是数字（例如 `7`）；CDP 目标 id 是 `cdp_targets` 返回的 32 位十六进制字符串。当前版本不在两个命名空间之间转换。任一通道都可省略 `tab_id` 使用活动标签页。
 - `format: "json"` 是需要节点对象的客户端的兼容路径。`include_bbox` 在两种通道上都影响紧凑行；扩展路径的 JSON 节点本身已包含 `bbox`，`include_bbox` 不改变 JSON。
 - `viewport_only` 只做节点包围盒与当前视口的相交判断，不会滚动页面。
 
@@ -193,6 +213,54 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 `diff: true` 只适用于紧凑输出；与 `format: "json"` 同时使用返回类型化 `BAD_ARGS`。守护进程应用层用最近 64 个快照的基线缓存，按浏览器、会话与标签页为键，在每次调用中计算一次差异。浏览器通道不计算差异，因此扩展与 CDP 路径共用同一语法，`browser_batch` 中的步骤也只计算一次。
 
 `diff: false` 的紧凑请求会刷新基线；差异请求从不刷新，JSON 请求也不触碰基线。若同一 URL 存在基线，结果添加 `diff: { baseline: true, unchanged, changed, added, removed }`，当前每一行都带前缀：未变为两个空格，新增为 `+ `，变化为 `~ `。基线中无当前匹配的行按旧顺序以 `- ` 追加。没有基线，或标签页已切换到不同 URL 时，`diff` 为 `{ baseline: false, unchanged: 0, changed: 0, added: 0, removed: 0 }`，文本不带标记。
+
+### browser_screenshot
+
+`browser_screenshot` 捕获可见视口、整页或单个元素，两种通道都可用。守护进程负责最终处理：图像始终写入 `<home>/screenshots/`，文件名为 `screenshot-<unix-millis>-<uuid8>.<ext>`；结果用 `width`、`height`、`bytes`、`sha256`、`path`、`summary` 与 `inline` 替换 base64 载荷。
+
+| 输入 | 类型 | 默认 | 含义 |
+|---|---|---|---|
+| `target` | string | `viewport` | `viewport`、`full_page` 或 `element`。 |
+| `ref` | string | 无 | 仅 `element` 必填；CDP 用 `@c<backendNodeId>`，扩展用 `@e<number>`。来自另一通道的引用返回类型化 `BAD_ARGS`。 |
+| `format` | string | `webp` | `webp`、`png` 或 `jpeg`。 |
+| `quality` | integer | `80` | `webp` 与 `jpeg` 取 `1` 到 `100`；`png` 忽略。 |
+| `inline` | boolean | `false` | 同时以 MCP 图像内容返回字节；文件始终保存。 |
+| `tab_id` | string | 活动标签页 | 要捕获的标签页。 |
+
+`full_page` 使用页面布局尺寸并捕获视口之外的内容；`element` 从快照引用解析节点包围盒并捕获该区域。扩展使用现有调试通道，活动标签页 PNG 视口可回退到 `chrome.tabs.captureVisibleTab`；1.7.0 将扩展提升为 11 项权限、42 个处理程序与 `all_frames: false`。
+
+`inline: true` 仅适用于 MCP：`content[0]` 为摘要文本，`content[1]` 为图像，不返回 `structuredContent`。`browser_batch` 的截图步骤必须设 `inline: false`；`inline: true` 在派发前返回类型化 `BAD_ARGS`。截图对守护策略是只读操作，但像素不会被脱敏或包裹边界，因此图像可能包含秘密或不可信页面内容。
+
+### 1.7.0 新增工具
+
+1.7.0 工作树新增 18 个工具。每个浏览器工具都接受可选 `browser_id`；页面与输入工具还接受 `tab_id`，省略时使用活动标签页。CDP 引用为 `@c<backendNodeId>`，扩展引用为 `@e<number>`；错误类型返回 `BAD_ARGS`。四个仅扩展工具在 CDP 下返回 `CAPABILITY_UNAVAILABLE`。五个存储工具不可用于批量执行。
+
+| 工具 | 类别 | 通道 | 输入 | 结果与说明 |
+|---|---|---|---|---|
+| `page_pdf` | page | both | `browser_id?`、`tab_id?`、`paper_width` 1-100（8.5 英寸）、`paper_height` 1-100（11 英寸）、`landscape` false、`print_background` true、`scale` 0.1-2（1） | PDF 文件：`format`、`mime_type`、`tab_id`、`url`、`path`、`bytes`、`sha256`、纸张字段与 `summary`；没有内联或 base64 字段。 |
+| `page_links` | page | both | `selector?`（512 字符）、`max_results` 1-1000（200）、`include_hidden` false | `url`、`count`、`truncated`、`links[{text,url,title?,rel?,target?}]`；扫描顶层文档与开放 shadow root，不扫描同源 iframe。 |
+| `page_forms` | page | both | `selector?`（512 字符）、`include_values` false、`max_forms` 1-100（20） | `url`、`count`、`truncated`、`forms[{index,action,method,name?,id?,fields}]`；永不返回密码值。 |
+| `page_accessibility` | page | both | `root?`（512 字符）、`max_nodes` 1-2000（500）、`max_depth` 1-50（12） | `url`、`count`、`truncated`、`nodes[{role,name,value?,description?,disabled?,checked?,expanded?,selected?,level?,depth}]`；没有调试器时返回 `CAPABILITY_UNAVAILABLE`。 |
+| `browser_drag` | input | both | `from_ref`、`to_ref`、`steps` 1-50（10） | 指针从一个引用拖到另一个：`dragged`、`from`、`to`、`tab_id`、`url`；不保证 HTML5 拖放。 |
+| `browser_focus` | input | both | `ref` | 聚焦并滚动到可见区域：`focused`、`ref`、`tab_id`、`url`。 |
+| `browser_highlight` | input | both | `ref` 或 `selector` 恰好一个；`duration_ms` 0-10000（1200）；`color` `#rrggbb`（`#ffd400`） | 短暂高亮：`highlighted`、引用或选择器、`duration_ms`、`tab_id`、`url`。 |
+| `tab_group` | tabs | extension | `tab_ids` 1-50 且互不相同、`title`（64 字符）、`color` grey-blue-red-yellow-green-pink-purple-cyan-orange（blue） | `group_id`、`tab_ids`、`title`、`color`、`window_id`；需要 `tabGroups` 权限。 |
+| `tab_duplicate` | tabs | extension | `tab_id` | `duplicated`、`source_tab_id`、`tab`。 |
+| `window_list` | tabs | extension | `include_tabs` true、`max_windows` 1-50（20） | `count`、`truncated`、`windows`；每个窗口的标签页上限为 200。 |
+| `window_new` | tabs | extension | `url?`（4096 字符）、`incognito` false、`focused` true、`width`/`height` 200-10000 | `created`、`window_id`、`tab_id`、`url`、`incognito`、`width`、`height`；仅允许 http、https 与 `about:blank`。 |
+| `cookie_set` | storage | both | `name` 1-256、`value` 0-4096、可选 `url`、`domain`、`path`、`secure`、`http_only`、`same_site`、`expires` | `set`、cookie 属性、`tab_id?`、`url`；永不回显值。 |
+| `cookie_clear` | storage | both | `url?` 或 `domain?`（恰好一个）、`name?` | `cleared`、选择器与 `names`（上限 100）。 |
+| `storage_get` | storage | both | `area` local 或 session（local）、`keys` 1-100 | `area`、`origin`、`count`、`truncated`、`entries[{key,value}]`；录制步骤与守护策略脱敏会替换每个值。 |
+| `storage_set` | storage | both | `area`、`entries` 1-100 个字符串值 | `area`、`origin`、`set`、`keys`；永不回显值；总计 64 KiB。 |
+| `storage_clear` | storage | both | `area`、`keys` 最多 100 | `area`、`origin`、`cleared`。 |
+| `health` | diagnostics | daemon | 无 | `status`、`version`、`uptime_ms`、`started_at`、浏览器计数、`channel`、`database`、`guardrails` 与 `tools:{count:62,categories:10}`；不含路径、URL 或秘密。 |
+| `version` | diagnostics | daemon | 无 | `name`、`version`、`tools:62`、`categories:10`、`protocol_version:1`、`schema_snapshot:"v1.7.0"`。 |
+
+`page_pdf` 由守护进程完成文件收尾。它解码 PDF，执行 32 MiB 解码上限（33,554,432 字节），在 `<home>/pdf/` 下以 create-new 语义写入唯一文件 `page-<unix-millis>-<uuid8>.pdf`，只返回元数据。它对守护策略为只读，并被排除在 `browser_batch` 之外；录制会移除原始 `data` 字段，回放以 `page_pdf_not_replayable` 跳过该步骤。
+
+`cookie_set` 与 `storage_set` 永不回显秘密值。录制将 `cookie_set` 的 `value`、每个 `storage_set` 条目值与每个 `storage_get` 结果值替换为 `[redacted]`；守护策略的 `redact_secrets` 独立脱敏 `storage_get` 的值并添加 `redacted: true`。存储类别故意不参与批量执行。
+
+扩展处理全部 16 个新浏览器工具，包括四个仅扩展的标签页与窗口工具，使用现有调试通道并新增 `tabGroups` 权限。`health` 与 `version` 仅由守护进程提供：它们不是扩展处理程序，也不是 CDP 浏览器侧工具。
 
 ## 6. browser_batch
 
@@ -214,7 +282,7 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 | `steps` | 1-20 个对象的数组 | 必填 | 每个对象有非空 `tool` 与可选对象 `args`；未知字段会被拒绝。 |
 | `stop_on_error` | boolean | true | 第一个失败步骤后停止，并把 `stopped` 置为 true。 |
 
-`browser_batch` 不能调用自身、`browser_channel`、`metrics`、`logs_tail`、任何会话工具或 `tool_help`。它可以调用 page、input、tabs、network、files、cdp 与 diagnostics 类别中的 34 个工具，但不包括 `browser_batch`、`browser_channel`、`metrics` 与 `logs_tail`；`browser_list` 与 `browser_console` 在允许范围内。允许列表在执行前校验；不允许的名称返回类型化 `BAD_ARGS`。
+`browser_batch` 不能调用自身、`browser_channel`、`metrics`、`logs_tail`、`page_pdf`、`tab_group`、`tab_duplicate`、`window_new`、`health`、`version`、任何会话工具或 `tool_help`。它可以调用 page、input、tabs、network、files、cdp 与 diagnostics 类别中的 42 个工具，但不包括上述十个；`page_links`、`page_forms`、`page_accessibility`、`browser_drag`、`browser_focus`、`browser_highlight`、`window_list`、`browser_list`、`browser_console` 与 `browser_screenshot` 在允许范围内。storage 类别不参与批量执行，sessions 与 `help` 原本就已排除。`browser_screenshot` 步骤必须设 `inline: false`；`inline: true` 在派发前返回类型化 `BAD_ARGS`。允许列表在执行前校验；不允许的名称返回类型化 `BAD_ARGS`。
 
 结果形状：
 
@@ -239,7 +307,7 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 | 输入 | 结果 |
 |---|---|
 | `{}` | `{ "categories": [{ "category", "count", "tools" }], "usage": "..." }` |
-| `{ "category": "page" }` | `{ "category": "page", "count": 10, "tools": [{ "name", "title", "summary" }] }` |
+| `{ "category": "page" }` | `{ "category": "page", "count": 15, "tools": [{ "name", "title", "summary" }] }` |
 | `{ "name": "browser_batch" }` | 完整条目：`name`、`title`、`category`、`summary`、`description`、`inputSchema`、`annotations`。 |
 
 未知名称与未知类别返回类型化 `BAD_ARGS`。`tool_help` 由守护进程本地应答，即使没有连接浏览器也始终可用。
@@ -249,17 +317,17 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 `browser_channel` 查看并切换当前模式：
 
 - `auto`（默认）优先使用已连接的 CDP 端点；只有 CDP 路由返回 `Unsupported` 时才回退到扩展。
-- `cdp` 要求 CDP，并且从不回退。1.5.0 在强制 CDP 下支持全部 33 个浏览器类工具，包括此前必须依赖扩展的八个工具。
-- `extension` 忽略 CDP。它支持原有 25 个浏览器类工具，对八个仅 CDP 工具返回类型化 `CAPABILITY_UNAVAILABLE`。
+- `cdp` 要求 CDP，并且从不回退。1.7.0 在强制 CDP 下支持全部 46 个 CDP 浏览器侧工具，包括八个仅 CDP 工具与 CDP 实现的 12 个新浏览器工具。
+- `extension` 忽略 CDP。它支持 42 个浏览器侧工具，对八个仅 CDP 工具返回类型化 `CAPABILITY_UNAVAILABLE`。
 
-十个守护进程本地工具在任何模式下都可用。`browser_channel` 只改变运行中的守护进程；下次启动仍使用 `--channel` 或 `CORVUS_CHANNEL`。
+12 个守护进程本地工具在任何模式下都可用。`browser_channel` 只改变运行中的守护进程；下次启动仍使用 `--channel` 或 `CORVUS_CHANNEL`。
 
 | 可用性分组 | 数量 | 工具 |
 |---|---:|---|
-| 两种通道 | 25 | page 7、input 7、tabs 4、network 4、files 3 |
+| 两种通道 | 38 | page 12、input 10、tabs 4、network 4、files 3，另加 `browser_screenshot` |
 | 仅 CDP | 8 | `browser_dialog`、`browser_emulate`、`browser_cookies`、`browser_console`、`cdp_status`、`cdp_targets`、`cdp_send`、`cdp_events` |
-| 仅扩展 | 0 | 1.5.0 中没有 |
-| 守护进程本地 | 10 | `browser_list`、`browser_channel`、`tool_help`、`browser_batch`、四个会话工具、`metrics`、`logs_tail` |
+| 仅扩展 | 4 | `tab_group`、`tab_duplicate`、`window_list`、`window_new` |
+| 守护进程本地 | 12 | `browser_list`、`browser_channel`、`tool_help`、`browser_batch`、四个会话工具、`metrics`、`logs_tail`、`health`、`version` |
 
 扩展仍是零配置路径。强制 `cdp` 的进程无需扩展即可驱动所有浏览器类工具，但浏览器必须用远程调试与专用 profile 启动。端点设置、路由与安全见 [07-cdp.zh.md](07-cdp.zh.md)。
 
@@ -287,6 +355,6 @@ JSON 结果保留同样的元数据，但把 `text` 换成 `nodes`。扩展通�
 | 快照平均载荷 | 364.83 B / 91.21 tokens | 2,077.33 B / 519.33 tokens | 小 82.44% |
 | 工具结果平均载荷 | 646.33 B | 2,077.33 B | 小 68.89% |
 
-token 数使用基准的 tokenizer 估算。1.5.0 QA 报告实测：43 个工具的默认简版 `tools/list` 为 20,493 B（数组 20,449 B），完整详情为 37,372 B（数组 37,328 B）；发布说明引用该报告。
+token 数使用基准的 tokenizer 估算。1.5.0 QA 报告实测：43 个工具的默认简版 `tools/list` 为 20,493 B（数组 20,449 B），完整详情为 37,372 B（数组 37,328 B）；发布说明引用该报告。1.6.0 报告实测 43 工具简版 20,493 B、完整 37,496 B。62 工具 1.7.0 目录实测简版原始正文 31,367 B（含末尾换行 31,368 B）与完整原始 52,328 B（含换行 52,329 B）；简版正文低于 32,000 字节简版预算。
 
-版本：1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。QA 验收 PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，发布为 GitHub 发布 446071476，主 CI 运行为 43716832915，发布工作流为 43717236667。工具目录与 schema 已对照工作树检查；MCP 目录与 1.3.0 相同，仍为 43 个工具、九个类别。
+版本：1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。QA 验收 PASS 记录于 [v1.6.0.zh.md](../tests/acceptance/v1.6.0.zh.md)，发布为 GitHub 发布 446071476，主 CI 运行为 43716832915，发布工作流为 43717236667。工作树提供 62 个工具、十个类别，新增 `storage` 类别与 18 个工具；1.7.0 的 QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过（25 条结果行上的 263 个 Rust 测试、137 项一致性检查、13 个文件中的 91 个 Vitest 测试、3 个 Playwright 端到端测试与 160/160 项本地打包检查）；不存在 1.7.0 CI 运行、已发布包或已发布产物，因此所有 CI 与发布行仍为 Pending，工作树仍未发布。

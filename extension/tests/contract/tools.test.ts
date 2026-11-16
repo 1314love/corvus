@@ -8,14 +8,14 @@ interface SnapshotTool {
   inputSchema: Record<string, unknown>;
 }
 
-const snapshotPath = resolve(process.cwd(), '../tests/conformance/schema-snapshot.v1.5.0.json');
+const snapshotPath = resolve(process.cwd(), '../tests/conformance/schema-snapshot.v1.7.0.json');
 const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8')) as SnapshotTool[];
 
 describe('generated tool contracts', () => {
   it('covers the schema snapshot exactly, in order', () => {
-    expect(snapshot).toHaveLength(43);
+    expect(snapshot).toHaveLength(62);
     expect(Array.from(TOOL_NAMES)).toEqual(snapshot.map((tool) => tool.name));
-    expect(Object.keys(ToolArgsSchemas)).toHaveLength(43);
+    expect(Object.keys(ToolArgsSchemas)).toHaveLength(62);
     for (const tool of snapshot) {
       expect(ToolArgsSchemas[tool.name as keyof typeof ToolArgsSchemas], tool.name).toBeDefined();
     }

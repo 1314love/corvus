@@ -282,8 +282,12 @@ impl Guardrails {
     ) -> Result<Value, ErrorBody> {
         let mut value = result?;
         self.check_result_url(tool, &value)?;
-        if self.redact_secrets && tool == "browser_cookies" {
-            redact_cookie_values(&mut value);
+        if self.redact_secrets {
+            match tool {
+                "browser_cookies" => redact_cookie_values(&mut value),
+                "storage_get" => redact_storage_values(&mut value),
+                _ => {}
+            }
         }
         if self.content_boundary {
             wrap_untrusted_content(tool, &mut value);
@@ -503,6 +507,19 @@ fn redact_cookie_values(value: &mut Value) {
     }
 }
 
+fn redact_storage_values(value: &mut Value) {
+    if let Some(entries) = value.get_mut("entries").and_then(Value::as_array_mut) {
+        for entry in entries {
+            if let Some(fields) = entry.as_object_mut() {
+                if fields.contains_key("value") {
+                    fields.insert("value".to_string(), Value::String("[redacted]".to_string()));
+                    fields.insert("redacted".to_string(), Value::Bool(true));
+                }
+            }
+        }
+    }
+}
+
 fn wrap_untrusted_content(tool: &str, value: &mut Value) {
     let key = match tool {
         "page_text" => "text",
@@ -647,6 +664,14 @@ mod tests {
             corvus_mcp::tools::is_read_only("browser_batch"),
             Some(false)
         );
+        assert_eq!(
+            corvus_mcp::tools::is_read_only("browser_screenshot"),
+            Some(true)
+        );
+        let read_only =
+            Guardrails::from_json(&json!({ "version": 1, "read_only": true }).to_string())
+                .expect("read-only policy");
+        assert!(read_only.check_tool("browser_screenshot").is_ok());
     }
 
     #[test]
@@ -784,6 +809,46 @@ mod tests {
                 .unwrap()["text"],
             "top-secret"
         );
+    }
+
+    #[test]
+    fn storage_values_are_redacted_only_when_the_policy_enables_it() {
+        let enabled = policy(json!({
+            "version": 1,
+            "redact_secrets": true,
+        }));
+        let result = enabled
+            .apply_result(
+                "storage_get",
+                Ok(json!({
+                    "origin": "https://example.com",
+                    "area": "local",
+                    "entries": [
+                        { "key": "token", "value": "top-secret" },
+                        { "key": "empty", "value": "" },
+                    ],
+                })),
+            )
+            .expect("redacted result");
+        assert_eq!(result["entries"][0]["value"], "[redacted]");
+        assert_eq!(result["entries"][0]["redacted"], true);
+        assert_eq!(result["entries"][0]["key"], "token");
+        assert_eq!(result["entries"][1]["redacted"], true);
+        let untouched = enabled
+            .apply_result(
+                "page_text",
+                Ok(json!({ "text": "top-secret", "entries": [{ "value": "x" }] })),
+            )
+            .unwrap();
+        assert_eq!(untouched["entries"][0]["value"], "x");
+        let disabled = policy(json!({ "version": 1 }));
+        let raw = disabled
+            .apply_result(
+                "storage_get",
+                Ok(json!({ "entries": [{ "key": "token", "value": "top-secret" }] })),
+            )
+            .unwrap();
+        assert_eq!(raw["entries"][0]["value"], "top-secret");
     }
 
     #[test]

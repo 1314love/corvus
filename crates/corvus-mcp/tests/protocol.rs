@@ -137,7 +137,7 @@ async fn tools_list_exposes_every_fully_annotated_tool() {
         .and_then(|result| result.get("tools"))
         .and_then(Value::as_array)
         .expect("tools array");
-    assert_eq!(tools.len(), 43);
+    assert_eq!(tools.len(), 62);
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
@@ -151,6 +151,7 @@ async fn tools_list_exposes_every_fully_annotated_tool() {
             "browser_type",
             "page_text",
             "page_html",
+            "browser_screenshot",
             "page_find",
             "browser_hover",
             "browser_press",
@@ -187,7 +188,25 @@ async fn tools_list_exposes_every_fully_annotated_tool() {
             "browser_dialog",
             "browser_emulate",
             "browser_batch",
-            "tool_help"
+            "tool_help",
+            "page_pdf",
+            "page_links",
+            "page_forms",
+            "page_accessibility",
+            "browser_drag",
+            "browser_focus",
+            "browser_highlight",
+            "tab_group",
+            "tab_duplicate",
+            "window_list",
+            "window_new",
+            "cookie_set",
+            "cookie_clear",
+            "storage_get",
+            "storage_set",
+            "storage_clear",
+            "health",
+            "version"
         ]
     );
     for tool in tools {

@@ -1,7 +1,7 @@
 # Corvus on Kubernetes
 
 These manifests deploy one Corvus daemon in the `corvus` namespace with a
-1 GiB ReadWriteOnce volume. The image is `corvus:1.6.0` and listens on
+1 GiB ReadWriteOnce volume. The image is `corvus:1.7.0` and listens on
 7330 (WebSocket) and 7331 (MCP HTTP).
 
 ## Prerequisites
@@ -10,9 +10,9 @@ These manifests deploy one Corvus daemon in the `corvus` namespace with a
 - The image available to the cluster. For a local cluster, build and load it:
 
   ```bash
-  docker build -t corvus:1.6.0 .
-  # kind load docker-image corvus:1.6.0
-  # minikube image load corvus:1.6.0
+  docker build -t corvus:1.7.0 .
+  # kind load docker-image corvus:1.7.0
+  # minikube image load corvus:1.7.0
   ```
 
   For a remote cluster, push the image to a registry and change the image

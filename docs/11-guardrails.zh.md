@@ -2,7 +2,7 @@
 
 [English](11-guardrails.md) | [中文](11-guardrails.zh.md)
 
-状态：v1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。守护策略实现在 HEAD `61ca85f` 的工作树上通过正式 QA（237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试与 Playwright 1/1；一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium）。主 CI 运行 `43716832915` 通过八个任务，发布工作流 `43717236667` 成功，GitHub 发布 `446071476` 发布了产物。读者：运维人员与 MCP/REST 客户端作者。
+状态：v1.6.0 是当前已发布版本，于 2026-11-15 由标签 `v1.6.0` 发布；1.5.0 为上一版本。1.7.0 工作树把 MCP 工具面重划为十类 62 个工具并新增 18 个工具；`browser_screenshot` 与 `page_pdf` 对守护策略是只读的，但像素与 PDF 字节不脱敏、不包裹边界也不被检查。扩展声明 11 项权限（含 `tabGroups`）、42 个基于 debugger 的处理器与 `all_frames: false`；四个标签页与窗口工具仅扩展可用。QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过；此前的 44 工具 v1.7.0 结果早于本次重划，且不存在 1.7.0 CI 运行、已发布包或已发布产物，因此 CI 与发布证据仍为 Pending。守护策略实现在 1.6.0 的 HEAD `61ca85f` 工作树上通过正式 QA（237 个 workspace 测试、137 项一致性检查、10 个文件中的 55 个 Vitest 测试与 Playwright 1/1；一项 `browser_type` 按通道的 Low 发现，无 High 或 Medium）。主 CI 运行 `43716832915` 通过八个任务，发布工作流 `43717236667` 成功，GitHub 发布 `446071476` 发布了产物。读者：运维人员与 MCP/REST 客户端作者。
 
 ## 1. 概览
 
@@ -22,10 +22,10 @@ Corvus 可在守护进程启动时加载一个可选的本地策略文件。该�
 | `deny_tools` | 字符串数组 | `[]` | 这些工具名始终被拒绝。 |
 | `allowed_hosts` | 字符串数组 | `[]` | 非空时，导航必须指向匹配条目的 http 或 https 主机。 |
 | `block_private_network` | 布尔 | `false` | 拒绝字面回环、私有、链路本地与本地名称主机。 |
-| `redact_secrets` | 布尔 | `false` | 对 `browser_cookies` 结果中的 cookie 值脱敏。 |
+| `redact_secrets` | 布尔 | `false` | 对 `browser_cookies` 与 `storage_get` 结果中的值脱敏。 |
 | `content_boundary` | 布尔 | `false` | 用标记行包裹不可信页面文本与 HTML。 |
 
-空的 `allow_tools` 表示不设允许列表限制；空的 `allowed_hosts` 表示不设主机限制。工具名必须存在于 43 工具目录中；未知名称会拒绝启动。同一个名称不能同时出现在 `allow_tools` 与 `deny_tools` 中。
+空的 `allow_tools` 表示不设允许列表限制；空的 `allowed_hosts` 表示不设主机限制。工具名必须存在于 1.7.0 工作树的十类 62 工具目录中；已发布的 1.6.0 为 43 个。未知名称会拒绝启动。同一个名称不能同时出现在 `allow_tools` 与 `deny_tools` 中。
 
 主机条目要么是精确的小写主机（例如 `example.com`），要么是前导通配后缀（例如 `*.example.com`）。模式拒绝空白、`/`、`:`、`?`、`#`、`@`、内嵌 `*`、前导或尾随点以及双点；字符仅限 ASCII 字母、数字、点、连字符与下划线。端口被忽略。`*.example.com` 匹配裸域 `example.com` 及其子域，但不匹配 `api.example.com.evil.test`。
 
@@ -71,7 +71,7 @@ URL 门禁独立于工具优先级。它在分发前检查 `browser_navigate` �
 }
 ```
 
-每个动作工具都会在分发前以 `read_only` 原因拒绝；目录标记为只读的工具（例如快照与页面文本读取）仍然可用。该策略不会让只读工具的结果自动可信。
+每个动作工具都会在分发前以 `read_only` 原因拒绝；目录标记为只读的工具（例如快照、页面文本读取、`page_links`、`page_forms`、`page_accessibility`、`window_list`、`storage_get`、`health`、`version`、`page_pdf` 与 `browser_screenshot`）仍然可用。该策略不会让只读工具的结果自动可信，也不会检查截图像素或 PDF 字节。
 
 ### 5.2 主机允许列表与私有网络阻断
 
@@ -101,7 +101,7 @@ URL 门禁独立于工具优先级。它在分发前检查 `browser_navigate` �
 }
 ```
 
-启用 `redact_secrets` 后，`browser_cookies` 结果顶层 `cookies` 数组中每个含 `value` 字段的对象都会得到 `value: "[redacted]"` 与 `redacted: true`。不含 `value` 的对象保持不变。其他工具的值以及通用密钥扫描不在覆盖范围内。
+启用 `redact_secrets` 后，`browser_cookies` 结果顶层 `cookies` 数组中每个含 `value` 字段的对象都会得到 `value: "[redacted]"` 与 `redacted: true`，`storage_get` 结果的每个条目也会得到 `value: "[redacted]"` 与 `redacted: true`。不含 `value` 的对象保持不变。其他工具的值以及通用密钥扫描不在覆盖范围内。
 
 启用 `content_boundary` 后，`page_text` 的 `text`、`page_html` 的 `html` 与紧凑 `page_snapshot` 的 `text` 会用标记行包裹。JSON 快照不受影响。标记在导航结果检查与 cookie 脱敏之后应用。
 
@@ -125,7 +125,7 @@ URL 拒绝消息为 `navigation denied by guardrails policy (<reason>)`，携带
 
 ## 7. 脱敏与内容边界
 
-Cookie 脱敏刻意保持狭窄：只处理 `browser_cookies`，只检查顶层 `cookies` 数组，只修改已含 `value` 的对象。其他工具、嵌套值、请求头与页面文本都不会被脱敏。
+Cookie 与存储脱敏刻意保持狭窄：`browser_cookies` 只处理顶层 `cookies` 数组；`storage_get` 只处理顶层条目；只修改已含 `value` 的对象。其他工具、嵌套值、请求头与页面文本都不会被脱敏。
 
 内容边界使用以下精确标记：
 
@@ -168,11 +168,11 @@ Cookie 脱敏刻意保持狭窄：只处理 `browser_cookies`，只检查顶层 
 - `details.policy` 会在守护进程响应中暴露本地策略路径。扩展界面会隐藏它，但直连 MCP/REST 客户端会收到。
 - 被拒的 `browser_batch` 步骤是错误，默认会停止批次；`session_replay` 会把被拒步骤记录为跳过而非执行。
 - 只读是目录分类。依赖某工具前请查阅 [09-tools.zh.md](09-tools.zh.md) 中该工具的当前分类。
-- 不宣称任何 v1.6.0 实机部署，NFR-3 仍未通过。
+- 不宣称任何 v1.6.0 实机部署，NFR-3 仍未通过。1.7.0 工作树重划为十类 62 个工具；`browser_screenshot` 与 `page_pdf` 对守护策略是只读的，但截图像素与 PDF 字节不脱敏、不包裹边界也不被检查。四个标签页与窗口工具仅扩展可用。QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过；1.7.0 的所有 CI 与发布行均为 Pending。
 
 ## 10. 相关文档
 
 - [09-tools.zh.md](09-tools.zh.md)：工具输入、结果与错误码。
 - [02-architecture.zh.md](02-architecture.zh.md)：执行点与守护进程结构。
 - [05-deployment.zh.md](05-deployment.zh.md)：服务配置与健康检查。
-- [release-notes/v1.6.0.zh.md](release-notes/v1.6.0.zh.md)：发布证据。
+- [release-notes/v1.6.0.zh.md](release-notes/v1.6.0.zh.md)：1.6.0 发布证据；[release-notes/v1.7.0.zh.md](release-notes/v1.7.0.zh.md)：未发布的 1.7.0 工作树。

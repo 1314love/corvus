@@ -56,6 +56,16 @@ impl HomeLayout {
         self.root.join("extension")
     }
 
+    /// Where browser screenshots are saved.
+    pub fn screenshots_dir(&self) -> PathBuf {
+        self.root.join("screenshots")
+    }
+
+    /// Where page PDFs are saved.
+    pub fn pdf_dir(&self) -> PathBuf {
+        self.root.join("pdf")
+    }
+
     /// The recording database path.
     pub fn db_path(&self) -> PathBuf {
         self.data_dir().join("corvus.db")
@@ -282,6 +292,8 @@ mod tests {
         assert_eq!(layout.logs_dir(), layout.root().join("logs"));
         assert_eq!(layout.config_dir(), layout.root().join("config"));
         assert_eq!(layout.extension_dir(), layout.root().join("extension"));
+        assert_eq!(layout.screenshots_dir(), layout.root().join("screenshots"));
+        assert_eq!(layout.pdf_dir(), layout.root().join("pdf"));
         assert_eq!(layout.db_path(), layout.data_dir().join("corvus.db"));
         assert_eq!(layout.log_path(), layout.logs_dir().join("corvusd.log"));
         assert_eq!(

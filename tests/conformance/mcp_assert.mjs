@@ -595,7 +595,7 @@ if (mode === "tools") {
       )
       .join(" "),
   );
-  ok("input schemas match the frozen 43-tool argument shapes and declare browser_id");
+  ok("input schemas match the frozen tool argument shapes and declare browser_id");
   process.exit(0);
 }
 

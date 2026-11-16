@@ -123,8 +123,18 @@ impl BatchPolicy {
     /// Maximum number of steps accepted by browser_batch.
     pub const MAX_STEPS: usize = 20;
     /// Tools that may never run inside a batch.
-    pub const EXCLUDED_TOOLS: [&'static str; 4] =
-        ["browser_batch", "browser_channel", "metrics", "logs_tail"];
+    pub const EXCLUDED_TOOLS: [&'static str; 10] = [
+        "browser_batch",
+        "browser_channel",
+        "metrics",
+        "logs_tail",
+        "page_pdf",
+        "tab_group",
+        "tab_duplicate",
+        "window_new",
+        "health",
+        "version",
+    ];
     /// Tool categories that are safe to batch.
     pub const ALLOWED_CATEGORIES: [&'static str; 7] = [
         "page",
@@ -336,7 +346,22 @@ mod tests {
         assert!(BatchPolicy::validate_count(21).is_err());
         assert!(BatchPolicy::validate_count(0).is_err());
         assert!(BatchPolicy::allows("page", "page_snapshot"));
+        assert!(BatchPolicy::allows("page", "page_links"));
+        assert!(BatchPolicy::allows("page", "page_forms"));
+        assert!(BatchPolicy::allows("page", "page_accessibility"));
+        assert!(BatchPolicy::allows("input", "browser_drag"));
+        assert!(BatchPolicy::allows("input", "browser_focus"));
+        assert!(BatchPolicy::allows("input", "browser_highlight"));
+        assert!(BatchPolicy::allows("tabs", "window_list"));
         assert!(!BatchPolicy::allows("page", "browser_batch"));
+        assert!(!BatchPolicy::allows("page", "page_pdf"));
+        assert!(!BatchPolicy::allows("tabs", "tab_group"));
+        assert!(!BatchPolicy::allows("tabs", "tab_duplicate"));
+        assert!(!BatchPolicy::allows("tabs", "window_new"));
+        assert!(!BatchPolicy::allows("storage", "cookie_set"));
+        assert!(!BatchPolicy::allows("storage", "storage_get"));
+        assert!(!BatchPolicy::allows("diagnostics", "health"));
+        assert!(!BatchPolicy::allows("diagnostics", "version"));
         assert!(!BatchPolicy::allows("help", "tool_help"));
     }
 

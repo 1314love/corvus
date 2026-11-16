@@ -385,6 +385,28 @@ impl Router {
         }
     }
 
+    /// Route one command without writing a step record.
+    ///
+    /// The daemon uses this for screenshots on the extension route, where the
+    /// result only becomes auditable after the daemon stores the image and
+    /// replaces the raw base64 payload with its path and metadata.
+    pub async fn dispatch_unrecorded(
+        &self,
+        mut request: CommandRequest,
+    ) -> (CommandResult, Option<String>) {
+        let cancel = CommandCancel::default();
+        let (result, browser_id) = self.dispatch_inner(&mut request, &cancel).await;
+        let result = match result {
+            Ok(value) => Ok(value),
+            Err(DispatchFailure::Failed(error)) => Err(error),
+            Err(DispatchFailure::Canceled) => Err(ErrorBody::new(
+                ErrorCode::Internal,
+                "the command was canceled without a cancellation request",
+            )),
+        };
+        (result, browser_id)
+    }
+
     /// Route one command and stop waiting when the token is cancelled.
     ///
     /// Cancellation removes the pending entry immediately, sends the browser a
@@ -398,11 +420,11 @@ impl Router {
         let started = Instant::now();
         let session = request.session.clone();
         let tool = request.tool.clone();
-        let recorded_args = request.args.clone();
+        let recorded_args = Self::recorded_arguments(&tool, &request.args);
         let (result, browser_id) = self.dispatch_inner(&mut request, &cancel).await;
         if let (Some(session), Some(sink)) = (session.as_ref(), self.step_sink.get()) {
             let (stored_result, error_code, ok) = match &result {
-                Ok(value) => (Some(value.clone()), None, true),
+                Ok(value) => (Some(Self::recorded_result(&tool, value)), None, true),
                 Err(DispatchFailure::Failed(error)) => {
                     (None, Some(error.code.as_str().to_string()), false)
                 }
@@ -422,6 +444,65 @@ impl Router {
             });
         }
         result
+    }
+
+    /// Strip image bytes before a router-side step record is written.
+    ///
+    /// The daemon suppresses router recording for the normal screenshot route
+    /// and records the finalized path/hash metadata instead. Session replay
+    /// still calls [Router::dispatch], so this guard must also make raw image
+    /// bytes unrepresentable in the recording path.
+    fn recorded_result(tool: &str, value: &Value) -> Value {
+        let mut value = value.clone();
+        match tool {
+            "browser_screenshot" => {
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("data");
+                    if let Some(image) = object.get_mut("image").and_then(Value::as_object_mut) {
+                        image.remove("data");
+                    }
+                }
+            }
+            "page_pdf" => {
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("data");
+                }
+            }
+            "storage_get" => {
+                if let Some(entries) = value.get_mut("entries").and_then(Value::as_array_mut) {
+                    for entry in entries {
+                        if let Some(object) = entry.as_object_mut() {
+                            object.insert("value".to_string(), json!("[redacted]"));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        value
+    }
+
+    /// Remove secret values from a tool's arguments before they are recorded.
+    fn recorded_arguments(tool: &str, arguments: &Value) -> Value {
+        let mut value = arguments.clone();
+        match tool {
+            "cookie_set" => {
+                if let Some(object) = value.as_object_mut() {
+                    if object.contains_key("value") {
+                        object.insert("value".to_string(), json!("[redacted]"));
+                    }
+                }
+            }
+            "storage_set" => {
+                if let Some(entries) = value.get_mut("entries").and_then(Value::as_object_mut) {
+                    for entry in entries.values_mut() {
+                        *entry = json!("[redacted]");
+                    }
+                }
+            }
+            _ => {}
+        }
+        value
     }
 
     async fn dispatch_inner(
@@ -1139,5 +1220,55 @@ mod tests {
         assert_eq!(state.entries.len(), 2);
         assert!(!state.entries.contains_key("a"));
         assert!(state.entries.contains_key("c"));
+    }
+
+    #[test]
+    fn screenshot_records_never_keep_raw_image_bytes() {
+        let value = json!({
+            "target": "viewport",
+            "format": "png",
+            "data": "iVBORw0KGgo=",
+            "image": { "mime_type": "image/png", "data": "iVBORw0KGgo=" },
+        });
+        let stored = Router::recorded_result("browser_screenshot", &value);
+        assert!(stored.get("data").is_none());
+        assert_eq!(stored["image"]["mime_type"], "image/png");
+        assert!(stored["image"].get("data").is_none());
+        assert_eq!(Router::recorded_result("page_text", &value), value);
+    }
+
+    #[test]
+    fn sensitive_records_never_keep_file_bytes_or_secret_values() {
+        let pdf = json!({ "format": "pdf", "path": "/tmp/x.pdf", "data": "JVBERi0xLjQK" });
+        let stored = Router::recorded_result("page_pdf", &pdf);
+        assert!(stored.get("data").is_none());
+        assert_eq!(stored["path"], "/tmp/x.pdf");
+
+        let storage = json!({
+            "origin": "https://example.com",
+            "entries": [{ "key": "token", "value": "top-secret" }],
+        });
+        let stored = Router::recorded_result("storage_get", &storage);
+        assert_eq!(stored["entries"][0]["value"], "[redacted]");
+        assert_eq!(stored["entries"][0]["key"], "token");
+
+        let arguments = json!({ "name": "session", "value": "top-secret", "path": "/" });
+        let stored = Router::recorded_arguments("cookie_set", &arguments);
+        assert_eq!(stored["value"], "[redacted]");
+        assert_eq!(stored["name"], "session");
+        assert_eq!(stored["path"], "/");
+
+        let arguments = json!({
+            "area": "local",
+            "entries": { "token": "top-secret", "theme": "dark" },
+        });
+        let stored = Router::recorded_arguments("storage_set", &arguments);
+        assert_eq!(stored["entries"]["token"], "[redacted]");
+        assert_eq!(stored["entries"]["theme"], "[redacted]");
+        assert_eq!(stored["area"], "local");
+        assert_eq!(
+            Router::recorded_arguments("page_text", &arguments),
+            arguments
+        );
     }
 }

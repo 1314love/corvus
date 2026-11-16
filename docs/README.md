@@ -14,27 +14,28 @@ commit. 每份文档在同一目录下维护英文与中文两版，同一提交
 | Roadmap / 路线图 | [03-roadmap.md](03-roadmap.md) | [03-roadmap.zh.md](03-roadmap.zh.md) | done |
 | Install / 安装 | [04-install.md](04-install.md) | [04-install.zh.md](04-install.zh.md) | done |
 | Deployment / 部署 | [05-deployment.md](05-deployment.md) | [05-deployment.zh.md](05-deployment.zh.md) | done |
-| Firefox assessment / Firefox 可行性评估 | [06-firefox-assessment.md](06-firefox-assessment.md) | [06-firefox-assessment.zh.md](06-firefox-assessment.zh.md) | done |
+| Firefox assessment / Firefox 可行性评估 | [06-firefox-assessment.md](06-firefox-assessment.md) | [06-firefox-assessment.zh.md](06-firefox-assessment.zh.md) | done; decision current, code and tool baseline refreshed to 1.7.0 on 2026-11-16 |
 | CDP guide / CDP 指南 | [07-cdp.md](07-cdp.md) | [07-cdp.zh.md](07-cdp.zh.md) | done |
 | Logging convention / 日志规范 | [08-logging.md](08-logging.md) | [08-logging.zh.md](08-logging.zh.md) | done |
 | Tool reference / 工具参考 | [09-tools.md](09-tools.md) | [09-tools.zh.md](09-tools.zh.md) | done |
 | Project state / 项目现状 | [10-project-state.md](10-project-state.md) | [10-project-state.zh.md](10-project-state.zh.md) | done |
-| Guardrails policy / 守护策略 | [11-guardrails.md](11-guardrails.md) | [11-guardrails.zh.md](11-guardrails.zh.md) | done; v1.6.0 released, QA PASS |
+| Guardrails policy / 守护策略 | [11-guardrails.md](11-guardrails.md) | [11-guardrails.zh.md](11-guardrails.zh.md) | done; v1.6.0 released; 1.7.0 62-tool QA and local packaging PASS, release Pending |
+| Release notes 1.7.0 / 发布说明 1.7.0 | [release-notes/v1.7.0.md](release-notes/v1.7.0.md) | [release-notes/v1.7.0.zh.md](release-notes/v1.7.0.zh.md) | draft; unreleased 62-tool tree; QA/local packaging PASS; CI/published package/release Pending |
 | Release notes 1.6.0 / 发布说明 1.6.0 | [release-notes/v1.6.0.md](release-notes/v1.6.0.md) | [release-notes/v1.6.0.zh.md](release-notes/v1.6.0.zh.md) | done; CI and published assets recorded |
 | Release notes 1.5.0 / 发布说明 1.5.0 | [release-notes/v1.5.0.md](release-notes/v1.5.0.md) | [release-notes/v1.5.0.zh.md](release-notes/v1.5.0.zh.md) | done; previous release |
 | Release notes 1.4.0 / 发布说明 1.4.0 | [release-notes/v1.4.0.md](release-notes/v1.4.0.md) | [release-notes/v1.4.0.zh.md](release-notes/v1.4.0.zh.md) | done; CI and published assets recorded |
-| Release notes 1.3.0 / 发布说明 1.3.0 | [release-notes/v1.3.0.md](release-notes/v1.3.0.md) | [release-notes/v1.3.0.zh.md](release-notes/v1.3.0.zh.md) | done |
-| Release notes 1.2.0 / 发布说明 1.2.0 | [release-notes/v1.2.0.md](release-notes/v1.2.0.md) | [release-notes/v1.2.0.zh.md](release-notes/v1.2.0.zh.md) | done |
-| Release notes 1.1.0 / 发布说明 1.1.0 | [release-notes/v1.1.0.md](release-notes/v1.1.0.md) | [release-notes/v1.1.0.zh.md](release-notes/v1.1.0.zh.md) | done |
-| Release notes 1.0.0 / 发布说明 1.0.0 | [release-notes/v1.0.0.md](release-notes/v1.0.0.md) | [release-notes/v1.0.0.zh.md](release-notes/v1.0.0.zh.md) | done |
-| Release notes 0.1.0 / 发布说明 0.1.0 | [release-notes/v0.1.0.md](release-notes/v0.1.0.md) | [release-notes/v0.1.0.zh.md](release-notes/v0.1.0.zh.md) | done |
+| Release notes 1.3.0 / 发布说明 1.3.0 | [release-notes/v1.3.0.md](release-notes/v1.3.0.md) | [release-notes/v1.3.0.zh.md](release-notes/v1.3.0.zh.md) | historical; superseded by 1.4.0 |
+| Release notes 1.2.0 / 发布说明 1.2.0 | [release-notes/v1.2.0.md](release-notes/v1.2.0.md) | [release-notes/v1.2.0.zh.md](release-notes/v1.2.0.zh.md) | historical |
+| Release notes 1.1.0 / 发布说明 1.1.0 | [release-notes/v1.1.0.md](release-notes/v1.1.0.md) | [release-notes/v1.1.0.zh.md](release-notes/v1.1.0.zh.md) | historical |
+| Release notes 1.0.0 / 发布说明 1.0.0 | [release-notes/v1.0.0.md](release-notes/v1.0.0.md) | [release-notes/v1.0.0.zh.md](release-notes/v1.0.0.zh.md) | historical |
+| Release notes 0.1.0 / 发布说明 0.1.0 | [release-notes/v0.1.0.md](release-notes/v0.1.0.md) | [release-notes/v0.1.0.zh.md](release-notes/v0.1.0.zh.md) | historical |
 | Process / 交付流程 | [PROCESS.md](PROCESS.md) | [PROCESS.zh.md](PROCESS.zh.md) | done |
 
 Reading order: charter -> requirements -> architecture -> roadmap. 阅读顺序：立项书 → 需求规格 → 架构 → 路线图。
 
-Current release: 1.6.0. Acceptance evidence: [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md); release workflow 43717236667, CI run 43716832915 and published-asset values are recorded in the release notes. 1.5.0 is the previous release. 当前版本：1.6.0。验收证据见 [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md)；发布工作流 43717236667、CI 运行 43716832915 与发布产物数值已记录在发布说明中。1.5.0 为上一版本。
+Current release: 1.6.0. Acceptance evidence: [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md); release workflow 43717236667, CI run 43716832915 and published-asset values are recorded in the release notes. The 1.7.0 working tree rescopes to 62 tools in ten categories and adds 18 tools; the schema snapshot is complete at 62 entries (36,993 B, 1,853 lines), the conformance runner is complete, and conformance passed 137 checks with 0 failed and 0 skipped on the frozen 62-tool binary; QA acceptance and local Windows packaging passed on the re-frozen 62-tool tree (263 Rust tests, 137 conformance checks, 91 Vitest tests, 3 Playwright E2E, 160/160 packaging checks); CI and published-release evidence is Pending. 1.5.0 is the previous release. 当前版本：1.6.0。验收证据见 [tests/acceptance/v1.6.0.md](../tests/acceptance/v1.6.0.md)；发布工作流 43717236667、CI 运行 43716832915 与发布产物数值已记录在发布说明中。1.7.0 工作树重划为十类 62 个工具并新增 18 个工具；schema 快照已完成为 62 条目（36,993 B、1,853 行），一致性运行器已完成，冻结的 62 工具二进制上一致性检查通过 137 项、0 失败、0 跳过；QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过（263 个 Rust 测试、137 项一致性检查、91 个 Vitest 测试、3 个 Playwright 端到端测试、160/160 项打包检查）；CI 与发布证据仍为 Pending。1.5.0 为上一版本。
 
-Superseded playbooks and reports live in [../tests/archive/](../tests/archive/README.md); they are kept for traceability and are not reading material. 已被取代的手册与报告放在 [../tests/archive/](../tests/archive/README.md)，只作追溯，不属于阅读材料。
+Document confidence was reviewed on 2026-11-16; the graded table is in [10-project-state.md](10-project-state.md#7-document-confidence). Superseded playbooks and reports live in [../tests/archive/](../tests/archive/README.md); they are kept for traceability and are not reading material. 文档置信度已于 2026-11-16 审查，分级表见 [10-project-state.zh.md](10-project-state.zh.md#7-文档置信度)。已被取代的手册与报告放在 [../tests/archive/](../tests/archive/README.md)，只作追溯，不属于阅读材料。
 
 ## 中文
 

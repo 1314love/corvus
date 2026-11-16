@@ -2,7 +2,7 @@ name: corvus
 
 services:
   corvus:
-    image: corvus:1.6.0
+    image: corvus:1.7.0
     build:
       context: .
       dockerfile: Dockerfile

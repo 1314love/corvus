@@ -3,12 +3,12 @@
 #
 # Starts corvusd with an isolated temporary SQLite database, waits for the MCP
 # HTTP endpoint on 127.0.0.1:7331, drives initialize / notifications/initialized
-# / tools/list / tools/call with curl, and asserts the frozen v1.5.0 contract from
+# / tools/list / tools/call with curl, and asserts the frozen v1.7.0 contract from
 # docs/02-architecture.md section 5.3.
 # A stateful mock extension is started when available so positive tool calls
 # exercise the complete daemon -> extension -> daemon path.
 #
-# Coverage: all 43 v1.5.0 tools with at least one happy call and one negative per
+# Coverage: all 62 v1.7.0 tools with at least one happy call and one negative per
 # family, browser_id routing (one browser, two browsers, ambiguous, unknown),
 # network capture/log/intercept, downloads, uploads, navigation loaded/url,
 # immediate-snapshot checks, recording/list/steps/replay/export, metrics and
@@ -27,7 +27,7 @@
 #   CORVUS_METRICS_URL default <MCP origin>/metrics
 #   CARGO              cargo binary (default: cargo, then the known Windows path)
 #   EXPECTED_PROTOCOL_VERSION  default 2025-06-18
-#   EXPECTED_TOOLS     comma separated, default the 43 v1.5.0 tools
+#   EXPECTED_TOOLS     comma separated, default the 62 v1.7.0 tools
 #   KEEP_TMP=1         keep logs even on success
 #
 # Exit codes: 0 all checks passed (skips allowed), 1 one or more checks failed.
@@ -40,7 +40,7 @@ WS_URL=${CORVUS_WS_URL:-ws://127.0.0.1:7330}
 HEALTH_URL=${CORVUS_HEALTH_URL:-${MCP_URL%/mcp}/health}
 METRICS_URL=${CORVUS_METRICS_URL:-${MCP_URL%/mcp}/metrics}
 EXPECTED_PROTOCOL_VERSION=${EXPECTED_PROTOCOL_VERSION:-2025-06-18}
-EXPECTED_TOOLS=${EXPECTED_TOOLS:-browser_navigate,page_snapshot,browser_click,browser_type,page_text,page_html,page_find,browser_hover,browser_press,browser_scroll,browser_select,browser_eval,browser_wait,browser_history,tab_list,tab_new,tab_close,tab_switch,browser_list,net_capture,net_log,net_clear,net_intercept,download_list,download_wait,upload_file,session_list,session_steps,session_replay,session_export,metrics,logs_tail,browser_channel,browser_console,browser_cookies,browser_dialog,browser_emulate,browser_batch,cdp_events,cdp_send,cdp_status,cdp_targets,tool_help}
+EXPECTED_TOOLS=${EXPECTED_TOOLS:-browser_navigate,page_snapshot,browser_click,browser_type,page_text,page_html,browser_screenshot,page_find,browser_hover,browser_press,browser_scroll,browser_select,browser_eval,browser_wait,browser_history,tab_list,tab_new,tab_close,tab_switch,browser_list,net_capture,net_log,net_clear,net_intercept,download_list,download_wait,upload_file,session_list,session_steps,session_replay,session_export,metrics,logs_tail,cdp_status,cdp_targets,cdp_send,cdp_events,browser_channel,browser_console,browser_cookies,browser_dialog,browser_emulate,browser_batch,tool_help,page_pdf,page_links,page_forms,page_accessibility,browser_drag,browser_focus,browser_highlight,tab_group,tab_duplicate,window_list,window_new,cookie_set,cookie_clear,storage_get,storage_set,storage_clear,health,version}
 export EXPECTED_PROTOCOL_VERSION EXPECTED_TOOLS
 
 USE_MOCK=1
@@ -648,7 +648,7 @@ if [ "$LIST_STATUS" != "200" ]; then
 else
   if OUT=$(node "$ROOT/tests/conformance/mcp_assert.mjs" tools "$TMP/tools.json" 2>&1); then
     NAME_LINE=$(printf '%s\n' "$OUT" | sed -n '1p')
-    record PASS "tools/list exactly 43 v1.5.0 tools" "$NAME_LINE"
+    record PASS "tools/list exactly 62 v1.7.0 tools" "$NAME_LINE"
     record PASS "tools/list annotation hints" "$(printf '%s\n' "$OUT" | sed -n '2p')"
     record PASS "tools/list input schema shapes" "$(printf '%s\n' "$OUT" | sed -n '3p')"
   else
@@ -974,10 +974,10 @@ fi
 # --- M4 per-tab scheduling and MCP cancellation -----------------------------
 
 if [ "$USE_MOCK" = "1" ] && [ "$MOCK_READY" = "1" ] && [ -n "$SESSION" ]; then
-  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" schema-check "$TMP/tools.json" "$ROOT/tests/conformance/schema-snapshot.v1.5.0.json" 2>&1); then
-    record PASS "tools/list schemas match the v1.5.0 snapshot" "$OUT"
+  if OUT=$(node "$ROOT/tests/conformance/m4_client.mjs" schema-check "$TMP/tools.json" "$ROOT/tests/conformance/schema-snapshot.v1.7.0.json" 2>&1); then
+    record PASS "tools/list schemas match the v1.7.0 snapshot" "$OUT"
   else
-    record FAIL "tools/list schemas match the v1.5.0 snapshot" "$OUT"
+    record FAIL "tools/list schemas match the v1.7.0 snapshot" "$OUT"
   fi
 
   expect_result "M4 opens a second tab for parallel waits" tab_new '{"url":"http://127.0.0.1:8808/c","active":true}' \

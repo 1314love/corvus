@@ -26,7 +26,7 @@ copied to `tests/report/`.
 
 | entry | scope |
 | --- | --- |
-| `tests/conformance/run.sh` | MCP contract: 43 tools, routing, capture, recording |
+| `tests/conformance/run.sh` | MCP contract: 62 tools in the 1.7.0 tree (43 in the published 1.6.0 release), routing, capture, recording |
 | `tests/perf/run.sh` | latency, concurrency, memory and binary-size evidence |
 | `tests/perf/soak.sh` | NFR-3 soak and live runs |
 | `extension` (`pnpm test`, `pnpm test:e2e`) | Vitest units and Playwright end-to-end |

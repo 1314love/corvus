@@ -42,7 +42,7 @@ pub struct ToolSpec {
 }
 
 /// Every tool exposed in this version.
-pub const TOOLS: [ToolSpec; 32] = [
+pub const TOOLS: [ToolSpec; 49] = [
     ToolSpec {
         name: "browser_navigate",
         serial: true,
@@ -80,6 +80,36 @@ pub const TOOLS: [ToolSpec; 32] = [
         default_timeout_ms: None,
     },
     ToolSpec {
+        name: "browser_screenshot",
+        serial: false,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "page_pdf",
+        serial: false,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "page_links",
+        serial: false,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "page_forms",
+        serial: false,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "page_accessibility",
+        serial: false,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
         name: "page_find",
         serial: false,
         capability: Some(capability::DOM),
@@ -105,6 +135,24 @@ pub const TOOLS: [ToolSpec; 32] = [
     },
     ToolSpec {
         name: "browser_select",
+        serial: true,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "browser_drag",
+        serial: true,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "browser_focus",
+        serial: true,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "browser_highlight",
         serial: true,
         capability: Some(capability::DOM),
         default_timeout_ms: None,
@@ -149,6 +197,30 @@ pub const TOOLS: [ToolSpec; 32] = [
         name: "tab_switch",
         serial: true,
         capability: None,
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "tab_group",
+        serial: true,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "tab_duplicate",
+        serial: true,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "window_list",
+        serial: false,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "window_new",
+        serial: true,
+        capability: Some(capability::DOM),
         default_timeout_ms: None,
     },
     ToolSpec {
@@ -198,6 +270,36 @@ pub const TOOLS: [ToolSpec; 32] = [
         serial: true,
         capability: None,
         default_timeout_ms: Some(60_000),
+    },
+    ToolSpec {
+        name: "cookie_set",
+        serial: true,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "cookie_clear",
+        serial: true,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "storage_get",
+        serial: false,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "storage_set",
+        serial: true,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
+    },
+    ToolSpec {
+        name: "storage_clear",
+        serial: true,
+        capability: Some(capability::DOM),
+        default_timeout_ms: None,
     },
     ToolSpec {
         name: "session_list",
@@ -282,7 +384,7 @@ mod tests {
 
     #[test]
     fn tool_table_is_lookup_able() {
-        assert_eq!(names().len(), 32);
+        assert_eq!(names().len(), 49);
         for spec in TOOLS {
             assert_eq!(lookup(spec.name).map(|found| found.name), Some(spec.name));
         }
@@ -318,6 +420,23 @@ mod tests {
             ("browser_type", true),
             ("page_text", false),
             ("page_html", false),
+            ("browser_screenshot", false),
+            ("page_pdf", false),
+            ("page_links", false),
+            ("page_forms", false),
+            ("page_accessibility", false),
+            ("browser_drag", true),
+            ("browser_focus", true),
+            ("browser_highlight", true),
+            ("tab_group", true),
+            ("tab_duplicate", true),
+            ("window_list", false),
+            ("window_new", true),
+            ("cookie_set", true),
+            ("cookie_clear", true),
+            ("storage_get", false),
+            ("storage_set", true),
+            ("storage_clear", true),
             ("page_find", false),
             ("browser_hover", true),
             ("browser_press", true),

@@ -20,7 +20,7 @@ declare global {
   if (window.__corvusContentLoaded === true) return;
   window.__corvusContentLoaded = true;
 
-  const CONTENT_VERSION = '1.6.0';
+  const CONTENT_VERSION = '1.7.0';
   const MAX_NODES_DEFAULT = 300;
   const MAX_NODES_LIMIT = 3000;
   const MIN_NODES_LIMIT = 40;
@@ -56,6 +56,13 @@ declare global {
     browser_press: 'press',
     browser_scroll: 'scroll',
     browser_select: 'select',
+    page_links: 'page_links',
+    page_forms: 'page_forms',
+    browser_focus: 'browser_focus',
+    browser_highlight: 'browser_highlight',
+    storage_get: 'storage_get',
+    storage_set: 'storage_set',
+    storage_clear: 'storage_clear',
   };
 
   const SKIP_TAGS: Record<string, any> = {
@@ -380,6 +387,10 @@ declare global {
     return parts.join(' ');
   }
 
+  function isPasswordInput(element: any) {
+    return !!element && element.tagName === 'INPUT' && String(element.type || 'text').toLowerCase() === 'password';
+  }
+
   function accessibleName(element: any) {
     const ariaLabel = element.getAttribute ? element.getAttribute('aria-label') : null;
     if (ariaLabel && collapse(ariaLabel)) return collapse(ariaLabel);
@@ -427,7 +438,7 @@ declare global {
 
     const text = collapse(element.textContent);
     if (text) return text;
-    if (tag === 'INPUT' && element.value) return collapse(element.value);
+    if (tag === 'INPUT' && !isPasswordInput(element) && element.value) return collapse(element.value);
     return '';
   }
 
@@ -1029,7 +1040,9 @@ declare global {
         const control = controls[i];
         if (!isRendered(control)) continue;
         const pieces = [accessibleName(control)];
-        if (control.value !== undefined && control.value !== null) pieces.push(String(control.value));
+        if (!isPasswordInput(control) && control.value !== undefined && control.value !== null) {
+          pieces.push(String(control.value));
+        }
         if (control.placeholder) pieces.push(String(control.placeholder));
         const haystack = collapse(pieces.join(' '));
         if (haystack && matcher(haystack)) pushMatch(closestFindCandidate(control), haystack);
@@ -1686,6 +1699,45 @@ declare global {
     return { x: x, y: y };
   }
 
+  function elementPageRect(rawRef: any) {
+    const ref = typeof rawRef === 'string' ? rawRef.trim() : '';
+    if (!ref) throw badArgs('browser_screenshot target=element requires a @eN ref from page_snapshot');
+    if (/^@c\d+$/i.test(ref)) {
+      throw badArgs(
+        '@cN refs come from the CDP snapshot; browser_screenshot target=element requires a @eN ref from page_snapshot',
+        { ref: ref },
+      );
+    }
+    if (!/^@e\d+$/i.test(ref)) {
+      throw badArgs('browser_screenshot element ref must be a @eN ref returned by page_snapshot', { ref: ref });
+    }
+    const element = resolveRef(ref);
+    if (!element) throw notFound('the element ref is no longer available; take a new page_snapshot', { ref: ref });
+    let local;
+    try {
+      local = element.getBoundingClientRect();
+    } catch (error: any) {
+      throw notFound('the element no longer has a readable box; take a new page_snapshot', { ref: ref });
+    }
+    const left = Number(local && local.left);
+    const top = Number(local && local.top);
+    const width = Number(local && local.width);
+    const height = Number(local && local.height);
+    if (![left, top, width, height].every((value) => Number.isFinite(value)) || width <= 0 || height <= 0) {
+      throw notFound('the element no longer has a visible box; take a new page_snapshot', { ref: ref });
+    }
+    const offset = frameOffsetFor(element);
+    const scrollX = Number(window.scrollX) || 0;
+    const scrollY = Number(window.scrollY) || 0;
+    return {
+      x: Math.round(left + offset.x + scrollX),
+      y: Math.round(top + offset.y + scrollY),
+      width: Math.round(width),
+      height: Math.round(height),
+      url: location.href,
+    };
+  }
+
   function hitTest(element: any, rect: any, action: any) {
     const doc = element.ownerDocument || document;
     const view = (doc && doc.defaultView) || window;
@@ -2071,6 +2123,502 @@ declare global {
   }
 
   // -------------------------------------------------------------------------
+  // v1.7 extraction and interaction helpers
+  // -------------------------------------------------------------------------
+
+  let activePageHighlight: any = null;
+  let activePageHighlightTimer: number | null = null;
+
+  function clearPageHighlight() {
+    if (activePageHighlightTimer !== null) {
+      window.clearTimeout(activePageHighlightTimer);
+      activePageHighlightTimer = null;
+    }
+    if (activePageHighlight && activePageHighlight.parentNode) {
+      activePageHighlight.parentNode.removeChild(activePageHighlight);
+    }
+    activePageHighlight = null;
+  }
+
+  function ensurePageHighlightCleanup() {
+    if ((window as any).__corvusHighlightBound) return;
+    (window as any).__corvusHighlightBound = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') clearPageHighlight();
+    });
+    window.addEventListener('pagehide', () => {
+      clearPageHighlight();
+    });
+  }
+
+  function deepElementsIn(root: any): any[] {
+    const results: any[] = [];
+    if (!root || root.nodeType !== 1) return results;
+    const stack: any[] = [root];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      if (!node || node.nodeType !== 1) continue;
+      results.push(node);
+      const light = node.children ? Array.from(node.children) : [];
+      for (let index = light.length - 1; index >= 0; index -= 1) stack.push(light[index]);
+      const shadow = node.shadowRoot;
+      if (shadow) {
+        const shadowChildren = shadow.children ? Array.from(shadow.children) : [];
+        for (let index = shadowChildren.length - 1; index >= 0; index -= 1) stack.push(shadowChildren[index]);
+      }
+    }
+    return results;
+  }
+
+  function deepFirstMatch(selector: string): any {
+    const parts = selector
+      .split('>>>')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length === 0) throw badArgs('args.selector must not be empty');
+    if (parts.length > 1) {
+      let scope: any = document;
+      let found: any = null;
+      for (let index = 0; index < parts.length; index += 1) {
+        try {
+          found = scope.querySelector(parts[index]);
+        } catch (error: any) {
+          throw badArgs('invalid selector', { selector: selector });
+        }
+        if (!found) return null;
+        if (index < parts.length - 1) {
+          scope = found.shadowRoot;
+          if (!scope) return null;
+        }
+      }
+      return found;
+    }
+    try {
+      for (const element of deepElementsIn(document.documentElement)) {
+        if (element.matches && element.matches(selector)) return element;
+      }
+    } catch (error: any) {
+      throw badArgs('invalid selector', { selector: selector });
+    }
+    return null;
+  }
+
+  function cssEscapeValue(value: any): string {
+    const text = String(value);
+    const css = (window as any).CSS;
+    if (css && typeof css.escape === 'function') return css.escape(text);
+    return text.replace(/[^a-zA-Z0-9_-]/g, (character: string) => '\\\\' + character);
+  }
+
+  function cssSelectorSegmentFor(element: any): string {
+    const owner = element.ownerDocument || document;
+    if (element.id) {
+      const idSelector = '#' + cssEscapeValue(element.id);
+      try {
+        if (owner.querySelectorAll(idSelector).length === 1) return idSelector;
+      } catch (error: any) {
+        // Fall through to the structural path.
+      }
+    }
+    const parts: string[] = [];
+    let node: any = element;
+    while (node && node.nodeType === 1) {
+      let part = String(node.localName || '*');
+      if (node.id) {
+        const idSelector = '#' + cssEscapeValue(node.id);
+        const rootNode = node.getRootNode ? node.getRootNode() : owner;
+        try {
+          if (rootNode.querySelectorAll(idSelector).length === 1) {
+            parts.unshift(idSelector);
+            break;
+          }
+        } catch (error: any) {
+          // Keep the structural path.
+        }
+      }
+      const parent = node.parentNode;
+      if (parent && parent.children) {
+        const siblings = Array.from(parent.children).filter((child: any) => child.localName === node.localName);
+        if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
+      }
+      parts.unshift(part);
+      if (!parent || parent.nodeType !== 1) break;
+      node = parent;
+    }
+    return parts.join(' > ');
+  }
+
+  function deepSelectorFor(element: any): string {
+    const root = element.getRootNode ? element.getRootNode() : null;
+    if (root && root.host) return deepSelectorFor(root.host) + ' >>> ' + cssSelectorSegmentFor(element);
+    return cssSelectorSegmentFor(element);
+  }
+
+  function selectorSegmentPath(element: any): string[] {
+    const root = element.getRootNode ? element.getRootNode() : null;
+    const segment = cssSelectorSegmentFor(element);
+    if (root && root.host) return selectorSegmentPath(root.host).concat([segment]);
+    return [segment];
+  }
+
+  function resolveActionRef(raw: any, tool: string): any {
+    const ref = typeof raw === 'string' ? raw.trim() : '';
+    if (!ref) throw badArgs(tool + ' requires a ref');
+    if (/^@?c\d+$/i.test(ref)) throw badArgs('CDP refs are not valid in the extension channel', { ref: ref });
+    if (!/^@e\d+$/i.test(ref)) throw badArgs(tool + ' requires an @e ref', { ref: ref });
+    const element = resolveRef(ref);
+    if (!element) throw new ToolError('NOT_FOUND', 'the element is no longer available', { ref: ref });
+    return { ref: ref, element: element };
+  }
+
+  function hasPositiveArea(element: any): boolean {
+    try {
+      if (typeof element.getClientRects === 'function') {
+        const rects = element.getClientRects();
+        for (let index = 0; index < rects.length; index += 1) {
+          const rect = rects[index];
+          if (rect && rect.width > 0 && rect.height > 0) return true;
+        }
+        return false;
+      }
+      if (typeof element.getBoundingClientRect === 'function') {
+        const rect = element.getBoundingClientRect();
+        return !!rect && rect.width > 0 && rect.height > 0;
+      }
+    } catch (error: any) {
+      // Ignore layout failures and keep the element.
+    }
+    return true;
+  }
+
+  function visibleForExtraction(element: any): boolean {
+    let current: any = element;
+    if (!hasPositiveArea(element)) return false;
+    while (current && current.nodeType === 1) {
+      if (current.isConnected === false) return false;
+      const view = current.ownerDocument && current.ownerDocument.defaultView;
+      if (view && typeof view.getComputedStyle === 'function') {
+        let style: any = null;
+        try {
+          style = view.getComputedStyle(current);
+        } catch (error: any) {
+          style = null;
+        }
+        if (style) {
+          const opacity = style.opacity;
+          if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            (opacity !== undefined && opacity !== '' && Number(opacity) === 0)
+          )
+            return false;
+        }
+      }
+      try {
+        if (typeof current.getClientRects === 'function' && current.getClientRects().length === 0) return false;
+      } catch (error: any) {
+        // Ignore layout failures and keep the element.
+      }
+      const parent = current.parentNode;
+      if (parent && parent.nodeType === 1) current = parent;
+      else if (parent && parent.host) current = parent.host;
+      else current = null;
+    }
+    return true;
+  }
+
+  function pageLinks(args: any) {
+    const selector = typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : '';
+    const maxResults = readIntegerRange(args.max_results, 200, 1, 1000, 'args.max_results');
+    const includeHidden = readBooleanFlag(args.include_hidden, false, 'args.include_hidden');
+    let scope: any = document.documentElement;
+    if (selector) {
+      scope = deepFirstMatch(selector);
+      if (!scope) throw notFound('the selector matched no element', { selector: selector });
+    }
+    const links: any[] = [];
+    const seen = new Set<string>();
+    let truncated = false;
+    for (const element of deepElementsIn(scope)) {
+      if (!/^(a|area)$/i.test(String(element.localName || ''))) continue;
+      if (!element.hasAttribute('href')) continue;
+      const raw = String(element.getAttribute('href') || '').trim();
+      if (!raw || raw === '#' || /^javascript:/i.test(raw)) continue;
+      let parsed: URL;
+      try {
+        parsed = new URL(raw, location.href);
+      } catch (error: any) {
+        continue;
+      }
+      if (!/^(https?|mailto|tel):$/.test(parsed.protocol)) continue;
+      if (!includeHidden && !visibleForExtraction(element)) continue;
+      const text = String(element.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 200);
+      const key = parsed.href + '\n' + text;
+      if (seen.has(key)) continue;
+      if (links.length >= maxResults) {
+        truncated = true;
+        break;
+      }
+      seen.add(key);
+      const link: any = { text: text, url: parsed.href };
+      const title = element.getAttribute('title');
+      if (title) link.title = String(title).slice(0, 200);
+      const rel = element.getAttribute('rel');
+      if (rel) link.rel = rel;
+      const target = element.getAttribute('target');
+      if (target) link.target = target;
+      links.push(link);
+    }
+    return { url: location.href, count: links.length, truncated: truncated, links: links };
+  }
+
+  function formFieldLabel(element: any): string {
+    const aria = element.getAttribute('aria-label');
+    if (aria && aria.trim()) return String(aria).trim().slice(0, 120);
+    const root = element.getRootNode ? element.getRootNode() : null;
+    if (element.id && root) {
+      const escaped = String(element.id).replace(/"/g, '\\\\"');
+      try {
+        const label = root.querySelector('label[for="' + escaped + '"]');
+        if (label && label.textContent && label.textContent.trim())
+          return String(label.textContent).trim().slice(0, 120);
+      } catch (error: any) {
+        // Continue to the other label sources.
+      }
+    }
+    try {
+      const wrapping = element.closest ? element.closest('label') : null;
+      if (wrapping && wrapping.textContent && wrapping.textContent.trim())
+        return String(wrapping.textContent).trim().slice(0, 120);
+    } catch (error: any) {
+      // Continue to the placeholder.
+    }
+    const placeholder = element.getAttribute('placeholder');
+    if (placeholder && placeholder.trim()) return String(placeholder).trim().slice(0, 120);
+    return '';
+  }
+
+  function formFieldDescriptor(element: any, includeValues: boolean): any {
+    const tag = String(element.localName || '').toLowerCase();
+    let type = tag;
+    if (tag === 'input') type = String(element.type || 'text').toLowerCase();
+    else if (tag === 'button') type = String(element.type || 'button').toLowerCase();
+    const field: any = {
+      name: String(element.getAttribute('name') || element.name || ''),
+      type: type,
+      selector: deepSelectorFor(element),
+      required: Boolean(element.required),
+      disabled: Boolean(element.disabled),
+      readonly: Boolean(element.readOnly),
+    };
+    const label = formFieldLabel(element);
+    if (label) field.label = label;
+    if (type === 'checkbox' || type === 'radio') field.checked = Boolean(element.checked);
+    if (includeValues && type !== 'password') {
+      field.value = String(element.value === undefined || element.value === null ? '' : element.value).slice(0, 200);
+    }
+    if (tag === 'select') {
+      const options = element.options ? Array.from(element.options) : [];
+      field.options = options.slice(0, 50).map((option: any) => ({
+        value: String(option.value),
+        label: String(option.label || option.textContent || '')
+          .trim()
+          .slice(0, 120),
+        selected: Boolean(option.selected),
+      }));
+    }
+    return field;
+  }
+
+  function pageForms(args: any) {
+    const selector = typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : '';
+    const includeValues = readBooleanFlag(args.include_values, false, 'args.include_values');
+    const maxForms = readIntegerRange(args.max_forms, 20, 1, 100, 'args.max_forms');
+    let scope: any = document.documentElement;
+    if (selector) {
+      scope = deepFirstMatch(selector);
+      if (!scope) throw notFound('the selector matched no element', { selector: selector });
+    }
+    const forms: any[] = [];
+    let truncated = false;
+    for (const form of deepElementsIn(scope)) {
+      if (String(form.localName || '').toLowerCase() !== 'form') continue;
+      if (forms.length >= maxForms) {
+        truncated = true;
+        break;
+      }
+      let action = location.href;
+      try {
+        action = new URL(String(form.getAttribute('action') || ''), location.href).href;
+      } catch (error: any) {
+        action = location.href;
+      }
+      const entry: any = {
+        index: forms.length,
+        action: action,
+        method: String(form.method || 'get').toLowerCase(),
+        fields: [],
+      };
+      const name = form.getAttribute('name');
+      if (name) entry.name = name;
+      if (form.id) entry.id = form.id;
+      for (const field of deepElementsIn(form)) {
+        const tag = String(field.localName || '').toLowerCase();
+        if (tag !== 'input' && tag !== 'select' && tag !== 'textarea' && tag !== 'button') continue;
+        entry.fields.push(formFieldDescriptor(field, includeValues));
+      }
+      forms.push(entry);
+    }
+    return { url: location.href, count: forms.length, truncated: truncated, forms: forms };
+  }
+
+  function browserFocus(args: any) {
+    const resolved = resolveActionRef(args.ref, 'browser_focus');
+    scrollIntoView(resolved.element);
+    focusElement(resolved.element);
+    return { focused: true, ref: resolved.ref, url: location.href };
+  }
+
+  function browserHighlight(args: any) {
+    const ref = typeof args.ref === 'string' && args.ref.trim() ? args.ref.trim() : '';
+    const selector = typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : '';
+    if ((ref ? 1 : 0) + (selector ? 1 : 0) !== 1) {
+      throw badArgs('browser_highlight requires exactly one of args.ref or args.selector');
+    }
+    let element: any;
+    if (ref) {
+      element = resolveActionRef(ref, 'browser_highlight').element;
+    } else {
+      element = deepFirstMatch(selector);
+      if (!element) throw notFound('the selector matched no element', { selector: selector });
+    }
+    const duration = readIntegerRange(args.duration_ms, 1200, 0, 10000, 'args.duration_ms');
+    const color = typeof args.color === 'string' ? args.color : '#ffd400';
+    if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw badArgs('args.color must be a 6-digit hex color');
+    const rect = element.getBoundingClientRect();
+    const offset = frameOffsetFor(element);
+    clearPageHighlight();
+    if (duration > 0) {
+      ensurePageHighlightCleanup();
+      const overlay = document.createElement('div');
+      overlay.setAttribute('data-corvus-highlight', '');
+      overlay.style.position = 'fixed';
+      overlay.style.left = rect.left + offset.x + 'px';
+      overlay.style.top = rect.top + offset.y + 'px';
+      overlay.style.width = rect.width + 'px';
+      overlay.style.height = rect.height + 'px';
+      overlay.style.border = '2px solid ' + color;
+      overlay.style.background = color + '22';
+      overlay.style.boxSizing = 'border-box';
+      overlay.style.pointerEvents = 'none';
+      overlay.style.zIndex = '2147483647';
+      document.documentElement.appendChild(overlay);
+      activePageHighlight = overlay;
+      activePageHighlightTimer = window.setTimeout(() => {
+        if (activePageHighlight === overlay) clearPageHighlight();
+      }, duration);
+    }
+    const result: any = { highlighted: true, duration_ms: duration, url: location.href };
+    if (ref) result.ref = ref;
+    else result.selector = selector;
+    return result;
+  }
+
+  function storageAreaFor(area: any): any {
+    return area === 'session' ? window.sessionStorage : window.localStorage;
+  }
+
+  function requireWebStorageOrigin(): string {
+    if (location.protocol !== 'http:' && location.protocol !== 'https:') {
+      throw badArgs('web storage requires an http(s) page', { url: location.href });
+    }
+    return location.origin;
+  }
+
+  function storageGetTool(args: any) {
+    const area = args.area === 'session' ? 'session' : 'local';
+    const origin = requireWebStorageOrigin();
+    const storage = storageAreaFor(area);
+    const requested = Array.isArray(args.keys) ? args.keys.map((key: any) => String(key)) : null;
+    const keys: string[] = [];
+    if (requested) {
+      for (const key of requested) keys.push(key);
+    } else {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (key !== null) keys.push(key);
+      }
+    }
+    const encoder = new TextEncoder();
+    const entries: any[] = [];
+    let total = 0;
+    let truncated = false;
+    for (const key of keys) {
+      if (entries.length >= 200) {
+        truncated = true;
+        break;
+      }
+      const raw = storage.getItem(key);
+      if (raw === null) continue;
+      let value = String(raw);
+      if (value.length > 4096) {
+        value = value.slice(0, 4096);
+        truncated = true;
+      }
+      const bytes = encoder.encode(key).length + encoder.encode(value).length;
+      if (total + bytes > 65536) {
+        truncated = true;
+        break;
+      }
+      total += bytes;
+      entries.push({ key: key, value: value });
+    }
+    return { area: area, origin: origin, count: entries.length, truncated: truncated, entries: entries };
+  }
+
+  function storageSetTool(args: any) {
+    const area = args.area === 'session' ? 'session' : 'local';
+    const origin = requireWebStorageOrigin();
+    const storage = storageAreaFor(area);
+    const rawEntries = args.entries && typeof args.entries === 'object' ? args.entries : {};
+    const keys = Object.keys(rawEntries);
+    if (keys.length === 0) throw badArgs('args.entries must contain at least one entry');
+    const encoder = new TextEncoder();
+    let total = 0;
+    for (const key of keys) {
+      const value = String(rawEntries[key]);
+      if (value.length > 4096) throw badArgs('a storage value exceeds 4096 characters', { key: key });
+      total += encoder.encode(key).length + encoder.encode(value).length;
+    }
+    if (total > 65536) throw badArgs('the storage entries exceed 64 KiB in total');
+    for (const key of keys) storage.setItem(key, String(rawEntries[key]));
+    return { area: area, origin: origin, set: keys.length, keys: keys };
+  }
+
+  function storageClearTool(args: any) {
+    const area = args.area === 'session' ? 'session' : 'local';
+    const origin = requireWebStorageOrigin();
+    const storage = storageAreaFor(area);
+    let cleared = 0;
+    if (args.keys === undefined) {
+      cleared = storage.length;
+      storage.clear();
+    } else {
+      const keys = Array.isArray(args.keys) ? args.keys.map((key: any) => String(key)) : [];
+      for (const key of keys) {
+        if (storage.getItem(key) !== null) {
+          storage.removeItem(key);
+          cleared += 1;
+        }
+      }
+    }
+    return { area: area, origin: origin, cleared: cleared };
+  }
+
+  // -------------------------------------------------------------------------
   // Dispatch
   // -------------------------------------------------------------------------
 
@@ -2101,6 +2649,20 @@ declare global {
         return selectOptions(args);
       case 'type':
         return typeInto(args);
+      case 'page_links':
+        return pageLinks(args);
+      case 'page_forms':
+        return pageForms(args);
+      case 'browser_focus':
+        return browserFocus(args);
+      case 'browser_highlight':
+        return browserHighlight(args);
+      case 'storage_get':
+        return storageGetTool(args);
+      case 'storage_set':
+        return storageSetTool(args);
+      case 'storage_clear':
+        return storageClearTool(args);
       default:
         throw badArgs('unknown action: ' + action);
     }
@@ -2135,6 +2697,52 @@ declare global {
     if (message.type === 'corvus.probe') {
       try {
         sendResponse(waitProbe(message));
+      } catch (error: any) {
+        sendResponse({ ok: false, error: toPayload(error) });
+      }
+      return false;
+    }
+
+    if (message.type === 'corvus.element_rect') {
+      try {
+        sendResponse({ ok: true, result: elementPageRect(message.ref) });
+      } catch (error: any) {
+        sendResponse({ ok: false, error: toPayload(error) });
+      }
+      return false;
+    }
+
+    if (message.type === 'corvus.ax_root') {
+      try {
+        const selector = typeof message.selector === 'string' ? message.selector.trim() : '';
+        if (!selector) throw badArgs('corvus.ax_root requires a selector');
+        const element = deepFirstMatch(selector);
+        if (!element) throw notFound('the root selector matched no element', { root: selector });
+        sendResponse({ ok: true, result: { segments: selectorSegmentPath(element) } });
+      } catch (error: any) {
+        sendResponse({ ok: false, error: toPayload(error) });
+      }
+      return false;
+    }
+
+    if (message.type === 'corvus.ref_point') {
+      try {
+        const resolved = resolveActionRef(message.ref, 'browser_drag');
+        const rect = resolved.element.getBoundingClientRect();
+        const offset = frameOffsetFor(resolved.element);
+        const x = rect.left + rect.width / 2 + offset.x;
+        const y = rect.top + rect.height / 2 + offset.y;
+        const round2 = (value: number) => Math.round(value * 100) / 100;
+        sendResponse({
+          ok: true,
+          result: {
+            ref: resolved.ref,
+            x: round2(x),
+            y: round2(y),
+            pageX: round2(x + window.scrollX),
+            pageY: round2(y + window.scrollY),
+          },
+        });
       } catch (error: any) {
         sendResponse({ ok: false, error: toPayload(error) });
       }

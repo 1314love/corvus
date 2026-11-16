@@ -51,6 +51,29 @@ function elementIn(documentRef: Document, id: string): any {
   return element;
 }
 
+function callMessage(message: Record<string, unknown>): Promise<any> {
+  return new Promise((resolve, reject) => {
+    commandListener(message, {}, (reply: any) => {
+      if (reply && reply.ok === true) {
+        resolve(reply.result);
+        return;
+      }
+      const error = new Error(reply && reply.error ? reply.error.message : 'message failed');
+      (error as any).toolError = reply ? reply.error : null;
+      reject(error);
+    });
+  });
+}
+
+async function expectContentError(promise: Promise<any>, code: string): Promise<void> {
+  try {
+    await promise;
+    throw new Error('expected the content message to fail');
+  } catch (error: any) {
+    expect(error.toolError ? error.toolError.code : null).toBe(code);
+  }
+}
+
 function callTool(tool: string, args: Record<string, unknown>): Promise<any> {
   return new Promise((resolve, reject) => {
     const accepted = commandListener(
@@ -204,5 +227,157 @@ describe('page_snapshot frame and shadow traversal', () => {
     expect(elements.map((node: any) => node.name)).toEqual(['First action', 'Second action', 'Third action']);
     expect(result.node_count).toBe(3);
     expect(result.truncated).toBe(false);
+  });
+});
+
+describe('browser_screenshot element rectangles', () => {
+  it('returns top-page coordinates for refs in the top document, shadow roots and same-origin frames', async () => {
+    const originalScrollX = window.scrollX;
+    const originalScrollY = window.scrollY;
+    Object.defineProperty(window, 'scrollX', { configurable: true, value: 30 });
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 40 });
+    try {
+      const top = document.createElement('button');
+      top.textContent = 'Top rect';
+      document.body.appendChild(top);
+      setRect(top, rect(10, 20, 30, 40));
+
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const shadowRoot = host.attachShadow({ mode: 'open' });
+      shadowRoot.innerHTML = '<button id="shadow-rect">Shadow rect</button>';
+      const shadowButton = shadowRoot.querySelector('#shadow-rect') as HTMLButtonElement;
+      setRect(host, rect(50, 40, 300, 100));
+      // getBoundingClientRect for shadow content is already viewport-relative.
+      setRect(shadowButton, rect(70, 50, 120, 30));
+
+      const frameDocument = makeFrameDocument('<button id="frame-rect">Frame rect</button>');
+      setRect(elementIn(frameDocument, 'frame-rect'), rect(10, 20, 40, 30));
+      const frame = attachFrame(frameDocument, rect(100, 50, 400, 300), 7, 11);
+      Object.defineProperty(frameDocument, 'defaultView', {
+        configurable: true,
+        value: {
+          frameElement: frame,
+          getComputedStyle: window.getComputedStyle.bind(window),
+        },
+      });
+
+      const snapshot = await callTool('page_snapshot', { format: 'json' });
+      const nodeFor = (name: string) =>
+        snapshot.nodes.find((node: any) => node.kind === 'element' && node.name === name);
+      const topNode = nodeFor('Top rect');
+      const shadowNode = nodeFor('Shadow rect');
+      const frameNode = nodeFor('Frame rect');
+      expect(topNode).toBeTruthy();
+      expect(shadowNode).toBeTruthy();
+      expect(frameNode).toBeTruthy();
+
+      const [topRect, shadowRect, frameRect] = await Promise.all([
+        callMessage({ type: 'corvus.element_rect', ref: topNode.ref }),
+        callMessage({ type: 'corvus.element_rect', ref: shadowNode.ref }),
+        callMessage({ type: 'corvus.element_rect', ref: frameNode.ref }),
+      ]);
+
+      expect(topRect).toMatchObject({ x: 40, y: 60, width: 30, height: 40, url: location.href });
+      expect(shadowRect).toMatchObject({ x: 100, y: 90, width: 120, height: 30, url: location.href });
+      expect(frameRect).toMatchObject({ x: 147, y: 121, width: 40, height: 30, url: location.href });
+    } finally {
+      Object.defineProperty(window, 'scrollX', { configurable: true, value: originalScrollX });
+      Object.defineProperty(window, 'scrollY', { configurable: true, value: originalScrollY });
+    }
+  });
+
+  it('rejects @c refs and stale @e refs with typed content errors', async () => {
+    await expectContentError(callMessage({ type: 'corvus.element_rect', ref: '@c1' }), 'BAD_ARGS');
+    await expectContentError(callMessage({ type: 'corvus.element_rect', ref: '@e999999' }), 'NOT_FOUND');
+    await expectContentError(callMessage({ type: 'corvus.element_rect' }), 'BAD_ARGS');
+  });
+});
+
+describe('password privacy', () => {
+  it('keeps password values out of snapshot names, compact output and page_find', async () => {
+    const secret = 'topsecret';
+
+    const unlabeled = document.createElement('input');
+    unlabeled.type = 'password';
+    unlabeled.value = secret;
+    unlabeled.id = 'password';
+    setRect(unlabeled, rect(10, 10, 120, 30));
+    document.body.appendChild(unlabeled);
+
+    const label = document.createElement('label');
+    label.setAttribute('for', 'labeled-password');
+    label.textContent = 'Account password';
+    document.body.appendChild(label);
+    const labeled = document.createElement('input');
+    labeled.type = 'password';
+    labeled.value = secret;
+    labeled.id = 'labeled-password';
+    setRect(labeled, rect(10, 50, 120, 30));
+    document.body.appendChild(labeled);
+
+    const placeholderPassword = document.createElement('input');
+    placeholderPassword.type = 'password';
+    placeholderPassword.value = secret;
+    placeholderPassword.placeholder = 'Password hint';
+    placeholderPassword.id = 'placeholder-password';
+    setRect(placeholderPassword, rect(10, 90, 120, 30));
+    document.body.appendChild(placeholderPassword);
+
+    const text = document.createElement('input');
+    text.type = 'text';
+    text.value = 'visible-ok';
+    text.id = 'username';
+    setRect(text, rect(10, 130, 120, 30));
+    document.body.appendChild(text);
+
+    const json = await callTool('page_snapshot', { format: 'json' });
+    const nodes = json.nodes.filter((node: any) => node.kind === 'element');
+    const nodeForId = (id: string) => nodes.find((node: any) => node.attributes?.id === id);
+
+    const passwordNode = nodeForId('password');
+    expect(passwordNode).toBeTruthy();
+    expect(passwordNode.name).toBe('');
+    expect(passwordNode.name).not.toContain(secret);
+    expect(passwordNode.attributes).toMatchObject({ type: 'password', value: '***' });
+
+    const labeledNode = nodeForId('labeled-password');
+    expect(labeledNode).toBeTruthy();
+    expect(labeledNode.name).toBe('Account password');
+    expect(labeledNode.name).not.toContain(secret);
+    expect(labeledNode.attributes.value).toBe('***');
+
+    const placeholderNode = nodeForId('placeholder-password');
+    expect(placeholderNode).toBeTruthy();
+    expect(placeholderNode.name).toBe('Password hint');
+    expect(placeholderNode.name).not.toContain(secret);
+    expect(placeholderNode.attributes.value).toBe('***');
+
+    const textNode = nodeForId('username');
+    expect(textNode).toBeTruthy();
+    expect(textNode.name).toBe('visible-ok');
+    expect(textNode.attributes.value).toBe('visible-ok');
+
+    const compact = await callTool('page_snapshot', { format: 'compact' });
+    expect(compact.text).not.toContain(secret);
+    expect(compact.text).toContain('value="***"');
+    expect(compact.text).toContain('Account password');
+
+    const secretFind = await callTool('page_find', { query: secret });
+    expect(secretFind.count).toBe(0);
+    expect(secretFind.matches).toEqual([]);
+
+    const labelFind = await callTool('page_find', { query: 'Account password' });
+    expect(labelFind.count).toBeGreaterThan(0);
+    expect(labelFind.matches.some((match: any) => match.tag === 'input')).toBe(true);
+
+    const placeholderFind = await callTool('page_find', { query: 'Password hint' });
+    expect(placeholderFind.count).toBe(1);
+    expect(placeholderFind.matches[0]).toMatchObject({ tag: 'input' });
+
+    const textFind = await callTool('page_find', { query: 'visible-ok' });
+    expect(textFind.count).toBe(1);
+    expect(textFind.matches[0]).toMatchObject({ tag: 'input' });
+    expect(textFind.matches[0].text).toContain('visible-ok');
   });
 });

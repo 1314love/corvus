@@ -24,7 +24,7 @@ export function sampleState(overrides: Partial<UiState> = {}): UiState {
       reason: null,
       detected_at: 1,
     },
-    version: '1.6.0',
+    version: '1.7.0',
     capabilities: ['dom', 'scripting', 'debugger', 'cdp'],
     debuggerChannel: { managed: true, attached_tabs: [] },
     ...overrides,

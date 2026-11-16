@@ -239,6 +239,189 @@ async fn a_click_runs_end_to_end_from_mcp_to_the_extension() {
 }
 
 #[tokio::test]
+async fn extension_channel_dispatches_screenshot_for_viewport_and_element_refs() {
+    let daemon = Daemon::start(DaemonConfig {
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ws_port: 0,
+        http_port: 0,
+        router: RouterConfig {
+            default_timeout_ms: 5_000,
+            ..RouterConfig::default()
+        },
+        db_path: Some(temporary_database()),
+        home: Some(temporary_directory()),
+        ..DaemonConfig::default()
+    })
+    .await
+    .expect("the screenshot daemon binds its ephemeral ports");
+    let (responder, seen) = answer_named(&daemon, "edge:default").await;
+    let session = daemon
+        .mcp()
+        .start_session("stdio", Some("screenshot-recording"))
+        .expect("a recording session opens");
+
+    for (name, target, arguments) in [
+        (
+            "viewport",
+            "viewport",
+            json!({ "target": "viewport", "format": "png" }),
+        ),
+        (
+            "element",
+            "element",
+            json!({ "target": "element", "ref": "@e2", "format": "png" }),
+        ),
+    ] {
+        let result = tools_call_in(&daemon, Some(&session), "browser_screenshot", arguments).await;
+        assert!(
+            !is_error(&result),
+            "{name} screenshot failed: {}",
+            content_text(&result)
+        );
+        let saved = payload(&result);
+        assert_eq!(saved["target"], target);
+        assert_eq!(saved["format"], "png");
+        assert_eq!(saved["inline"], false);
+        assert_eq!(saved["width"], 80);
+        assert_eq!(saved["height"], 21);
+        let path = saved["path"].as_str().expect("a saved screenshot path");
+        assert!(path.ends_with(".png"), "unexpected screenshot path {path}");
+        assert!(
+            std::path::Path::new(path).is_file(),
+            "screenshot file is missing: {path}"
+        );
+        if name == "element" {
+            assert_eq!(
+                saved["bbox"],
+                json!({ "x": 10, "y": 20, "width": 80, "height": 21 })
+            );
+        } else {
+            assert!(saved.get("bbox").is_none());
+        }
+    }
+
+    let inline = tools_call_in(
+        &daemon,
+        Some(&session),
+        "browser_screenshot",
+        json!({ "target": "viewport", "format": "png", "inline": true }),
+    )
+    .await;
+    assert!(
+        !is_error(&inline),
+        "inline screenshot failed: {}",
+        content_text(&inline)
+    );
+    let content = inline
+        .get("content")
+        .and_then(Value::as_array)
+        .expect("inline screenshots return content blocks");
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["mimeType"], "image/png");
+    assert!(
+        content[1]["data"]
+            .as_str()
+            .is_some_and(|data| !data.is_empty()),
+        "the inline image block must carry base64 data"
+    );
+    assert!(content_text(&inline).contains("Screenshot 80x21"));
+
+    let commands = recorded(&seen);
+    let screenshots: Vec<_> = commands
+        .iter()
+        .filter(|command| command.tool == "browser_screenshot")
+        .collect();
+    assert_eq!(screenshots.len(), 3);
+    assert_eq!(screenshots[0].args["target"], "viewport");
+    assert_eq!(screenshots[0].timeout_ms, Some(5_000));
+    assert_eq!(screenshots[1].args["target"], "element");
+    assert_eq!(screenshots[1].args["ref"], "@e2");
+    assert_eq!(screenshots[2].args["inline"], true);
+
+    assert!(
+        daemon.flush_recording().await,
+        "the recording writer flushes queued steps"
+    );
+    let rows = daemon
+        .store()
+        .get_session_steps(&session.session_id, 0, 100)
+        .expect("recorded steps are readable");
+    let recorded_screenshots: Vec<_> = rows
+        .iter()
+        .filter(|row| row.tool == "browser_screenshot")
+        .collect();
+    assert_eq!(recorded_screenshots.len(), 3);
+    for row in recorded_screenshots {
+        assert!(row.ok, "the recorded step must be successful");
+        assert_eq!(row.browser_id.as_deref(), Some("edge:default"));
+        let stored = row
+            .result_json
+            .as_deref()
+            .expect("a screenshot result is recorded");
+        assert!(
+            !stored.contains("iVBOR"),
+            "raw image base64 must never be recorded: {stored}"
+        );
+        let stored: Value = serde_json::from_str(stored).expect("decode the stored result");
+        assert!(stored.get("data").is_none());
+        match stored["inline"].as_bool() {
+            Some(true) => {
+                assert_eq!(stored["image"]["mime_type"], "image/png");
+                assert!(
+                    stored["image"].get("data").is_none(),
+                    "the inline image bytes must not be recorded: {stored}"
+                );
+            }
+            Some(false) => assert!(
+                stored.get("image").is_none(),
+                "only inline screenshots record an image object: {stored}"
+            ),
+            other => panic!("the recorded screenshot must carry an inline flag: {other:?}"),
+        }
+        for key in ["path", "sha256", "summary"] {
+            assert!(
+                stored[key].as_str().is_some_and(|value| !value.is_empty()),
+                "the recorded screenshot must carry {key}: {stored}"
+            );
+        }
+        for key in ["bytes", "width", "height"] {
+            assert!(
+                stored[key].as_u64().is_some(),
+                "the recorded screenshot must carry {key}: {stored}"
+            );
+        }
+    }
+
+    let replay = tools_call(
+        &daemon,
+        "session_replay",
+        json!({ "session_id": &session.session_id, "mode": "dry_run" }),
+    )
+    .await;
+    assert!(
+        !is_error(&replay),
+        "replay planning failed: {}",
+        content_text(&replay)
+    );
+    let replay = payload(&replay);
+    assert_eq!(replay["total"], 3);
+    assert_eq!(replay["planned"].as_array().map(Vec::len), Some(0));
+    let skipped = replay["skipped"].as_array().expect("skipped steps");
+    assert_eq!(skipped.len(), 3);
+    assert!(
+        skipped.iter().all(|step| {
+            step["reason"] == "screenshot_not_replayable" && step["tool"] == "browser_screenshot"
+        }),
+        "screenshots must be skipped with a typed replay reason: {replay}"
+    );
+
+    responder.abort();
+    daemon.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_silent_extension_times_out_and_gets_a_cancel_event() {
     let daemon = start_daemon(300).await;
     let socket = handshake(daemon.ws_addr(), "edge:default").await;
@@ -611,6 +794,17 @@ fn payload(result: &Value) -> Value {
     serde_json::from_str(&content_text(result)).expect("the tool text is a JSON object")
 }
 
+fn screenshot_png_base64(width: u32, height: u32) -> String {
+    use base64::Engine;
+    let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    bytes.extend_from_slice(&13u32.to_be_bytes());
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 async fn answer_all_tools(
     daemon: &Daemon,
 ) -> (
@@ -688,6 +882,24 @@ fn canned_result(tool: &str, args: &Value) -> Value {
             "html": "<html><body>hello</body></html>",
             "truncated": false,
         }),
+        "browser_screenshot" => {
+            let target = args
+                .get("target")
+                .and_then(Value::as_str)
+                .unwrap_or("viewport");
+            let mut result = json!({
+                "format": "png",
+                "mime_type": "image/png",
+                "target": target,
+                "tab_id": "tab-1",
+                "url": "https://example.test/",
+                "data": screenshot_png_base64(80, 21),
+            });
+            if target == "element" {
+                result["bbox"] = json!({ "x": 10, "y": 20, "width": 80, "height": 21 });
+            }
+            result
+        }
         "page_find" => json!({
             "url": "https://example.test/",
             "count": 1,
@@ -3284,14 +3496,14 @@ async fn tools_list_brief_stays_within_the_token_budget() {
         .expect("tools/list always answers");
     let brief: Value = serde_json::from_str(&brief_text).expect("decode brief tools/list");
     let tools = brief["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 43);
+    assert_eq!(tools.len(), 62);
     println!(
         "tools/list brief bytes={} tools={}",
         brief_text.len(),
         tools.len()
     );
     assert!(
-        brief_text.len() <= 30_000,
+        brief_text.len() <= 32_000,
         "brief catalogue is {} bytes",
         brief_text.len()
     );
@@ -3321,7 +3533,7 @@ async fn tools_list_brief_stays_within_the_token_budget() {
         .expect("tools/list always answers");
     let page: Value = serde_json::from_str(&page_text).expect("decode page tools/list");
     let page_tools = page["result"]["tools"].as_array().expect("page tools");
-    assert!(!page_tools.is_empty() && page_tools.len() < 43);
+    assert_eq!(page_tools.len(), 15);
     assert!(page_tools
         .iter()
         .all(|tool| { tool["_meta"]["corvus.category"].as_str() == Some("page") }));

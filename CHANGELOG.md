@@ -6,6 +6,21 @@ All notable changes to Corvus are recorded here. The format follows Keep a Chang
 
 ## English
 
+## 1.7.0 - Unreleased
+
+The 1.7.0 working tree rescopes the MCP surface to 62 tools in ten categories and adds 18 tools; the published 1.6.0 release had 43 in nine. No 1.7.0 tag, CI run, published package or published asset exists. QA acceptance and local Windows packaging passed on the re-frozen 62-tool tree, but no 1.7.0 CI run, published package or published asset exists; the earlier 44-tool report and local Windows package are superseded, and every CI, published-package and release evidence row is Pending.
+
+### Added
+
+`page_pdf`, `page_links`, `page_forms`, `page_accessibility`, `browser_drag`, `browser_focus`, `browser_highlight`, `tab_group`, `tab_duplicate`, `window_list`, `window_new`, `cookie_set`, `cookie_clear`, `storage_get`, `storage_set`, `storage_clear`, `health` and `version` are the 18 new tools. Page grows from 11 to 15, storage is a new five-tool category, and diagnostics grows to six.
+`browser_screenshot` remains the 44th tool: viewport, full_page or element as webp, png or jpeg, an 8 MiB decoded-image cap under `<home>/screenshots/`, and one finalization. `page_pdf` writes a unique `page-<unix_millis>-<uuid8>.pdf` under `<daemon home>/pdf` with a 32 MiB (33,554,432-byte) decoded cap and no inline PDF.
+
+### Changed
+
+The catalogue grows from 44 to 62 tools across ten categories: page 15, input 10, tabs 8, network 5, storage 5, files 3, cdp 5, sessions 4, diagnostics 6 and help 1. CDP serves 46 browser-facing tools, the extension 42 and 12 are daemon-local; `tab_group`, `tab_duplicate`, `window_list` and `window_new` are extension-only, and forced CDP returns `CAPABILITY_UNAVAILABLE`.
+`browser_batch` allows 42 tools and excludes ten by name (`browser_batch`, `browser_channel`, `metrics`, `logs_tail`, `page_pdf`, `tab_group`, `tab_duplicate`, `window_new`, `health`, `version`); `storage`, `sessions` and `help` are not batchable. The extension declares 11 permissions including `tabGroups`, runs 42 handlers and keeps `all_frames: false`.
+`browser_screenshot` and `page_pdf` are read-only for guardrails but their pixels and PDF bytes are not redacted or boundary-wrapped. Recording redacts `cookie_set.value` and `storage_set` entry values, and guardrails redact `storage_get` entry values. The schema snapshot on disk is the complete 62-entry file; conformance passed 137 checks with 0 failed and 0 skipped on the frozen 62-tool binary. QA acceptance passed with 263 Rust tests on 25 result lines, 91 Vitest tests in 13 files and 3 Playwright E2E tests; local Windows packaging passed 160/160 checks on ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e`. CI, published-package and release evidence is Pending.
+
 ## 1.6.0 - 2026-11-15
 
 1.6.0 was released on 2026-11-15 from annotated tag `v1.6.0` and is the current release; 1.5.0 is the previous release. Formal QA acceptance passed on the working tree at HEAD `61ca85f`: 237 workspace tests on 25 result lines, 137 conformance checks, 55 Vitest tests in ten files, a 14-file/490,393-byte extension build and Playwright 1/1. It adds optional daemon guardrails but no MCP tool; the surface remains 43 tools in nine categories. Main CI run 43716832915 passed eight jobs, release workflow 43717236667 succeeded and GitHub Release 446071476 published the assets.
@@ -225,6 +240,21 @@ First public release.
 ---
 
 ## 中文
+
+## 1.7.0 - 未发布
+
+1.7.0 工作树把 MCP 工具面重划为十类 62 个工具并新增 18 个工具；已发布的 1.6.0 为九类 43 个。不存在 1.7.0 标签、CI 运行、已发布包或已发布产物。QA 验收与本地 Windows 打包已在重新冻结的 62 工具树上通过，但不存在 1.7.0 CI 运行、已发布包或已发布产物；此前的 44 工具报告与本地 Windows 包已被取代，所有 CI、已发布包与发布证据行均为 Pending。
+
+### 新增
+
+`page_pdf`、`page_links`、`page_forms`、`page_accessibility`、`browser_drag`、`browser_focus`、`browser_highlight`、`tab_group`、`tab_duplicate`、`window_list`、`window_new`、`cookie_set`、`cookie_clear`、`storage_get`、`storage_set`、`storage_clear`、`health` 与 `version` 是 18 个新增工具。page 从 11 个增至 15 个，storage 是新的五工具类别，diagnostics 增至 6 个。
+`browser_screenshot` 仍是第 44 个工具：把 viewport、full_page 或 element 捕获为 webp、png 或 jpeg，解码后上限 8 MiB，保存到 `<home>/screenshots/`，只最终处理一次。`page_pdf` 在 `<daemon home>/pdf` 下写唯一的 `page-<unix_millis>-<uuid8>.pdf`，解码上限 32 MiB（33,554,432 字节），不内联 PDF。
+
+### 变更
+
+目录从 44 个增至十类 62 个工具：page 15、input 10、tabs 8、network 5、storage 5、files 3、cdp 5、sessions 4、diagnostics 6 与 help 1。CDP 提供 46 个浏览器类工具，扩展提供 42 个，12 个为守护进程本地；`tab_group`、`tab_duplicate`、`window_list` 与 `window_new` 仅扩展可用，强制 CDP 返回 `CAPABILITY_UNAVAILABLE`。
+`browser_batch` 允许 42 个工具，按名称排除十个（`browser_batch`、`browser_channel`、`metrics`、`logs_tail`、`page_pdf`、`tab_group`、`tab_duplicate`、`window_new`、`health`、`version`）；`storage`、`sessions` 与 `help` 不可批量。扩展声明 11 项权限（含 `tabGroups`）、运行 42 个处理器并保持 `all_frames: false`。
+`browser_screenshot` 与 `page_pdf` 对守护策略是只读的，但像素与 PDF 字节不脱敏、不包裹边界。录制脱敏 `cookie_set.value` 与 `storage_set` 条目值，守护策略脱敏 `storage_get` 条目值。磁盘上的 schema 快照已完成为 62 条目文件；冻结的 62 工具二进制上一致性检查通过 137 项、0 失败、0 跳过。QA 验收通过：25 条结果行上的 263 个 Rust 测试、13 个文件中的 91 个 Vitest 测试与 3 个 Playwright 端到端测试；本地 Windows 打包在 ZIP 19,129,611 B SHA-256 `6b216bc251bfbbcd444823eed9ccebac97711ca5f9c66984a5f986735d86833e` 上通过 160/160 项检查。CI、已发布包与发布证据仍为 Pending。
 
 ## 1.6.0 - 2026-11-15
 
